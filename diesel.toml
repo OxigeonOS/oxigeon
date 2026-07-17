@@ -1,0 +1,6 @@
+[diesel]
+# For diesel CLI tooling
+migration_directory = "migrations"
+
+[print_schema]
+file = "src/middle/db/schema.rs"

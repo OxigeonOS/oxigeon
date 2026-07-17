@@ -1,0 +1,34 @@
+# ============================================================
+# Oxigeon Server Configuration
+# Game-level concerns — name, limits, session/account policy.
+# ============================================================
+
+[game]
+name = "Oxigeon MUD"
+mudlib_path = "./mudlib"
+
+[sessions]
+# How multiple client connections per account are handled:
+#   "single"           - New connection kicks old one (traditional MUD)
+#   "shared_character"  - Multiple sessions share one character
+#   "multi_character"   - Multiple sessions, each with a different character
+#   "full_multi"        - Multiple sessions can share characters freely
+multisession_mode = "single"
+
+max_connections = 256
+
+[accounts]
+# Whether new accounts can be created from the login screen
+allow_creation = true
+# Minimum password length
+min_password_length = 8
+# Characters per account: 1 = strict 1:1, higher = 1:many
+max_characters_per_account = 1
+
+[limits]
+# Lua VM memory limit in megabytes
+lua_memory_mb = 64
+# Max Lua instructions per script invocation (prevents infinite loops)
+lua_instruction_limit = 1000000
+# Max bytes in a single input line from a client
+input_buffer_bytes = 4096

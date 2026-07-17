@@ -1,0 +1,26 @@
+# Build output
+/target
+
+# Database files
+oxigeon.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Runtime logs (generated on server start)
+logs/
+
+# Secrets / local env
+.env
+.env.local
+
+# Editor artifacts
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS artifacts
+.DS_Store
+Thumbs.db

@@ -1,0 +1,25 @@
+# Normalize all text files to LF in the repo, checkout as-is on Windows
+* text=auto eol=lf
+
+# Rust source
+*.rs text eol=lf
+
+# Lua source
+*.lua text eol=lf
+
+# TOML / SQL / Markdown
+*.toml text eol=lf
+*.sql  text eol=lf
+*.md   text eol=lf
+
+# Shell
+*.sh text eol=lf
+
+# Windows batch files stay CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary files — no line-ending conversion
+*.db     binary
+*.db-wal binary
+*.db-shm binary

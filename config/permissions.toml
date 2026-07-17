@@ -1,0 +1,45 @@
+# config/permissions.toml — Oxigeon Permission Configuration
+#
+# Maps efun names and mudlib path prefixes to required permission strings.
+# Missing file = all efuns and directories are unrestricted (safe default for dev).
+# See docs/src/configuration/permissions-toml.md for full reference.
+
+[efuns]
+# ─── Hot-reload ──────────────────────────────────────────────────────────────
+reload = "efun.reload"
+
+# ─── File system ─────────────────────────────────────────────────────────────
+write_file  = "efun.file.write"
+append_file = "efun.file.write"
+delete_file = "efun.file.delete"
+
+# ─── Session control ─────────────────────────────────────────────────────────
+# Note: disconnecting yourself is always allowed; this gates disconnecting others.
+disconnect = "efun.session.disconnect"
+
+# ─── Broadcast ───────────────────────────────────────────────────────────────
+broadcast        = "efun.broadcast"        # send to ALL sessions
+broadcast_to_perm = "daemon.broadcast"     # send to privileged sessions only
+
+# ─── Lua verification ────────────────────────────────────────────────────────
+verify_file = "efun.verify"
+
+# ─── Observability reads ─────────────────────────────────────────────────────
+journal_read = "daemon.journald.read"
+audit_read   = "daemon.auditd.read"
+
+[directories]
+# Maps mudlib path prefixes to {read, write} permission requirements.
+# Longest-prefix match wins. Omit read or write to leave that op unrestricted.
+
+# Admin tooling — only staff can read or write
+"/admin" = { read = "dir.read.admin", write = "dir.write.admin" }
+
+# Server logs — read requires appropriate daemon permission; write open for daemon
+"/logs"  = { read = "daemon.journald.read" }
+
+# Command files — builders can read; only senior staff can modify
+"/cmds"  = { write = "dir.write.cmds" }
+
+# Area content — builders can write; everyone can read
+# "/areas" = { write = "dir.write.areas" }

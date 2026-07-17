@@ -1,0 +1,8 @@
+[test]
+# Integration tests with argon2 hashing run sequentially to avoid
+# connection pool exhaustion in debug builds (argon2 is slow without opt).
+threads = 1
+
+[build]
+# Suppress LNK4098: benign MSVC CRT conflict warning from LuaJIT's vendored C build.
+rustflags = ["-C", "link-arg=/NODEFAULTLIB:LIBCMT"]

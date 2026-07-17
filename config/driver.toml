@@ -1,0 +1,37 @@
+# ============================================================
+# Oxigeon Driver Configuration
+# Infrastructure concerns — servers, database, logging.
+# ============================================================
+
+[database]
+# Backend: "sqlite" or "postgresql"
+backend = "sqlite"
+# SQLite: filename (relative to working directory)
+# PostgreSQL: "postgres://user:password@localhost/oxigeon"
+url = "oxigeon.db"
+# Connection pool size
+pool_size = 5
+
+# ---- Network Servers ----
+[servers.telnet]
+enabled = true
+bind = "0.0.0.0"
+port = 4000
+
+# [servers.telnet_tls]
+# enabled = false
+# bind = "0.0.0.0"
+# port = 4443
+# cert_path = "certs/server.crt"
+# key_path = "certs/server.key"
+
+# [servers.websocket]
+# enabled = false
+# bind = "0.0.0.0"
+# port = 4001
+
+[logging]
+# Level: "trace", "debug", "info", "warn", "error"
+level = "info"
+# Log to file (optional, comment out for stdout only)
+# file = "logs/oxigeon.log"
