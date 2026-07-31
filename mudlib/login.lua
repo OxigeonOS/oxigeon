@@ -123,8 +123,46 @@ function M.enter_game(session_id, account)
         -- Step 2: mark session as playing with the chosen character
         enter_game_session(session_id, account.id, char.id)
         send(session_id, "\r\nWelcome back, " .. char.name .. "!\r\n")
-        send(session_id, "Type 'help' for a list of commands.\r\n")
-        send(session_id, "\r\n> ")
+
+        -- Step 3: place character in the world and show the room
+        if DAEMON and DAEMON.world then
+            local start = config("game.start_room") or "wizard_workshop.entrance"
+            DAEMON.world.place_character(char.id, start)
+
+            -- Step 4: load character into a Player object
+            if DAEMON.character then
+                local load_ok, player = pcall(DAEMON.character.load, char.id)
+                if load_ok and player then
+                    -- Link the Player to this session
+                    player.session_id = session_id
+                else
+                    log("error", "Failed to load Player for char "
+                        .. tostring(char.id) .. ": " .. tostring(player))
+                    if DAEMON.journal then
+                        DAEMON.journal.error("Player load failed for char "
+                            .. tostring(char.id) .. ": " .. tostring(player))
+                    end
+                end
+            end
+
+            local room = DAEMON.world.get_room(start)
+            if room then
+                send(session_id, "\r\n" .. room:get_appearance(session_id) .. "\r\n")
+            else
+                log("error", "Start room '" .. start
+                    .. "' not found — character placed but room missing")
+                send(session_id, "\r\nYou are floating in the void. The start room could not be found.\r\n")
+            end
+        else
+            log("warn", "World daemon not loaded — character not placed in world")
+            send(session_id, "Type 'help' for a list of commands.\r\n")
+        end
+
+        if DAEMON and DAEMON.prompt then
+            DAEMON.prompt.render(session_id)
+        else
+            send_prompt(session_id, "> ")
+        end
     end
 
     -- Clean up login state

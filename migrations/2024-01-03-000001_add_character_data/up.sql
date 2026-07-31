@@ -1,0 +1,1 @@
+ALTER TABLE characters ADD COLUMN data TEXT NOT NULL DEFAULT '{}';

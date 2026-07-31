@@ -14,7 +14,7 @@ function M.execute(session_id, args_str, args)
     if not args[1] then
         send(session_id, "\r\nUsage: reload <module>\r\n")
         send(session_id, "Example: reload login\r\n")
-        send_prompt(session_id, "\r\n> ")
+    
         return
     end
 
@@ -29,7 +29,7 @@ function M.execute(session_id, args_str, args)
         send(session_id, "Reload efun not available.\r\n")
     end
 
-    send_prompt(session_id, "\r\n> ")
+
 end
 
 return M

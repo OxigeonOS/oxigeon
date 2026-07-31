@@ -40,7 +40,7 @@ function M.execute(session_id, args_str, args)
     local info = server_info()
     if not info then
         send(session_id, "\r\nServer info unavailable.\r\n")
-        send_prompt(session_id, "> ")
+
         return
     end
 
@@ -49,7 +49,7 @@ function M.execute(session_id, args_str, args)
         "\r\n%s has been running for %s.\r\n(Started: %s)\r\n",
         info.name, duration, info.started_at
     ))
-    send_prompt(session_id, "> ")
+
 end
 
 return M

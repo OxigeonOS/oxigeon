@@ -40,7 +40,7 @@ function M.execute(session_id, args_str, args)
         send(session_id, "\r\n=== Audit Watch List ===\r\n")
         if not (DAEMON and DAEMON.audit) then
             send(session_id, "  auditd daemon not loaded.\r\n")
-            send_prompt(session_id, "> ")
+        
             return
         end
         local wl = DAEMON.audit.watch_list()
@@ -53,7 +53,7 @@ function M.execute(session_id, args_str, args)
             send(session_id, "  (no commands being watched)\r\n")
         end
         send(session_id, "\r\nType 'audit add <cmd> <success|fail|all>' to add.\r\n")
-        send_prompt(session_id, "> ")
+    
         return
     end
 
@@ -62,19 +62,19 @@ function M.execute(session_id, args_str, args)
         -- Requires higher permission
         if type(has_permission) == "function" and not has_permission(session_id, MANAGE_PERM) then
             send(session_id, "\r\nPermission denied. Requires: " .. MANAGE_PERM .. "\r\n")
-            send_prompt(session_id, "> ")
+        
             return
         end
         local verb = args[2]
         local cond = args[3] and args[3]:lower()
         if not verb or not cond then
             send(session_id, "\r\nUsage: audit add <command> <success|fail|all>\r\n")
-            send_prompt(session_id, "> ")
+        
             return
         end
         if not DAEMON or not DAEMON.audit then
             send(session_id, "\r\nauditd daemon not loaded.\r\n")
-            send_prompt(session_id, "> ")
+        
             return
         end
         local ok, err = DAEMON.audit.watch(verb, cond)
@@ -84,7 +84,7 @@ function M.execute(session_id, args_str, args)
         else
             send(session_id, "\r\nError: " .. (err or "unknown") .. "\r\n")
         end
-        send_prompt(session_id, "> ")
+    
         return
     end
 
@@ -92,18 +92,18 @@ function M.execute(session_id, args_str, args)
     if sub == "rm" or sub == "remove" then
         if type(has_permission) == "function" and not has_permission(session_id, MANAGE_PERM) then
             send(session_id, "\r\nPermission denied. Requires: " .. MANAGE_PERM .. "\r\n")
-            send_prompt(session_id, "> ")
+        
             return
         end
         local verb = args[2]
         if not verb then
             send(session_id, "\r\nUsage: audit rm <command>\r\n")
-            send_prompt(session_id, "> ")
+        
             return
         end
         if not DAEMON or not DAEMON.audit then
             send(session_id, "\r\nauditd daemon not loaded.\r\n")
-            send_prompt(session_id, "> ")
+        
             return
         end
         local removed = DAEMON.audit.unwatch(verb)
@@ -112,7 +112,7 @@ function M.execute(session_id, args_str, args)
         else
             send(session_id, "\r\n'" .. verb .. "' was not in the watch list.\r\n")
         end
-        send_prompt(session_id, "> ")
+    
         return
     end
 
@@ -132,7 +132,7 @@ function M.execute(session_id, args_str, args)
         entries = audit_read(count)
     else
         send(session_id, "\r\nauditd not available.\r\n")
-        send_prompt(session_id, "> ")
+    
         return
     end
 
@@ -145,7 +145,7 @@ function M.execute(session_id, args_str, args)
         end
     end
     send(session_id, "\r\nTip: 'audit list' shows the command watch list.\r\n")
-    send_prompt(session_id, "> ")
+
 end
 
 return M

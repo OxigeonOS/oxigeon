@@ -14,7 +14,7 @@ function M.execute(session_id, args_str, args)
     if not args_str or args_str:match("^%s*$") then
         send(session_id, "\r\nUsage: alert <message>\r\n")
         send(session_id, "Sends an alert to all online staff members.\r\n")
-        send_prompt(session_id, "> ")
+    
         return
     end
 
@@ -52,7 +52,7 @@ function M.execute(session_id, args_str, args)
 
     send(session_id, string.format("\r\nAlert sent to %d staff member%s.\r\n",
         count, count == 1 and "" or "s"))
-    send_prompt(session_id, "> ")
+
 end
 
 return M

@@ -12,6 +12,7 @@ pub struct Character {
     pub name: String,
     pub created_at: String,
     pub last_played: Option<String>,
+    pub data: String,
 }
 
 impl Character {
@@ -99,6 +100,24 @@ impl DieselCharacterStore {
             .execute(&mut conn)?;
         Ok(())
     }
+
+    pub fn save_data(&self, id: i64, data: &str) -> Result<()> {
+        let mut conn = self.pool.get_sqlite()?;
+        diesel::update(characters::table.find(id))
+            .set(characters::data.eq(data))
+            .execute(&mut conn)?;
+        Ok(())
+    }
+
+    pub fn load_data(&self, id: i64) -> Result<Option<String>> {
+        let mut conn = self.pool.get_sqlite()?;
+        let result: Option<String> = characters::table
+            .find(id)
+            .select(characters::data)
+            .first::<String>(&mut conn)
+            .optional()?;
+        Ok(result)
+    }
 }
 
 impl crate::domain::traits::CharacterStore for DieselCharacterStore {
@@ -116,5 +135,11 @@ impl crate::domain::traits::CharacterStore for DieselCharacterStore {
     }
     fn delete(&self, id: i64) -> Result<()> {
         DieselCharacterStore::delete(self, id)
+    }
+    fn save_data(&self, id: i64, data: &str) -> Result<()> {
+        DieselCharacterStore::save_data(self, id, data)
+    }
+    fn load_data(&self, id: i64) -> Result<Option<String>> {
+        DieselCharacterStore::load_data(self, id)
     }
 }

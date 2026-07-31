@@ -73,18 +73,45 @@ input_buffer_bytes = 4096
 
 The starter mudlib already includes a full command system. The key files are:
 
-```
+```text
 mudlib/
-├── init.lua           ← event hooks; delegates commands to lib/commands
+├── init.lua           ← event hooks, daemons setup
 ├── login.lua          ← login/registration flow
 ├── lib/
-│   └── commands.lua   ← dispatcher and lazy-loader
+│   ├── commands.lua   ← dispatcher and lazy-loader
+│   ├── object.lua     ← base class for all MUD objects
+│   ├── item.lua       ← items (→ Weapon, Armor)
+│   ├── weapon.lua     ← weapon subclass
+│   ├── armor.lua      ← armor subclass
+│   ├── mobile.lua     ← NPCs, monsters (→ Player)
+│   └── player.lua     ← player object (persistence via CHARACTER_D)
+├── daemons/
+│   ├── journald.lua   ← structured logging
+│   ├── auditd.lua     ← audit trail
+│   ├── ticker_d.lua   ← timer scheduler
+│   ├── event_d.lua    ← signal/event system
+│   └── prompt_d.lua   ← prompt template engine
 └── cmds/
     ├── help.lua
-    ├── quit.lua
-    ├── say.lua
-    ├── time.lua
-    └── who.lua
+    └── quit.lua
+
+game/
+├── init.lua           ← game daemons and areas loading
+├── daemons/
+│   ├── room_d.lua     ← room creation
+│   ├── character_d.lua← character state cache
+│   ├── world_d.lua    ← room registry, movement
+│   ├── codegen_d.lua  ← OLC code generation
+│   └── olc_d.lua      ← OLC session manager
+├── lib/
+│   └── room.lua       ← room class
+├── areas/
+│   └── wizard_workshop/ ← example area
+└── cmds/
+    ├── look.lua       ← game commands
+    ├── prompt.lua     ← prompt customization
+    ├── olc.lua        ← online creation entry
+    └── dig.lua        ← room creation (OLC)
 ```
 
 ### Adding a New Command
@@ -104,14 +131,41 @@ function M.execute(session_id, args_str, args)
     -- args_str : everything after "look" (raw)
     -- args     : whitespace-split tokens
     send(session_id, "\r\nYou see nothing but void.\r\n")
-    send_prompt(session_id, "> ")
+    -- No need to call send_prompt() — the dispatcher renders the
+    -- player's prompt automatically after every command.
 end
 
 return M
 ```
 
 That's it — no registration required. The dispatcher lazy-loads `cmds/<verb>.lua`
-automatically the first time the verb is typed.
+automatically the first time the verb is typed (based on the `game.command_paths` config).
+
+### Creating Your First Room
+
+To add content to your game, you can use the `ROOM_D` builder in an area file.
+
+Create `game/areas/starter.lua`:
+
+```lua
+local ROOM_D = require('daemons.room_d')
+
+local rooms = {}
+
+rooms[#rooms + 1] = ROOM_D.create("starter.tavern")
+    :set_short("The Rusty Anchor")
+    :set_description("You are standing in a dimly lit tavern. The smell of stale ale fills the air.")
+    :set_light(1)
+    :add_item("bar", "A sticky wooden counter.")
+    :finish()
+
+return rooms
+```
+
+Make sure to register this area in your `game/init.lua`:
+```lua
+DAEMON.world.register_area(require('areas.starter'))
+```
 
 ### Command Metadata
 

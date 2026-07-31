@@ -6,6 +6,12 @@
 [game]
 name = "Oxigeon MUD"
 mudlib_path = "./mudlib"
+game_path = "./game"
+# Ordered list of subdirectories to search for commands.
+# Since game/ is first in package.path, game commands shadow mudlib commands.
+command_paths = ["cmds"]
+# Room ID where characters spawn on login
+start_room = "wizard_workshop.entrance"
 
 [sessions]
 # How multiple client connections per account are handled:

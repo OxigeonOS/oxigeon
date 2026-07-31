@@ -74,14 +74,8 @@ lua_instruction_limit = 1000000  # Max instructions per call
 > [!NOTE]
 > The instruction limit prevents infinite loops from hanging the server. A Lua script that exceeds the limit will receive a runtime error.
 
-## Permissions System (Future)
+## Permissions System
 
-A future version will allow creators to define per-character permission levels controlling which efuns they can call. The `this_session()` efun will be used to identify the caller.
+Oxigeon has a full RBAC (Role-Based Access Control) system that controls which efuns, commands, and file paths each character can access. Permissions are checked in-memory via `has_permission(session_id, perm)`.
 
-```lua
--- Planned future API:
-local session = get_session(this_session())
-if session.permissions.can_reload then
-    reload("some.module")
-end
-```
+See [Permissions & Roles](./permissions.md) for the full documentation.

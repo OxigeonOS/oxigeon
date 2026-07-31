@@ -1,5 +1,74 @@
 # Changelog
 
+## Phase 2: Game World
+
+### Features
+
+#### Object System
+- Base `Object` class (`game/lib/object.lua`) — shared fields (`id`, `short`, `description`), `resolve()` (lfun pattern), state access methods
+- `Room` inherits from `Object` via metatable chain — exits, contents, actions, items, appearance rendering
+- Callable properties (lfun pattern) — any property can be a string or a function returning a string
+- `resolve()` returns `<invalid lfun return>` for non-string function returns
+
+#### World Engine
+- Two-layer Lua architecture: `mudlib/` (system) + `game/` (content)
+- DAEMON service registry (DAEMON global table)
+- Data-oriented room definitions — area files are pure data tables with logic separated
+- `ROOM_D.from_data()` — creates Room objects from data tables with field mapping and validation
+- `ROOM_D.load_area()` — processes area data arrays, extracts `_meta`, registers with world_d
+- `ROOM_D.merge()` — combines multiple data arrays for multi-file areas
+- Builder pattern (ROOM_D) preserved for dynamic/programmatic room generation
+- Area metadata (`_meta`) — stored in area files, queryable via `DAEMON.world.get_area_meta()`
+- Multi-file areas — large areas split across sub-files, assembled via `ROOM_D.merge()`
+- Virtual room providers — register generators by prefix for infinite/procedural spaces
+- Virtual room caching and eviction (`evict_virtual`)
+- World daemon (world_d) — room registry with virtual fallback, character locations, movement
+- Room actions (add_action) — room-scoped custom commands
+- Layered command dispatch: room actions → system commands
+- Movement library with room-scoped messaging
+- CHARACTER_D — in-memory character state cache with DB persistence
+
+#### Object State
+- In-memory key/value state store scoped by object ID (rooms, items, mobs)
+- Driver-side efuns: `set_object_state()`, `get_object_state()`, `get_all_object_state()`, `clear_object_state()`
+- Survives hot-reloads (Lua VM globals), cleared on restart
+- `Object:get_state(key)` / `Object:set_state(key, value)` convenience methods
+
+#### Timer System (TICKER_D)
+- Tokio-backed async timers — zero polling, each timer sleeps independently
+- `schedule_timer(id, delay)` efun — one-shot timer via `tokio::spawn`
+- `schedule_repeating(id, interval)` efun — repeating timer via `tokio::time::interval`
+- `cancel_timer(id)` efun — immediate cancellation via `AbortHandle`
+- `LuaCommand::TimerFired` — engine dispatches `on_timer(id)` to Lua
+- `DAEMON.ticker.after(delay, id, fn)` — one-shot with Lua callback
+- `DAEMON.ticker.every(interval, id, fn)` — repeating with Lua callback
+- `DAEMON.ticker.remove(id)` — cancel timer and callback
+- Input validation, pcall-wrapped callbacks, journald error logging
+
+#### Event System (EVENT_D)
+- Godot-style signals — named event channels with subscribe/emit
+- `DAEMON.event.on(event, id, fn, priority?)` — subscribe with optional priority
+- `DAEMON.event.off(event, id)` / `off_all(event)` / `off_by_prefix(prefix)` — flexible unsubscribe
+- `DAEMON.event.emit(event, data)` — synchronous dispatch in priority order
+- `DAEMON.event.defer(event, data, delay)` — deferred emit via TICKER_D
+- pcall-wrapped handlers, sorted listener cache, full introspection API
+
+#### Efuns (new in Phase 2)
+- `save_character_data()`, `load_character_data()` — character JSON persistence
+- `set_object_state()`, `get_object_state()`, `get_all_object_state()`, `clear_object_state()`
+- `schedule_timer()`, `schedule_repeating()`, `cancel_timer()`
+- New config keys: `game.command_paths`, `game.start_room`, `game.game_path`
+
+#### Observability
+- Structured error logging via journald for all critical operations
+- `pcall`-wrapped cleanup chains (disconnect, init loading)
+- Input validation in all daemons with logged warnings
+
+#### Tests
+- 147 tests total — all passing
+
+---
+
 ## v0.1.0 (Current)
 
 **Initial release of Oxigeon**
@@ -97,5 +166,5 @@
 - MCCP2 zlib compression negotiated but not yet applied to the write stream
 - PostgreSQL backend declared in config but not fully wired (requires libpq)
 - WebSocket and TLS listeners not yet implemented
-- `delay(seconds, callback)` efun not yet implemented
 - `set_persistent()`/`get_persistent()` live in VM memory only — not persisted across server restarts
+- Object state (`set_object_state`) lives in VM memory only — not persisted across server restarts

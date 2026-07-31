@@ -14,7 +14,7 @@ function M.execute(session_id, args_str, args)
     if not args_str or args_str:match("^%s*$") then
         send(session_id, "\r\nUsage: announce <message>\r\n")
         send(session_id, "Sends a message to every connected player.\r\n")
-        send_prompt(session_id, "> ")
+    
         return
     end
 
@@ -51,7 +51,7 @@ function M.execute(session_id, args_str, args)
         DAEMON.audit.log("cmd.announce", true, sender_name .. ": " .. args_str:sub(1, 80))
     end
 
-    send_prompt(session_id, "> ")
+
 end
 
 return M

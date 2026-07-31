@@ -91,6 +91,21 @@ function on_unload(module_name)
 end
 ```
 
+### `on_timer(id)`
+Called when a Tokio-backed timer fires. The `id` is the string identifier
+passed to `schedule_timer()` or `schedule_repeating()`.
+
+Typically you don't implement this yourself — the mudlib's default implementation
+dispatches to `DAEMON.ticker.fire(id)`, which runs the registered callback.
+
+```lua
+function on_timer(id)
+    if DAEMON and DAEMON.ticker then
+        DAEMON.ticker.fire(id)
+    end
+end
+```
+
 ---
 
 ## Event Dispatch Order

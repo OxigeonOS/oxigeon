@@ -15,6 +15,16 @@ M.permission = nil
 -- from the command registry (M.category + M.summary metadata).
 local COMMAND_LIST = [[
 
+  Navigation
+  ----------
+  look, l      Look at your surroundings
+  north, n     Go north
+  south, s     Go south
+  east, e      Go east
+  west, w      Go west
+  ne, nw       Go northeast / northwest
+  se, sw       Go southeast / southwest
+
   General
   -------
   who          Show who is connected
@@ -45,7 +55,7 @@ function M.execute(session_id, args_str, args)
     else
         send(session_id, COMMAND_LIST)
     end
-    send_prompt(session_id, "> ")
+
 end
 
 return M

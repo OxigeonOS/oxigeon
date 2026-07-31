@@ -12,6 +12,15 @@ pub struct ServerConfig {
 pub struct GameConfig {
     pub name: String,
     pub mudlib_path: String,
+    /// Path to the game-specific layer (rooms, game commands, areas).
+    /// Defaults to "./game" if not set.
+    pub game_path: Option<String>,
+    /// Ordered list of subdirectory names to search for commands.
+    /// e.g. ["cmds"] searches cmds/ in both game/ and mudlib/ roots.
+    /// Defaults to ["cmds"] if not set.
+    pub command_paths: Option<Vec<String>>,
+    /// Room ID where new characters spawn. e.g. "wizard_workshop.entrance"
+    pub start_room: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

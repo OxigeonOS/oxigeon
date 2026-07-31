@@ -22,6 +22,9 @@ the cursor to remain on the same line as the prompt.
 send_prompt(session_id, "> ")
 ```
 
+> [!TIP]
+> You generally do not need to call `send_prompt()` directly from commands or room actions. The command dispatcher calls `DAEMON.prompt.render(session_id)` automatically after every command, which resolves the player's customizable prompt template. Use `send_prompt()` only in low-level code (login flow, raw protocol handlers).
+
 ### `broadcast(text)`
 Send a text message to **all** connected sessions.
 
@@ -206,6 +209,14 @@ Look up a character by its integer ID.
 local char = get_character(session.character_id)
 ```
 
+### `save_character_data(char_id, data_table) → boolean`
+Serialize a Lua table to JSON and save it to the character's persistent data column.
+Returns `true` on success, `false` on failure.
+
+### `load_character_data(char_id) → table|nil`  
+Load the character's persistent data from the database, deserializing the JSON into a Lua table.
+Returns `nil` if the character doesn't exist.
+
 ---
 
 ## Utility
@@ -233,6 +244,9 @@ Read a server configuration value.
 |-----|------|---------|
 | `"game.name"` | string | `"My MUD"` |
 | `"game.mudlib_path"` | string | `"./mudlib"` |
+| `"game.game_path"` | string | `"./game"` |
+| `"game.command_paths"` | array | `["game/cmds", "mudlib/cmds"]` |
+| `"game.start_room"` | string | `"wizard_workshop.entrance"` |
 | `"accounts.allow_creation"` | bool | `true` |
 | `"accounts.max_characters_per_account"` | integer | `1` |
 
@@ -278,3 +292,78 @@ local count = get_persistent("player_count") or 0
 > [!NOTE]
 > Persistent storage lives in the Lua VM's memory. It survives `reload()` calls but is
 > cleared if the server restarts. For cross-restart persistence, write to a file or database.
+
+---
+
+## Object State
+
+In-memory key/value storage scoped to any object ID (rooms, items, mobs).
+Survives hot-reloads but not server restarts.
+See [World Building — Room State](./world-building.md#room-state) for examples.
+
+### `set_object_state(id, key, value)`
+Set a key/value pair on an object's state.
+
+```lua
+set_object_state("dungeon.cell", "door_open", true)
+set_object_state("mob.guard_1", "alert_level", 3)
+```
+
+### `get_object_state(id, key) → any`
+Get a single value from an object's state. Returns `nil` if the key or object has no state.
+
+```lua
+local open = get_object_state("dungeon.cell", "door_open")
+```
+
+### `get_all_object_state(id) → table|nil`
+Get the entire state table for an object, or `nil` if no state has been set.
+
+```lua
+local state = get_all_object_state("dungeon.cell")
+if state then
+    for k, v in pairs(state) do
+        log("debug", k .. " = " .. tostring(v))
+    end
+end
+```
+
+### `clear_object_state(id)`
+Remove all state for an object.
+
+```lua
+clear_object_state("dungeon.cell")
+```
+
+---
+
+## Timers
+
+Tokio-backed timers that sleep asynchronously and fire precisely when due.
+Zero polling — each timer is an independent async task.
+See [TICKER_D](./world-building.md#tickers) for the Lua-side API.
+
+### `schedule_timer(id, delay_seconds)`
+Schedule a one-shot timer. When it fires, `on_timer(id)` is called.
+
+```lua
+schedule_timer("puzzle.reset", 10.0)
+```
+
+### `schedule_repeating(id, interval_seconds)`
+Schedule a repeating timer. Fires `on_timer(id)` every interval.
+
+```lua
+schedule_repeating("mob.guard.echo", 15.0)
+```
+
+### `cancel_timer(id) → boolean`
+Cancel a scheduled timer. Returns `true` if found and cancelled.
+
+```lua
+cancel_timer("mob.guard.echo")
+```
+
+> [!NOTE]
+> Timer efuns are low-level. Use `DAEMON.ticker` for the high-level API:
+> `DAEMON.ticker.after(delay, id, func)` and `DAEMON.ticker.every(interval, id, func)`.

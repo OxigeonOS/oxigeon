@@ -11,7 +11,7 @@ M.permission = nil
 function M.execute(session_id, args_str, args)
     if args_str == "" then
         send(session_id, "\r\nSay what?\r\n")
-        send_prompt(session_id, "> ")
+
         return
     end
 
@@ -23,7 +23,7 @@ function M.execute(session_id, args_str, args)
     end
 
     broadcast("\r\n" .. name .. " says: " .. args_str .. "\r\n")
-    send_prompt(session_id, "> ")
+
 end
 
 return M

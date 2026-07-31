@@ -8,11 +8,19 @@ Oxigeon is structured in three layers. Each layer has a specific responsibility 
 ┌─────────────────────────────────────────────────────────────┐
 │  Layer 3: Mudlib (Lua)                                      │
 │                                                             │
-│  mudlib/init.lua        → on_connect, on_input, on_disconnect│
-│  mudlib/login.lua       → login/registration flow           │
-│  mudlib/lib/*.lua       → shared utilities                  │
-│  mudlib/areas/*.lua     → game world                        │
-│  mudlib/systems/*.lua   → game mechanics (combat, etc.)     │
+│  mudlib/                → Core system layer                 │
+│  ├── init.lua           → setup daemons, event hooks        │
+│  ├── daemons/           → journald, auditd, ticker_d,       │
+│  │                        event_d, prompt_d                 │
+│  └── lib/               → object, item, weapon, armor,      │
+│                           mobile, player, commands, utils    │
+│                                                             │
+│  game/                  → Game content layer                │
+│  ├── init.lua           → load game daemons and areas       │
+│  ├── daemons/           → world_d, room_d, character_d,     │
+│  │                        codegen_d, olc_d                  │
+│  ├── lib/               → room                             │
+│  └── areas/             → game world definitions (data)     │
 └─────────────────────────────────────────────────────────────┘
          │ require(), efuns calls
 ┌─────────────────────────────────────────────────────────────┐
@@ -68,12 +76,38 @@ The domain layer contains things creators will need to touch: database models, s
 | `ServerConfig` | `config/server_config.rs` | Game config |
 
 ### Mudlib Layer (Lua)
-Your game. The driver only calls three things from Lua:
+Your game. It is divided into two parts:
+- **`mudlib/`**: The core system layer (login, command dispatch, base daemons).
+- **`game/`**: The game content layer (rooms, areas, game-specific daemons like `ROOM_D` and `CHARACTER_D`).
+
+The driver calls these global Lua functions (defined in `mudlib/init.lua`):
 - `on_connect(session_id)`
 - `on_input(session_id, text)`
 - `on_disconnect(session_id)`
+- `on_gmcp(session_id, package, data)`
+- `on_timer(id)` — fired by the Tokio timer system
+- `on_load(module_name)` / `on_unload(module_name)` — hot-reload hooks
 
-Everything else is up to you.
+#### Object Hierarchy
+All MUD objects inherit from a shared `Object` base class (`mudlib/lib/object.lua`) which provides:
+- `resolve()` — lfun pattern (string or function → string)
+- State access — `get_state(key)`, `set_state(key, value)` wrapping driver efuns
+- Common fields — `id`, `short`, `description`
+
+The full inheritance tree:
+
+```
+Object (mudlib/lib/object.lua)
+├── Room   (game/lib/room.lua)
+├── Item   (mudlib/lib/item.lua)
+│   ├── Weapon (mudlib/lib/weapon.lua)
+│   └── Armor  (mudlib/lib/armor.lua)
+└── Mobile (mudlib/lib/mobile.lua)
+    └── Player (mudlib/lib/player.lua)
+```
+
+#### Daemons
+Services and singletons are managed via a global `DAEMON` table for easy access across both `mudlib` and `game` layers (e.g., `DAEMON.world`, `DAEMON.journal`, `DAEMON.ticker`, `DAEMON.event`, `DAEMON.prompt`, `DAEMON.codegen`, `DAEMON.olc`).
 
 ## Data Flow
 
@@ -153,3 +187,19 @@ Reload request → LuaCommand::Reload { module_name }
 ```
 
 If the reload fails (Lua syntax error), the old version remains active.
+
+## Timer System
+
+Timers are backed by Tokio async tasks — no heartbeat polling.
+
+```
+Lua: DAEMON.ticker.after(10, "puzzle.reset", fn)
+  → schedule_timer("puzzle.reset", 10) efun
+  → Rust: tokio::spawn(async { sleep(10s).await; send TimerFired })
+  →   ... 10 seconds pass (zero CPU) ...
+  → LuaCommand::TimerFired { id: "puzzle.reset" }
+  → ScriptEngine thread: on_timer("puzzle.reset")
+  → DAEMON.ticker.fire("puzzle.reset") → runs callback
+```
+
+Repeating timers use `tokio::time::interval`. Cancellation uses `AbortHandle::abort()`.

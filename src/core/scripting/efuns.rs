@@ -1,4 +1,5 @@
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Mutex};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
 use mlua::prelude::*;
@@ -108,6 +109,8 @@ pub fn register_all(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
     register_character_efuns(lua, ctx)?;
     register_utility_efuns(lua, ctx)?;
     register_hot_reload_efuns(lua, ctx)?;
+    register_object_state_efuns(lua, ctx)?;
+    register_timer_efuns(lua, ctx)?;
     register_permission_efuns(lua, ctx)?;
     register_observability_efuns(lua, ctx)?;
     Ok(())
@@ -450,6 +453,46 @@ fn register_character_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
         globals.set("get_character", get_fn)?;
     }
 
+    // save_character_data(char_id, data_table) -> bool
+    // Serializes a Lua table to JSON and stores it in the character's data column.
+    {
+        let store = ctx.character_store.clone();
+        let save_fn = lua.create_function(move |lua, (char_id, data): (i64, LuaValue)| {
+            let json = lua_to_json(lua, &data)?;
+            let json_str = serde_json::to_string(&json)
+                .map_err(|e| mlua::Error::external(e))?;
+            match store.save_data(char_id, &json_str) {
+                Ok(()) => Ok(true),
+                Err(e) => {
+                    tracing::warn!("save_character_data failed for char {}: {}", char_id, e);
+                    Ok(false)
+                }
+            }
+        })?;
+        globals.set("save_character_data", save_fn)?;
+    }
+
+    // load_character_data(char_id) -> table|nil
+    // Loads the character's data column from DB and deserializes from JSON to a Lua table.
+    {
+        let store = ctx.character_store.clone();
+        let load_fn = lua.create_function(move |lua, char_id: i64| {
+            match store.load_data(char_id) {
+                Ok(Some(json_str)) => {
+                    let json: JsonValue = serde_json::from_str(&json_str)
+                        .unwrap_or(JsonValue::Object(serde_json::Map::new()));
+                    Ok(json_to_lua(lua, &json)?)
+                }
+                Ok(None) => Ok(LuaValue::Nil),
+                Err(e) => {
+                    tracing::warn!("load_character_data failed for char {}: {}", char_id, e);
+                    Ok(LuaValue::Nil)
+                }
+            }
+        })?;
+        globals.set("load_character_data", load_fn)?;
+    }
+
     Ok(())
 }
 
@@ -486,6 +529,25 @@ fn register_utility_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
             match key.as_str() {
                 "game.name" => Ok(LuaValue::String(lua.create_string(&cfg.game.name)?)),
                 "game.mudlib_path" => Ok(LuaValue::String(lua.create_string(&cfg.game.mudlib_path)?)),
+                "game.game_path" => {
+                    let path = cfg.game.game_path.as_deref().unwrap_or("./game");
+                    Ok(LuaValue::String(lua.create_string(path)?))
+                }
+                "game.command_paths" => {
+                    let default = vec!["cmds".to_string()];
+                    let paths = cfg.game.command_paths.as_ref().unwrap_or(&default);
+                    let t = lua.create_table()?;
+                    for (i, p) in paths.iter().enumerate() {
+                        t.set(i + 1, p.as_str())?;
+                    }
+                    Ok(LuaValue::Table(t))
+                }
+                "game.start_room" => {
+                    match &cfg.game.start_room {
+                        Some(room) => Ok(LuaValue::String(lua.create_string(room)?)),
+                        None => Ok(LuaValue::Nil),
+                    }
+                }
                 "accounts.max_characters_per_account" =>
                     Ok(LuaValue::Integer(cfg.accounts.max_characters_per_account as i64)),
                 "accounts.allow_creation" =>
@@ -530,6 +592,159 @@ fn register_hot_reload_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
             Ok(())
         })?;
         globals.set("reload", reload_fn)?;
+    }
+
+    Ok(())
+}
+
+fn register_object_state_efuns(lua: &Lua, _ctx: &EfunContext) -> LuaResult<()> {
+    let globals = lua.globals();
+
+    let object_state = lua.create_table()?;
+    globals.set("_object_state_store", object_state)?;
+
+    // set_object_state(object_id, key, value)
+    let set_fn = lua.create_function(|lua, (object_id, key, value): (String, String, LuaValue)| {
+        let store: LuaTable = lua.globals().get("_object_state_store")?;
+        let object_table: LuaTable = match store.get::<LuaTable>(object_id.as_str()) {
+            Ok(t) => t,
+            Err(_) => {
+                let t = lua.create_table()?;
+                store.set(object_id.as_str(), t.clone())?;
+                t
+            }
+        };
+        object_table.set(key, value)?;
+        Ok(())
+    })?;
+    globals.set("set_object_state", set_fn)?;
+
+    // get_object_state(object_id, key) -> value|nil
+    let get_fn = lua.create_function(|lua, (object_id, key): (String, String)| {
+        let store: LuaTable = lua.globals().get("_object_state_store")?;
+        match store.get::<LuaTable>(object_id.as_str()) {
+            Ok(object_table) => object_table.get::<LuaValue>(key),
+            Err(_) => Ok(LuaValue::Nil),
+        }
+    })?;
+    globals.set("get_object_state", get_fn)?;
+
+    // get_all_object_state(object_id) -> table|nil
+    let get_all_fn = lua.create_function(|lua, object_id: String| {
+        let store: LuaTable = lua.globals().get("_object_state_store")?;
+        store.get::<LuaValue>(object_id.as_str())
+    })?;
+    globals.set("get_all_object_state", get_all_fn)?;
+
+    // clear_object_state(object_id)
+    let clear_fn = lua.create_function(|lua, object_id: String| {
+        let store: LuaTable = lua.globals().get("_object_state_store")?;
+        store.set(object_id.as_str(), LuaValue::Nil)?;
+        Ok(())
+    })?;
+    globals.set("clear_object_state", clear_fn)?;
+
+    Ok(())
+}
+
+fn register_timer_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
+    let globals = lua.globals();
+
+    // Timer registry: maps timer ID → AbortHandle for cancellation
+    let timer_registry: Arc<Mutex<HashMap<String, tokio::task::AbortHandle>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+
+    // We need a Tokio runtime handle to spawn async tasks from the sync Lua thread.
+    // Use a Handle that was captured before entering the blocking thread.
+    // IMPORTANT: We need to get the Tokio handle. Since the Lua thread is spawned
+    // from within a Tokio context, we can capture the handle before spawning.
+    // However, the Lua thread runs via std::thread::spawn (not tokio::spawn),
+    // so we need to pass a runtime handle through EfunContext.
+    //
+    // For now, we'll create a small dedicated runtime for timers.
+    let timer_rt = Arc::new(
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_time()
+            .build()
+            .expect("Failed to create timer runtime")
+    );
+
+    // schedule_timer(id, delay_seconds) — one-shot timer
+    if let Some(tx) = &ctx.cmd_tx {
+        let tx = tx.clone();
+        let registry = timer_registry.clone();
+        let rt = timer_rt.clone();
+        let schedule_fn = lua.create_function(move |_, (id, delay): (String, f64)| {
+            let tx = tx.clone();
+            let id_clone = id.clone();
+            let registry_inner = registry.clone();
+
+            let handle = rt.spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs_f64(delay)).await;
+                let _ = tx.send(LuaCommand::TimerFired { id: id_clone.clone() });
+                // Clean up from registry after firing
+                if let Ok(mut reg) = registry_inner.lock() {
+                    reg.remove(&id_clone);
+                }
+            });
+
+            if let Ok(mut reg) = registry.lock() {
+                reg.insert(id, handle.abort_handle());
+            }
+            Ok(())
+        })?;
+        globals.set("schedule_timer", schedule_fn)?;
+    }
+
+    // schedule_repeating(id, interval_seconds) — repeating timer
+    if let Some(tx) = &ctx.cmd_tx {
+        let tx = tx.clone();
+        let registry = timer_registry.clone();
+        let rt = timer_rt.clone();
+        let schedule_fn = lua.create_function(move |_, (id, interval): (String, f64)| {
+            let tx = tx.clone();
+            let id_clone = id.clone();
+
+            let handle = rt.spawn(async move {
+                let mut ticker = tokio::time::interval(std::time::Duration::from_secs_f64(interval));
+                ticker.tick().await; // first tick fires immediately, skip it
+                loop {
+                    ticker.tick().await;
+                    if tx.send(LuaCommand::TimerFired { id: id_clone.clone() }).is_err() {
+                        break; // channel closed
+                    }
+                }
+            });
+
+            if let Ok(mut reg) = registry.lock() {
+                // Cancel any existing timer with the same ID
+                if let Some(old) = reg.remove(&id) {
+                    old.abort();
+                }
+                reg.insert(id, handle.abort_handle());
+            }
+            Ok(())
+        })?;
+        globals.set("schedule_repeating", schedule_fn)?;
+    }
+
+    // cancel_timer(id) — cancel a scheduled timer
+    {
+        let registry = timer_registry.clone();
+        let cancel_fn = lua.create_function(move |_, id: String| {
+            if let Ok(mut reg) = registry.lock() {
+                if let Some(handle) = reg.remove(&id) {
+                    handle.abort();
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            } else {
+                Ok(false)
+            }
+        })?;
+        globals.set("cancel_timer", cancel_fn)?;
     }
 
     Ok(())

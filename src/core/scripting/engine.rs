@@ -19,6 +19,8 @@ pub enum LuaCommand {
     OnGmcp { session_id: String, package: String, data: serde_json::Value },
     /// Admin: reload a Lua module
     Reload { module_name: String },
+    /// A scheduled timer has fired
+    TimerFired { id: String },
     /// Shut down the Lua VM
     Shutdown,
 }
@@ -40,6 +42,9 @@ impl ScriptEngine {
         mut cmd_rx: mpsc::UnboundedReceiver<LuaCommand>,
     ) -> Result<Self> {
         let mudlib_str = mudlib_path.to_string_lossy().to_string();
+        let game_path = PathBuf::from(
+            ctx.server_config.game.game_path.as_deref().unwrap_or("./game")
+        );
 
         // Clone logger and session_handler before moving ctx into the thread
         let game_logger = ctx.game_logger.clone();
@@ -55,7 +60,8 @@ impl ScriptEngine {
                 return;
             }
 
-            // Set package.path so require() finds modules relative to the mudlib directory.
+            // Set package.path so require() finds modules relative to the mudlib
+            // and game directories. Game path comes first so game files shadow mudlib.
             let mudlib_canon = mudlib_path
                 .canonicalize()
                 .unwrap_or_else(|_| mudlib_path.clone());
@@ -63,8 +69,19 @@ impl ScriptEngine {
             if mudlib_pkg_path.starts_with("//?/") {
                 mudlib_pkg_path = mudlib_pkg_path[4..].to_string();
             }
+
+            // Build game path prefix (prepended first = highest priority)
+            let game_canon = game_path
+                .canonicalize()
+                .unwrap_or_else(|_| game_path.clone());
+            let mut game_pkg_path = game_canon.to_string_lossy().replace('\\', "/");
+            if game_pkg_path.starts_with("//?/") {
+                game_pkg_path = game_pkg_path[4..].to_string();
+            }
+
             let new_path = format!(
-                "{mudlib}/?.lua;{mudlib}/?/init.lua",
+                "{game}/?.lua;{game}/?/init.lua;{mudlib}/?.lua;{mudlib}/?/init.lua",
+                game = game_pkg_path,
                 mudlib = mudlib_pkg_path
             );
             tracing::debug!("Lua package.path prefix: {}", new_path);
@@ -94,6 +111,25 @@ impl ScriptEngine {
                 Err(e) => {
                     tracing::warn!("No mudlib init.lua found at {}: {}", init_path.display(), e);
                     tracing::warn!("Running with empty mudlib — define on_connect, on_input, on_disconnect globally.");
+                }
+            }
+
+            // Load the game layer entry point (if present)
+            let game_init_path = game_path.join("init.lua");
+            match std::fs::read_to_string(&game_init_path) {
+                Ok(code) => {
+                    if let Err(e) = lua.load(code.as_str())
+                        .set_name("game/init.lua")
+                        .exec()
+                    {
+                        tracing::error!("Failed to load game/init.lua: {}", e);
+                        log_lua_error(&game_logger, &session_handler_for_log, "game/init.lua", &e, None);
+                    } else {
+                        tracing::info!("Game layer loaded from {}", game_init_path.display());
+                    }
+                }
+                Err(_) => {
+                    tracing::info!("No game/init.lua found — running without game layer");
                 }
             }
 
@@ -127,6 +163,9 @@ impl ScriptEngine {
                             }
                             LuaCommand::Reload { module_name } => {
                                 hot_reload(&lua, &module_name, &mudlib_str);
+                            }
+                            LuaCommand::TimerFired { id } => {
+                                dispatch_event(&lua, "on_timer", &[id], &game_logger, &session_handler_for_log);
                             }
                             LuaCommand::Shutdown => {
                                 tracing::info!("Lua engine shutting down");

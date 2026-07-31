@@ -20,6 +20,8 @@ pub trait CharacterStore: Send + Sync {
     fn find_by_account(&self, account_id: i64) -> Result<Vec<Character>>;
     fn find_by_name(&self, name: &str) -> Result<Option<Character>>;
     fn delete(&self, id: i64) -> Result<()>;
+    fn save_data(&self, id: i64, data: &str) -> Result<()>;
+    fn load_data(&self, id: i64) -> Result<Option<String>>;
 }
 
 /// Trait abstraction over any role/permission store backend.

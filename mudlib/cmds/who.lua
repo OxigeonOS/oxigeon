@@ -33,7 +33,7 @@ function M.execute(session_id, args_str, args)
         end
     end
     send(session_id, "Total connections: " .. total .. "\r\n")
-    send_prompt(session_id, "\r\n> ")
+
 end
 
 return M

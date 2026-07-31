@@ -42,7 +42,7 @@ function M.execute(session_id, args_str, args)
         entries = journal_read(count, level)
     else
         send(session_id, "\r\njournald not available.\r\n")
-        send_prompt(session_id, "> ")
+    
         return
     end
 
@@ -70,7 +70,7 @@ function M.execute(session_id, args_str, args)
         end
     end
 
-    send_prompt(session_id, "\r\n> ")
+
 end
 
 return M

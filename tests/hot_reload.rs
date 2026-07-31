@@ -50,6 +50,9 @@ fn make_efun_context(
         game: GameConfig {
             name: "TestMUD".to_string(),
             mudlib_path: mudlib_path.to_string_lossy().to_string(),
+            game_path: Some(mudlib_path.join("game").to_string_lossy().to_string()),
+            command_paths: None,
+            start_room: None,
         },
         sessions: SessionsConfig {
             multisession_mode: MultisessionMode::Single,

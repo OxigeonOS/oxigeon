@@ -15,7 +15,7 @@ function M.execute(session_id, args_str, args)
         send(session_id, "\r\nUsage: verify <path>\r\n")
         send(session_id, "Example: verify cmds/who.lua\r\n")
         send(session_id, "         verify login.lua\r\n")
-        send_prompt(session_id, "> ")
+
         return
     end
 
@@ -34,7 +34,7 @@ function M.execute(session_id, args_str, args)
         end
     end
 
-    send_prompt(session_id, "\r\n> ")
+
 end
 
 return M

@@ -1,0 +1,159 @@
+-- game/lib/room.lua — Room class
+-- Inherits from Object. Adds exits, contents, actions, items, and appearance.
+-- Properties (short, long, smell, sound) support the lfun pattern via Object.resolve().
+
+local Object = require('lib.object')
+
+local Room = setmetatable({}, { __index = Object })
+Room.__index = Room
+
+function Room:new(data)
+    -- Initialize base Object fields
+    local obj = Object.new(self, data)
+
+    -- Room-specific fields
+    obj.long        = data.long or data.description or "You are in a room."
+    obj.light_level = data.light_level or 2
+    obj.smell       = data.smell
+    obj.sound       = data.sound
+    obj.exits       = data.exits or {}
+    obj.contents    = data.contents or {}
+    obj.actions     = data.actions or {}   -- { verb = { func = fn, hint = "..." }, ... }
+    obj.items       = data.items or {}     -- { keyword = description, ... }
+
+    return obj
+end
+
+--- Render the full room appearance for a player.
+-- All text properties are resolved via Object.resolve(), supporting both
+-- static strings and dynamic lfun-style functions.
+function Room:get_appearance(session_id)
+    local parts = {}
+    local resolve = Object.resolve
+
+    -- Title (resolved — can be dynamic)
+    parts[#parts + 1] = resolve(self.short, self)
+    -- Long description (resolved — can be dynamic)
+    parts[#parts + 1] = resolve(self.long, self)
+
+    -- Obvious exits
+    local exit_list = {}
+    for dir, _ in pairs(self.exits) do
+        exit_list[#exit_list + 1] = dir
+    end
+    if #exit_list > 0 then
+        parts[#parts + 1] = "Obvious exits: " .. table.concat(exit_list, ", ")
+    else
+        parts[#parts + 1] = "Obvious exits: none"
+    end
+
+    -- Smell and sound (resolved — can be dynamic)
+    local smell = resolve(self.smell, self)
+    if smell then
+        parts[#parts + 1] = "Smell: " .. smell
+    end
+    local sound = resolve(self.sound, self)
+    if sound then
+        parts[#parts + 1] = "Sound: " .. sound
+    end
+
+    -- Action hints (things the player can try)
+    local hints = self:get_action_hints()
+    if #hints > 0 then
+        parts[#parts + 1] = "You could try: " .. table.concat(hints, ", ")
+    end
+
+    -- Other players present
+    local my_session = get_session(session_id)
+    local my_char_id = my_session and my_session.character_id or nil
+
+    local chars_here = {}
+    for _, char_id in ipairs(self.contents) do
+        if char_id ~= my_char_id then
+            local char_data = get_character(char_id)
+            if char_data then
+                chars_here[#chars_here + 1] = char_data.name .. " is here."
+            end
+        end
+    end
+    if #chars_here > 0 then
+        parts[#parts + 1] = table.concat(chars_here, "\r\n")
+    end
+
+    return table.concat(parts, "\r\n") .. "\r\n"
+end
+
+-- ─── Character contents ──────────────────────────────────────────────────────
+
+function Room:add_character(char_id)
+    for _, id in ipairs(self.contents) do
+        if id == char_id then return end
+    end
+    self.contents[#self.contents + 1] = char_id
+end
+
+function Room:remove_character(char_id)
+    for i, id in ipairs(self.contents) do
+        if id == char_id then
+            table.remove(self.contents, i)
+            break
+        end
+    end
+end
+
+function Room:get_characters()
+    local copy = {}
+    for _, id in ipairs(self.contents) do
+        copy[#copy + 1] = id
+    end
+    return copy
+end
+
+-- ─── Exits ───────────────────────────────────────────────────────────────────
+
+function Room:has_exit(direction)
+    return self.exits[direction] ~= nil
+end
+
+function Room:get_exit(direction)
+    return self.exits[direction]
+end
+
+-- ─── Actions (room-scoped commands) ──────────────────────────────────────────
+
+--- Add a room-scoped command action.
+function Room:add_action(verb, func, hint)
+    self.actions[verb] = { func = func, hint = hint }
+end
+
+--- Get the action table for a verb, or nil.
+function Room:get_action(verb)
+    return self.actions[verb]
+end
+
+--- Get an array of hint strings for all actions that have hints.
+function Room:get_action_hints()
+    local hints = {}
+    for verb, action in pairs(self.actions) do
+        if action.hint then
+            hints[#hints + 1] = action.hint
+        else
+            hints[#hints + 1] = verb
+        end
+    end
+    return hints
+end
+
+-- ─── Items (examinable objects) ──────────────────────────────────────────────
+
+--- Add an examinable item.
+function Room:add_item(keyword, description)
+    self.items[keyword] = description
+end
+
+--- Get an item description by keyword, or nil.
+function Room:get_item(keyword)
+    return self.items[keyword]
+end
+
+return Room

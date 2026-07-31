@@ -1,0 +1,2 @@
+-- SQLite ALTER TABLE DROP COLUMN requires 3.35.0+
+-- For dev, recreating the table is acceptable but not needed.

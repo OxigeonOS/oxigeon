@@ -18,6 +18,7 @@ diesel::table! {
         name -> Text,
         created_at -> Text,
         last_played -> Nullable<Text>,
+        data -> Text,
     }
 }
 
