@@ -135,6 +135,16 @@ function M.enter_game(session_id, account)
                 if load_ok and player then
                     -- Link the Player to this session
                     player.session_id = session_id
+
+                    -- Restore saved channel subscriptions
+                    if DAEMON.channel and player.channels then
+                        local ch_ok, ch_err = pcall(DAEMON.channel.restore_channels,
+                            char.id, player.channels)
+                        if not ch_ok then
+                            log("error", "Failed to restore channels for char "
+                                .. tostring(char.id) .. ": " .. tostring(ch_err))
+                        end
+                    end
                 else
                     log("error", "Failed to load Player for char "
                         .. tostring(char.id) .. ": " .. tostring(player))

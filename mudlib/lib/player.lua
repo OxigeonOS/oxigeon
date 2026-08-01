@@ -30,6 +30,7 @@ Player.SAVE_FIELDS = {
     "race",
     "gender",
     "tags",
+    "channels",        -- List of channel names the player is subscribed to
     "custom",          -- Open-ended table for game-specific data
     "page_length",     -- Lines per page for pager (0 = disabled, nil = default 40)
 }
@@ -81,6 +82,7 @@ function Player:from_save(char_id, char_info, saved)
     data.quest_flags = {}
     data.skills      = {}
     data.custom      = {}
+    data.channels    = {}
     data.gold        = Player.DEFAULTS.gold
     data.xp          = Player.DEFAULTS.xp
 
@@ -120,6 +122,11 @@ function Player:from_save(char_id, char_info, saved)
             data.custom[k] = v
         end
     end
+    if saved.channels then
+        for i, v in ipairs(saved.channels) do
+            data.channels[i] = v
+        end
+    end
     if saved.gold then data.gold = saved.gold end
     if saved.xp then data.xp = saved.xp end
 
@@ -149,6 +156,7 @@ function Player:from_save(char_id, char_info, saved)
     obj.xp          = data.xp
     obj.quest_flags = data.quest_flags
     obj.custom      = data.custom
+    obj.channels    = data.channels
     obj.page_length = saved.page_length  -- nil = default 40
 
     -- Wire up death hook to emit event

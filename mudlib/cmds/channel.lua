@@ -27,9 +27,19 @@ function M.execute(session_id, args_str, args)
             player:send("Join which channel?")
             return
         end
-        local ok, reason = DAEMON.channel.join(args[2]:lower(), player.char_id)
+        local ch_name = args[2]:lower()
+        local ok, reason = DAEMON.channel.join(ch_name, player.char_id)
         if ok then
-            player:send("Joined channel: " .. args[2]:lower())
+            -- Persist to player's saved channel list
+            player.channels = player.channels or {}
+            local already = false
+            for _, c in ipairs(player.channels) do
+                if c == ch_name then already = true; break end
+            end
+            if not already then
+                table.insert(player.channels, ch_name)
+            end
+            player:send("Joined channel: " .. ch_name)
         else
             player:send(reason or ("Could not join channel '" .. args[2] .. "'."))
         end
@@ -38,9 +48,19 @@ function M.execute(session_id, args_str, args)
             player:send("Leave which channel?")
             return
         end
-        local ok, reason = DAEMON.channel.leave(args[2]:lower(), player.char_id)
+        local ch_name = args[2]:lower()
+        local ok, reason = DAEMON.channel.leave(ch_name, player.char_id)
         if ok then
-            player:send("Left channel: " .. args[2]:lower())
+            -- Remove from player's saved channel list
+            if player.channels then
+                for i, c in ipairs(player.channels) do
+                    if c == ch_name then
+                        table.remove(player.channels, i)
+                        break
+                    end
+                end
+            end
+            player:send("Left channel: " .. ch_name)
         else
             player:send(reason or ("Could not leave channel '" .. args[2] .. "'."))
         end

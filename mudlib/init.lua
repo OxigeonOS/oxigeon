@@ -93,6 +93,15 @@ function on_disconnect(session_id)
     if session and session.character_id then
         local char_id = session.character_id
 
+        -- Remove from channel subscriber lists (in-memory only; saved list is preserved)
+        if DAEMON and DAEMON.channel then
+            local ok, err = pcall(DAEMON.channel.leave_all, char_id)
+            if not ok then
+                log("error", "Failed to clean up channel subscriptions for "
+                    .. tostring(char_id) .. ": " .. tostring(err))
+            end
+        end
+
         -- Save persisted character data before cleanup
         if DAEMON and DAEMON.character then
             local ok, err = pcall(DAEMON.character.unload, char_id)

@@ -106,6 +106,30 @@ function M.is_subscribed(name, char_id)
     return chan.subscribers[char_id] == true
 end
 
+--- Re-subscribe a player to their saved channels on login.
+-- @param char_id number  The character ID
+-- @param channel_list table  List of channel name strings
+function M.restore_channels(char_id, channel_list)
+    if not channel_list then return end
+    for _, name in ipairs(channel_list) do
+        local chan = _channels[name]
+        if chan then
+            chan.subscribers[char_id] = true
+        else
+            log("debug", "channel_d: saved channel '" .. tostring(name)
+                .. "' no longer exists, skipping for char " .. tostring(char_id))
+        end
+    end
+end
+
+--- Remove a character from all channels (e.g. on disconnect).
+-- @param char_id number  The character ID
+function M.leave_all(char_id)
+    for _, chan in pairs(_channels) do
+        chan.subscribers[char_id] = nil
+    end
+end
+
 -- Initialize default channel
 M.create("ooc", {color = "{cyan}", prefix = "[OOC]"})
 
