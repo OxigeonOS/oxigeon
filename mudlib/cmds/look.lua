@@ -9,9 +9,15 @@ M.permission = nil
 local Object = require('lib.object')
 
 function M.execute(session_id, args_str, args)
+    local player = get_player(session_id)
+    if not player then
+        send(session_id, "You are nowhere. This is concerning.\r\n")
+        return
+    end
+
     local session = get_session(session_id)
     if not session or not session.character_id then
-        send(session_id, "You are nowhere. This is concerning.\r\n")
+        player:send("{red}You are nowhere. This is concerning.{/}")
         return
     end
 
@@ -19,13 +25,14 @@ function M.execute(session_id, args_str, args)
     local room = DAEMON.world.get_character_room_obj(char_id)
 
     if not room then
-        send(session_id, "You are nowhere. This is concerning.\r\n")
+        player:send("{red}You are nowhere. This is concerning.{/}")
         return
     end
 
     -- If no arguments, show the full room
     if not args[1] or args_str == "" then
-        send(session_id, room:get_appearance(session_id))
+        -- room:get_appearance returns pre-formatted text with color tags
+        player:send_raw(room:get_appearance(session_id))
         return
     end
 
@@ -36,9 +43,9 @@ function M.execute(session_id, args_str, args)
         -- Resolve lfun: item descriptions can be strings or functions
         local resolved = Object.resolve(item_desc, room)
         if resolved then
-            send(session_id, resolved .. "\r\n")
+            player:send(resolved)
         else
-            send(session_id, "You see nothing special.\r\n")
+            player:send("You see nothing special.")
         end
         return
     end
@@ -50,15 +57,15 @@ function M.execute(session_id, args_str, args)
             -- Try to get the Player object for a richer examine
             local player_obj = DAEMON.character.get(cid)
             if player_obj and player_obj.examine then
-                send(session_id, player_obj:examine() .. "\r\n")
+                player:send(player_obj:examine())
             else
-                send(session_id, char_data.name .. " is here.\r\n")
+                player:send(char_data.name .. " is here.")
             end
             return
         end
     end
 
-    send(session_id, "You don't see that here.\r\n")
+    player:send("You don't see that here.")
 end
 
 return M

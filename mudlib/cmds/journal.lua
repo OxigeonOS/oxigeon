@@ -20,6 +20,9 @@ local LEVEL_ALIASES = {
 }
 
 function M.execute(session_id, args_str, args)
+    local player = get_player(session_id)
+    if not player then return end
+
     -- Parse args: "journal [count] [level]" or "journal [level] [count]"
     local count = 20
     local level = nil
@@ -41,20 +44,19 @@ function M.execute(session_id, args_str, args)
     elseif type(journal_read) == "function" then
         entries = journal_read(count, level)
     else
-        send(session_id, "\r\njournal_d not available.\r\n")
-    
+        player:send("{red}journal_d not available.{/}")
         return
     end
 
-    send(session_id, "\r\n")
+    local lines = {}
     if #entries == 0 then
         local filter_str = level and (" [" .. level .. "]") or ""
-        send(session_id, "No journal entries" .. filter_str .. ".\r\n")
+        table.insert(lines, "{yellow}No journal entries" .. filter_str .. ".{/}")
     else
-        local header = string.format("=== Journal (last %d", #entries)
+        local header = string.format("{cyan}═══ Journal (last %d", #entries)
         if level then header = header .. ", level=" .. level end
-        header = header .. ") ===\r\n"
-        send(session_id, header)
+        header = header .. ") ═══{/}"
+        table.insert(lines, header)
 
         for _, raw in ipairs(entries) do
             local line
@@ -66,11 +68,11 @@ function M.execute(session_id, args_str, args)
                 local msg = raw:match('"msg"%s*:%s*"([^"]*)"') or raw
                 line = "[" .. lvl:upper():sub(1,5) .. "] " .. msg
             end
-            send(session_id, "  " .. line .. "\r\n")
+            table.insert(lines, "  " .. line)
         end
     end
 
-
+    player:send(table.concat(lines, "\r\n"))
 end
 
 return M

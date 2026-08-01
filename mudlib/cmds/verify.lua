@@ -11,30 +11,34 @@ M.summary    = "Compile-check a Lua file without executing it. Usage: verify <pa
 M.permission = "efun.verify"
 
 function M.execute(session_id, args_str, args)
-    if not args[1] then
-        send(session_id, "\r\nUsage: verify <path>\r\n")
-        send(session_id, "Example: verify cmds/who.lua\r\n")
-        send(session_id, "         verify login.lua\r\n")
+    local player = get_player(session_id)
+    if not player then return end
 
+    if not args[1] then
+        local lines = {}
+        table.insert(lines, "Usage: verify <path>")
+        table.insert(lines, "Example: verify cmds/who.lua")
+        table.insert(lines, "         verify login.lua")
+        player:send(table.concat(lines, "\r\n"))
         return
     end
 
     local path = args_str:match("^%S+")  -- first token = path
-    send(session_id, "\r\nVerifying: " .. path .. "\r\n")
+    player:send("{cyan}Verifying: {yellow}" .. path .. "{/}")
 
     local ok, err = verify_file(path)
 
     if ok then
-        send(session_id, "\r\n  \u2713 File compiles successfully.\r\n")
+        player:send("  {green}✓ File compiles successfully.{/}")
     else
-        send(session_id, "\r\n  \u2717 Compile error:\r\n")
+        local lines = {}
+        table.insert(lines, "  {red}✗ Compile error:{/}")
         -- Indent each line of the error
         for line in (err or "unknown error"):gmatch("[^\n]+") do
-            send(session_id, "      " .. line .. "\r\n")
+            table.insert(lines, "      " .. line)
         end
+        player:send(table.concat(lines, "\r\n"))
     end
-
-
 end
 
 return M

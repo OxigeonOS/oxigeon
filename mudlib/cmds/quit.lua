@@ -9,7 +9,10 @@ M.summary    = "Disconnect from the game."
 M.permission = nil  -- any playing session
 
 function M.execute(session_id, args_str, args)
-    send(session_id, "\r\nFarewell! Until next time.\r\n")
+    local player = get_player(session_id)
+    if player then
+        player:send("{cyan}Farewell! Until next time.{/}")
+    end
     disconnect(session_id)
 end
 

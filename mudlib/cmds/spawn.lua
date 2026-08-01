@@ -10,7 +10,7 @@ function M.execute(session_id, args_str, args)
     if not player then return end
 
     if not args or #args == 0 then
-        player:send("Usage: spawn <item_template_id>")
+        player:send("{cyan}Usage: spawn <item_template_id>{/}")
         return
     end
 
@@ -18,14 +18,14 @@ function M.execute(session_id, args_str, args)
     
     local ok, item = pcall(DAEMON.items.get, template_id)
     if not ok or not item then
-        player:send("Unknown item template '" .. template_id .. "'.")
+        player:send("{red}Unknown item template '{yellow}" .. template_id .. "{red}'.{/}")
         return
     end
     
     player:add_item(template_id)
     
     local item_name = (type(item) == "table" and (item.short or item.name)) or template_id
-    player:send("Spawned " .. item_name .. " into your inventory.")
+    player:send("{green}Spawned {yellow}" .. item_name .. "{green} into your inventory.{/}")
     
     if DAEMON and DAEMON.audit then
         pcall(DAEMON.audit.log, "cmd.spawn", true, "spawned " .. template_id)

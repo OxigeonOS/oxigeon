@@ -45,16 +45,21 @@ end
 -- ─── Execute ─────────────────────────────────────────────────────────────────
 
 function M.execute(session_id, args_str, args)
+    local player = get_player(session_id)
+    if not player then return end
+
     -- Must be in OLC mode
     if not DAEMON.olc or not DAEMON.olc.is_active(session_id) then
-        send(session_id, "\r\nYou must enter OLC mode first. Use: olc <area_name>\r\n")
+        player:send("{red}You must enter OLC mode first. Use: olc <area_name>{/}")
         return
     end
 
     if #args < 2 then
-        send(session_id, "\r\nUsage: dig <direction> <room_id>\r\n")
-        send(session_id, "Example: dig east wizard_workshop.laboratory\r\n")
-        send(session_id, "Example: dig n store_room  (area auto-prefixed)\r\n")
+        local lines = {}
+        table.insert(lines, "{cyan}Usage: dig <direction> <room_id>{/}")
+        table.insert(lines, "Example: dig east wizard_workshop.laboratory")
+        table.insert(lines, "Example: dig n store_room  (area auto-prefixed)")
+        player:send(table.concat(lines, "\r\n"))
         return
     end
 
@@ -64,7 +69,7 @@ function M.execute(session_id, args_str, args)
     -- Expand shorthand directions
     direction = EXPAND[direction] or direction
     if not REVERSE[direction] then
-        send(session_id, "\r\nInvalid direction: " .. direction .. "\r\n")
+        player:send("{red}Invalid direction: {yellow}" .. direction .. "{/}")
         return
     end
 
@@ -83,35 +88,30 @@ function M.execute(session_id, args_str, args)
 
     local current_room_id = DAEMON.world.get_character_room(char_id)
     if not current_room_id then
-        send(session_id, "\r\nYou are not in any room.\r\n")
+        player:send("{red}You are not in any room.{/}")
         return
     end
     local current_room = DAEMON.world.get_room(current_room_id)
     if not current_room then
-        send(session_id, "\r\nCannot find your current room.\r\n")
+        player:send("{red}Cannot find your current room.{/}")
         return
     end
 
     -- Check if exit already exists
     if current_room.exits[direction] then
-        send(session_id, "\r\nAn exit " .. direction .. " already exists"
-            .. " (to " .. current_room.exits[direction] .. ").\r\n")
+        player:send("{red}An exit {yellow}" .. direction .. "{red} already exists (to {yellow}" .. current_room.exits[direction] .. "{red}).{/}")
         return
     end
 
     -- Split target room_id for codegen paths
     local target_area, target_room_name = split_room_id(room_id)
     if not target_area or not target_room_name then
-        send(session_id, "\r\nInvalid room ID format. Expected: area.room_name\r\n")
+        player:send("{red}Invalid room ID format. Expected: area.room_name{/}")
         return
     end
 
     -- Get builder name
-    local builder_name = "Unknown"
-    if DAEMON.character then
-        local ok, player = pcall(DAEMON.character.get, char_id)
-        if ok and player then builder_name = player.name or "Unknown" end
-    end
+    local builder_name = player.name or "Unknown"
 
     local target_room = DAEMON.world.get_room(room_id)
     local created_new = false
@@ -143,12 +143,12 @@ function M.execute(session_id, args_str, args)
             if DAEMON.journal then
                 DAEMON.journal.error("DIG: Failed to create room: " .. tostring(err))
             end
-            send(session_id, "\r\n[OLC] Error creating room. See logs.\r\n")
+            player:send("{red}[OLC] Error creating room. See logs.{/}")
             return
         end
 
         created_new = true
-        send(session_id, "\r\n[OLC] Created room: " .. room_id .. "\r\n")
+        player:send("{green}[OLC] Created room: {yellow}" .. room_id .. "{/}")
     else
         -- ── Existing room: add return exit ───────────────────────────────
         if not target_room.exits[reverse_dir] then
@@ -175,15 +175,16 @@ function M.execute(session_id, args_str, args)
     end
 
     -- ── Report ───────────────────────────────────────────────────────────
-    send(session_id, "[OLC] Exit added: " .. direction .. " → " .. room_id .. "\r\n")
+    local out_lines = {}
+    table.insert(out_lines, "{green}[OLC] Exit added:{/} {yellow}" .. direction .. "{/} → {yellow}" .. room_id .. "{/}")
     if reverse_dir then
-        send(session_id, "[OLC] Exit added: " .. reverse_dir .. " → "
-            .. current_room_id .. " (return exit)\r\n")
+        table.insert(out_lines, "{green}[OLC] Exit added:{/} {yellow}" .. reverse_dir .. "{/} → {yellow}" .. current_room_id .. "{/} (return exit)")
     end
     if created_new then
         local path = "areas/" .. target_area .. "/rooms/" .. target_room_name .. ".lua"
-        send(session_id, "[OLC] File written: game/" .. path .. "\r\n")
+        table.insert(out_lines, "{green}[OLC] File written:{/} game/" .. path)
     end
+    player:send(table.concat(out_lines, "\r\n"))
 end
 
 return M

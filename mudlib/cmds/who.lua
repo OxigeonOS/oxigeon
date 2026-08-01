@@ -9,6 +9,9 @@ M.summary    = "Show who is currently connected."
 M.permission = nil
 
 function M.execute(session_id, args_str, args)
+    local player = get_player(session_id)
+    if not player then return end
+
     local sessions = all_sessions()
     local playing = {}
     local total = #sessions
@@ -23,17 +26,18 @@ function M.execute(session_id, args_str, args)
         end
     end
 
-    send(session_id, "\r\n")
+    local lines = {}
     if #playing == 0 then
-        send(session_id, "No players are currently in the game.\r\n")
+        table.insert(lines, "No players are currently in the game.")
     else
-        send(session_id, "Players in the game (" .. #playing .. "):\r\n")
+        table.insert(lines, "{cyan}Players in the game{/} ({yellow}" .. #playing .. "{/}):")
         for _, name in ipairs(playing) do
-            send(session_id, "  " .. name .. "\r\n")
+            table.insert(lines, "  " .. name)
         end
     end
-    send(session_id, "Total connections: " .. total .. "\r\n")
+    table.insert(lines, "{cyan}Total connections:{/} {yellow}" .. total .. "{/}")
 
+    player:send(table.concat(lines, "\r\n"))
 end
 
 return M

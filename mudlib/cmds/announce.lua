@@ -11,10 +11,14 @@ M.summary    = "Send a server-wide announcement to all players. Usage: announce 
 M.permission = "daemon.announce"
 
 function M.execute(session_id, args_str, args)
+    local player = get_player(session_id)
+    if not player then return end
+
     if not args_str or args_str:match("^%s*$") then
-        send(session_id, "\r\nUsage: announce <message>\r\n")
-        send(session_id, "Sends a message to every connected player.\r\n")
-    
+        local lines = {}
+        table.insert(lines, "Usage: announce <message>")
+        table.insert(lines, "Sends a message to every connected player.")
+        player:send(table.concat(lines, "\r\n"))
         return
     end
 
@@ -26,17 +30,17 @@ function M.execute(session_id, args_str, args)
         if char then sender_name = char.name end
     end
 
-    local msg = string.format("\r\n\27[1;36m[ANNOUNCEMENT from %s]\27[0m %s\r\n",
+    local msg = string.format("{cyan}[ANNOUNCEMENT from %s]{/} %s",
         sender_name, args_str)
 
     -- Use the broadcast efun to hit all sessions
     if type(broadcast) == "function" then
-        broadcast(msg)
+        broadcast(msg .. "\r\n")
     else
         -- Fallback: iterate manually
         if type(all_sessions) == "function" then
             for _, sid in ipairs(all_sessions()) do
-                send(sid, msg)
+                send(sid, msg .. "\r\n")
             end
         end
     end
@@ -51,7 +55,7 @@ function M.execute(session_id, args_str, args)
         DAEMON.audit.log("cmd.announce", true, sender_name .. ": " .. args_str:sub(1, 80))
     end
 
-
+    player:send("{green}Announcement sent.{/}")
 end
 
 return M

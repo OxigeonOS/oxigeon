@@ -10,7 +10,7 @@ function M.execute(session_id, args_str, args)
     if not player then return end
 
     if not args or #args < 2 then
-        player:send("Usage: force <player> <command string>")
+        player:send("{cyan}Usage: force <player> <command string>{/}")
         return
     end
 
@@ -28,12 +28,12 @@ function M.execute(session_id, args_str, args)
     end
 
     if not target_player then
-        player:send("No player named '" .. target_name .. "' is online.")
+        player:send("{red}No player named '{yellow}" .. target_name .. "{red}' is online.{/}")
         return
     end
 
-    player:send("You force " .. target_player.name .. " to: " .. cmd_str)
-    send(target_sid, player.name .. " forces you to: " .. cmd_str .. "\r\n")
+    player:send("{green}You force {yellow}" .. target_player.name .. "{green} to: {/}" .. cmd_str)
+    send(target_sid, "{yellow}" .. player.name .. "{red} forces you to: {/}" .. cmd_str .. "\r\n")
 
     local ok, err = pcall(function()
         require('lib.commands').dispatch(target_sid, cmd_str)

@@ -37,19 +37,20 @@ local function format_duration(secs)
 end
 
 function M.execute(session_id, args_str, args)
+    local player = get_player(session_id)
+    if not player then return end
+
     local info = server_info()
     if not info then
-        send(session_id, "\r\nServer info unavailable.\r\n")
-
+        player:send("{red}Server info unavailable.{/}")
         return
     end
 
     local duration = format_duration(info.uptime_secs)
-    send(session_id, string.format(
-        "\r\n%s has been running for %s.\r\n(Started: %s)\r\n",
-        info.name, duration, info.started_at
-    ))
-
+    local lines = {}
+    table.insert(lines, string.format("{cyan}%s{/} has been running for {yellow}%s{/}.", info.name, duration))
+    table.insert(lines, string.format("(Started: {yellow}%s{/})", info.started_at))
+    player:send(table.concat(lines, "\r\n"))
 end
 
 return M

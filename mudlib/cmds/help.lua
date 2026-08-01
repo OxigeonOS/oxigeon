@@ -53,15 +53,20 @@ local COMMAND_LIST = [[
 ]]
 
 function M.execute(session_id, args_str, args)
+    local player = get_player(session_id)
+    if not player then return end
+
     if args[1] then
         -- Topic lookup — stub for now
         local topic = args_str:lower()
-        send(session_id, "\r\nHelp topic '" .. topic .. "' is not yet available.\r\n")
-        send(session_id, "Type 'help' for the command list.\r\n")
+        local lines = {}
+        table.insert(lines, "Help topic '" .. topic .. "' is not yet available.")
+        table.insert(lines, "Type 'help' for the command list.")
+        player:send(table.concat(lines, "\r\n"))
     else
-        send(session_id, COMMAND_LIST)
+        -- Remove leading/trailing newlines if any, then send
+        player:send(COMMAND_LIST:gsub("^%s+", ""):gsub("%s+$", ""))
     end
-
 end
 
 return M

@@ -11,33 +11,34 @@ M.summary     = "Set your custom prompt. Usage: prompt <template>"
 M.permission  = nil  -- Available to all players
 
 local HELP_TEXT = table.concat({
-    "",
-    "Usage: prompt <template>",
+    "{cyan}Usage:{/} prompt <template>",
     "       prompt reset      — Reset to default",
-    "       prompt             — Show current and help",
+    "       prompt            — Show current and help",
     "",
-    "Variables:",
+    "{yellow}Variables:{/}",
     "  %h  Current HP        %H  Max HP",
     "  %m  Current MP        %M  Max MP",
     "  %g  Gold              %x  XP",
     "  %l  Level             %n  Your name",
     "  %r  Current room      %%  Literal %",
     "",
-    "Examples:",
+    "{yellow}Examples:{/}",
     "  prompt %h/%H hp %m/%M mp >",
     "  prompt [%l] %n %h/%Hhp >",
-    "",
 }, "\r\n")
 
 function M.execute(session_id, args_str, args)
+    local player = get_player(session_id)
+    if not player then return end
+
     if not DAEMON or not DAEMON.prompt then
-        send(session_id, "\r\nPrompt system not available.\r\n")
+        player:send("{red}Prompt system not available.{/}")
         return
     end
 
     local session = get_session(session_id)
     if not session or not session.character_id then
-        send(session_id, "\r\nYou must be logged in.\r\n")
+        player:send("{red}You must be logged in.{/}")
         return
     end
 
@@ -46,15 +47,17 @@ function M.execute(session_id, args_str, args)
     -- No args: show current + help
     if not args[1] then
         local current = DAEMON.prompt.get_template(char_id) or "> "
-        send(session_id, "\r\nCurrent prompt: " .. current .. "\r\n")
-        send(session_id, HELP_TEXT)
+        local lines = {}
+        table.insert(lines, "{green}Current prompt:{/} " .. current)
+        table.insert(lines, HELP_TEXT)
+        player:send(table.concat(lines, "\r\n"))
         return
     end
 
     -- Reset
     if args[1]:lower() == "reset" then
         DAEMON.prompt.set_template(char_id, nil)
-        send(session_id, "\r\nPrompt reset to default.\r\n")
+        player:send("{green}Prompt reset to default.{/}")
         return
     end
 
@@ -66,7 +69,7 @@ function M.execute(session_id, args_str, args)
     end
 
     DAEMON.prompt.set_template(char_id, template)
-    send(session_id, "\r\nPrompt set to: " .. template .. "\r\n")
+    player:send("{green}Prompt set to:{/} " .. template)
 end
 
 return M

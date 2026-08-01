@@ -11,10 +11,14 @@ M.summary    = "Send an alert to all online staff. Usage: alert <message>"
 M.permission = "daemon.alert"
 
 function M.execute(session_id, args_str, args)
+    local player = get_player(session_id)
+    if not player then return end
+
     if not args_str or args_str:match("^%s*$") then
-        send(session_id, "\r\nUsage: alert <message>\r\n")
-        send(session_id, "Sends an alert to all online staff members.\r\n")
-    
+        local lines = {}
+        table.insert(lines, "Usage: alert <message>")
+        table.insert(lines, "Sends an alert to all online staff members.")
+        player:send(table.concat(lines, "\r\n"))
         return
     end
 
@@ -26,19 +30,19 @@ function M.execute(session_id, args_str, args)
         if char then sender_name = char.name end
     end
 
-    local msg = string.format("\r\n\27[33m[STAFF ALERT from %s]\27[0m %s\r\n",
+    local msg = string.format("{yellow}[STAFF ALERT from %s]{/} %s",
         sender_name, args_str)
 
     -- broadcast_to_perm sends to all sessions with the given permission
     local count = 0
     if type(broadcast_to_perm) == "function" then
-        count = broadcast_to_perm("daemon.alert", msg)
+        count = broadcast_to_perm("daemon.alert", msg .. "\r\n")
     else
         -- Fallback: iterate sessions manually
         if type(all_sessions) == "function" then
             for _, sid in ipairs(all_sessions()) do
                 if type(has_permission) == "function" and has_permission(sid, "daemon.alert") then
-                    send(sid, msg)
+                    send(sid, msg .. "\r\n")
                     count = count + 1
                 end
             end
@@ -50,9 +54,8 @@ function M.execute(session_id, args_str, args)
         DAEMON.journal.info(string.format("[alert] %s: %s", sender_name, args_str))
     end
 
-    send(session_id, string.format("\r\nAlert sent to %d staff member%s.\r\n",
+    player:send(string.format("{green}Alert sent to %d staff member%s.{/}",
         count, count == 1 and "" or "s"))
-
 end
 
 return M

@@ -11,17 +11,12 @@ M.summary = 'View what you are carrying.'
 
 function M.execute(session_id, args_str, args)
     local player = get_player(session_id)
-    if not player then
-        send(session_id, "\r\nYou need to be in the game to do that.\r\n")
-        return
-    end
+    if not player then return end
 
     if not player.inventory or #player.inventory == 0 then
-        send(session_id, "\r\nYou are not carrying anything.\r\n")
+        player:send("You are not carrying anything.")
         return
     end
-
-    send(session_id, "\r\nYou are carrying:\r\n")
 
     -- Count items for stacking display
     local counts = {}   -- template_id → count
@@ -43,6 +38,9 @@ function M.execute(session_id, args_str, args)
         end
     end
 
+    local lines = {}
+    table.insert(lines, "{cyan}You are carrying:{/}")
+
     for _, template_id in ipairs(order) do
         local count = counts[template_id]
         local display_name = template_id  -- fallback
@@ -59,11 +57,13 @@ function M.execute(session_id, args_str, args)
         end
 
         if count > 1 then
-            send(session_id, "  " .. display_name .. " (x" .. count .. ")\r\n")
+            table.insert(lines, "  " .. display_name .. " {yellow}(x" .. count .. "){/}")
         else
-            send(session_id, "  " .. display_name .. "\r\n")
+            table.insert(lines, "  " .. display_name)
         end
     end
+
+    player:send(table.concat(lines, "\r\n"))
 end
 
 return M

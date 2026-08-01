@@ -14,12 +14,12 @@ function M.execute(session_id, args_str, args)
     if DAEMON and DAEMON.character then
         local ok, err = pcall(DAEMON.character.save, player.char_id)
         if ok then
-            player:send("Character saved.")
+            player:send("{green}Character saved.{/}")
         else
-            player:send("Save failed: " .. tostring(err))
+            player:send("{red}Save failed:{/} " .. tostring(err))
         end
     else
-        player:send("Save system not available.")
+        player:send("{red}Save system not available.{/}")
     end
 end
 

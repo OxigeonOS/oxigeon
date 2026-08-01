@@ -26,34 +26,39 @@ local function format_entry(raw)
     local reason  = raw:match('"reason"%s*:%s*"([^"]*)"')
 
     local when = ts:match("T(.-)Z") or ts
-    local status = success == "true" and "\u{2713}" or "\u{2717}"
-    local who = char ~= "" and ("[" .. char .. "] ") or ""
-    local note = reason and (" — " .. reason) or ""
+    local status = success == "true" and "{green}✓{/}" or "{red}✗{/}"
+    local who = char ~= "" and ("[{cyan}" .. char .. "{/}] ") or ""
+    local note = reason and (" — {yellow}" .. reason .. "{/}") or ""
     return string.format("  %s %s %s%s%s", status, when, who, action, note)
 end
 
 function M.execute(session_id, args_str, args)
+    local player = get_player(session_id)
+    if not player then return end
+    
     local sub = args[1] and args[1]:lower() or nil
 
     -- ─── audit list ──────────────────────────────────────────────────────
     if sub == "list" then
-        send(session_id, "\r\n=== Audit Watch List ===\r\n")
+        local lines = {}
+        table.insert(lines, "{bold}=== Audit Watch List ==={/}")
         if not (DAEMON and DAEMON.audit) then
-            send(session_id, "  audit_d daemon not loaded.\r\n")
-        
+            table.insert(lines, "  {red}audit_d daemon not loaded.{/}")
+            player:send(table.concat(lines, "\r\n"))
             return
         end
         local wl = DAEMON.audit.watch_list()
         local count = 0
         for verb, cond in pairs(wl) do
-            send(session_id, string.format("  %-20s %s\r\n", verb, cond))
+            table.insert(lines, string.format("  {cyan}%-20s{/} %s", verb, cond))
             count = count + 1
         end
         if count == 0 then
-            send(session_id, "  (no commands being watched)\r\n")
+            table.insert(lines, "  (no commands being watched)")
         end
-        send(session_id, "\r\nType 'audit add <cmd> <success|fail|all>' to add.\r\n")
-    
+        table.insert(lines, "")
+        table.insert(lines, "Type 'audit add <cmd> <success|fail|all>' to add.")
+        player:send(table.concat(lines, "\r\n"))
         return
     end
 
@@ -61,58 +66,49 @@ function M.execute(session_id, args_str, args)
     if sub == "add" then
         -- Requires higher permission
         if type(has_permission) == "function" and not has_permission(session_id, MANAGE_PERM) then
-            send(session_id, "\r\nPermission denied. Requires: " .. MANAGE_PERM .. "\r\n")
-        
+            player:send("{red}Permission denied. Requires: " .. MANAGE_PERM .. "{/}")
             return
         end
         local verb = args[2]
         local cond = args[3] and args[3]:lower()
         if not verb or not cond then
-            send(session_id, "\r\nUsage: audit add <command> <success|fail|all>\r\n")
-        
+            player:send("Usage: audit add <command> <success|fail|all>")
             return
         end
         if not DAEMON or not DAEMON.audit then
-            send(session_id, "\r\naudit_d daemon not loaded.\r\n")
-        
+            player:send("{red}audit_d daemon not loaded.{/}")
             return
         end
         local ok, err = DAEMON.audit.watch(verb, cond)
         if ok then
-            send(session_id, string.format(
-                "\r\nNow auditing '%s' on: %s\r\n", verb, cond))
+            player:send(string.format("{green}Now auditing '{cyan}%s{green}' on: {yellow}%s{/}", verb, cond))
         else
-            send(session_id, "\r\nError: " .. (err or "unknown") .. "\r\n")
+            player:send("{red}Error: " .. (err or "unknown") .. "{/}")
         end
-    
         return
     end
 
     -- ─── audit rm <cmd> ──────────────────────────────────────────────────
     if sub == "rm" or sub == "remove" then
         if type(has_permission) == "function" and not has_permission(session_id, MANAGE_PERM) then
-            send(session_id, "\r\nPermission denied. Requires: " .. MANAGE_PERM .. "\r\n")
-        
+            player:send("{red}Permission denied. Requires: " .. MANAGE_PERM .. "{/}")
             return
         end
         local verb = args[2]
         if not verb then
-            send(session_id, "\r\nUsage: audit rm <command>\r\n")
-        
+            player:send("Usage: audit rm <command>")
             return
         end
         if not DAEMON or not DAEMON.audit then
-            send(session_id, "\r\naudit_d daemon not loaded.\r\n")
-        
+            player:send("{red}audit_d daemon not loaded.{/}")
             return
         end
         local removed = DAEMON.audit.unwatch(verb)
         if removed then
-            send(session_id, "\r\nNo longer auditing '" .. verb .. "'.\r\n")
+            player:send("{green}No longer auditing '{cyan}" .. verb .. "{green}'.{/}")
         else
-            send(session_id, "\r\n'" .. verb .. "' was not in the watch list.\r\n")
+            player:send("{yellow}'" .. verb .. "' was not in the watch list.{/}")
         end
-    
         return
     end
 
@@ -131,21 +127,22 @@ function M.execute(session_id, args_str, args)
     elseif type(audit_read) == "function" then
         entries = audit_read(count)
     else
-        send(session_id, "\r\naudit_d not available.\r\n")
-    
+        player:send("{red}audit_d not available.{/}")
         return
     end
 
-    send(session_id, string.format("\r\n=== Audit Log (last %d) ===\r\n", #entries))
+    local lines = {}
+    table.insert(lines, string.format("{bold}=== Audit Log (last %d) ==={/}", #entries))
     if #entries == 0 then
-        send(session_id, "  (no entries)\r\n")
+        table.insert(lines, "  (no entries)")
     else
         for _, raw in ipairs(entries) do
-            send(session_id, format_entry(raw) .. "\r\n")
+            table.insert(lines, format_entry(raw))
         end
     end
-    send(session_id, "\r\nTip: 'audit list' shows the command watch list.\r\n")
-
+    table.insert(lines, "")
+    table.insert(lines, "Tip: 'audit list' shows the command watch list.")
+    player:send(table.concat(lines, "\r\n"))
 end
 
 return M

@@ -10,7 +10,7 @@ function M.execute(session_id, args_str, args)
     if not player then return end
 
     if not args or #args < 2 then
-        player:send("Tell whom what?")
+        player:send("{red}Tell whom what?{/}")
         return
     end
 
@@ -19,21 +19,23 @@ function M.execute(session_id, args_str, args)
     if not msg then msg = table.concat(args, " ", 2) end
 
     local target_player
+    local target_sid
     for _, sid in ipairs(all_sessions()) do
         local p = get_player(sid)
         if p and p.name and p.name:lower() == target_name:lower() then
             target_player = p
+            target_sid = sid
             break
         end
     end
 
     if not target_player then
-        player:send("No player named '" .. target_name .. "' is online.")
+        player:send("{red}No player named '" .. target_name .. "' is online.{/}")
         return
     end
 
-    player:send("You tell " .. target_player.name .. ": " .. msg)
-    target_player:send(player.name .. " tells you: " .. msg)
+    player:send("{cyan}You tell " .. target_player.name .. ":{/} " .. msg)
+    send(target_sid, "{cyan}" .. player.name .. " tells you:{/} " .. msg .. "\r\n")
 end
 
 return M

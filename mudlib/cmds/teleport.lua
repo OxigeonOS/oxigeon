@@ -10,7 +10,7 @@ function M.execute(session_id, args_str, args)
     if not player then return end
 
     if not args or #args < 2 then
-        player:send("Usage: teleport <player> <room_id>")
+        player:send("{cyan}Usage: teleport <player> <room_id>{/}")
         return
     end
 
@@ -27,19 +27,19 @@ function M.execute(session_id, args_str, args)
     end
 
     if not target_player then
-        player:send("No player named '" .. target_name .. "' is online.")
+        player:send("{red}No player named '{yellow}" .. target_name .. "{red}' is online.{/}")
         return
     end
 
     local ok = pcall(function() target_player:move_to(room_id) end)
     if ok then
-        player:send("You teleport " .. target_player.name .. " to " .. room_id .. ".")
-        target_player:send("You are teleported by " .. player.name .. " to " .. room_id .. ".")
+        player:send("{green}You teleport {yellow}" .. target_player.name .. "{green} to {yellow}" .. room_id .. "{green}.{/}")
+        target_player:send("{cyan}You are teleported by {yellow}" .. player.name .. "{cyan} to {yellow}" .. room_id .. "{cyan}.{/}")
         if DAEMON and DAEMON.audit then
             pcall(DAEMON.audit.log, "cmd.teleport", true, "teleported " .. target_player.name .. " to " .. room_id)
         end
     else
-        player:send("Room '" .. room_id .. "' does not exist or move failed.")
+        player:send("{red}Room '{yellow}" .. room_id .. "{red}' does not exist or move failed.{/}")
     end
 end
 

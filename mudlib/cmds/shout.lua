@@ -10,18 +10,18 @@ function M.execute(session_id, args_str, args)
     if not player then return end
 
     if not args_str or args_str == "" then
-        player:send("Shout what?")
+        player:send("{red}Shout what?{/}")
         return
     end
 
-    player:send("You shout: " .. args_str)
-    local msg = player.name .. " shouts: " .. args_str
+    player:send("{bold}{yellow}You shout:{/} " .. args_str)
+    local msg = "{bold}{yellow}" .. player.name .. " shouts:{/} " .. args_str
 
     for _, sid in ipairs(all_sessions()) do
         if sid ~= session_id then
             local p = get_player(sid)
             if p then
-                p:send(msg)
+                send(sid, msg .. "\r\n")
             end
         end
     end

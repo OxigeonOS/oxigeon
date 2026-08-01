@@ -12,32 +12,29 @@ M.category = 'items'
 M.summary = 'Drink a potion or beverage.'
 
 function M.execute(session_id, args_str, args)
-    if not args[1] then
-        send(session_id, "\r\nDrink what?\r\n")
-        return
-    end
-
     local player = get_player(session_id)
-    if not player then
-        send(session_id, "\r\nYou need to be in the game to do that.\r\n")
+    if not player then return end
+
+    if not args[1] then
+        player:send("Drink what?")
         return
     end
 
     -- Item registry is required
     if not DAEMON or not DAEMON.items then
-        send(session_id, "\r\nThe item system is not available.\r\n")
+        player:send("{red}The item system is not available.{/}")
         return
     end
 
     -- Find the item in the player's inventory via the item registry
     local item_id, item = DAEMON.items.find_by_name(args_str, player.inventory)
     if not item then
-        send(session_id, "\r\nYou don't have anything like that to drink.\r\n")
+        player:send("You don't have anything like that to drink.")
         return
     end
 
     if not item.drinkable then
-        send(session_id, "\r\nYou can't drink that.\r\n")
+        player:send("You can't drink that.")
         return
     end
 

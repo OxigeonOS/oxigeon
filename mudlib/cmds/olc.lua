@@ -11,20 +11,21 @@ M.summary    = "Enter or exit the Online Creation system."
 M.permission = "olc"
 
 local HELP_TEXT = table.concat({
-    "",
-    "Online Creation (OLC)",
-    "─────────────────────",
+    "{cyan}Online Creation (OLC){/}",
+    "{cyan}─────────────────────{/}",
     "  olc <area_name>   Enter OLC mode for an area",
     "  olc done          Exit OLC mode",
     "  olc quit          Exit OLC mode",
     "  olc               Show this help / current status",
     "",
-    "While in OLC mode:",
+    "{yellow}While in OLC mode:{/}",
     "  dig <dir> <room>  Create a room and link it",
-    "",
 }, "\r\n")
 
 function M.execute(session_id, args_str, args)
+    local player = get_player(session_id)
+    if not player then return end
+
     local session = get_session(session_id)
     if not session or not session.character_id then return end
 
@@ -34,10 +35,12 @@ function M.execute(session_id, args_str, args)
     if not args[1] then
         if DAEMON.olc and DAEMON.olc.is_active(session_id) then
             local state = DAEMON.olc.get_state(session_id)
-            send(session_id, "\r\nOLC active for area: " .. tostring(state.area_name) .. "\r\n")
-            send(session_id, "Use 'olc done' to exit.\r\n")
+            local lines = {}
+            table.insert(lines, "{green}OLC active for area: {yellow}" .. tostring(state.area_name) .. "{/}")
+            table.insert(lines, "Use 'olc done' to exit.")
+            player:send(table.concat(lines, "\r\n"))
         else
-            send(session_id, HELP_TEXT)
+            player:send(HELP_TEXT)
         end
         return
     end
@@ -47,9 +50,9 @@ function M.execute(session_id, args_str, args)
     if sub == "done" or sub == "quit" then
         if DAEMON.olc and DAEMON.olc.is_active(session_id) then
             DAEMON.olc.stop(session_id)
-            send(session_id, "\r\n[OLC] Exiting build mode.\r\n")
+            player:send("{green}[OLC] Exiting build mode.{/}")
         else
-            send(session_id, "\r\nYou are not in OLC mode.\r\n")
+            player:send("{red}You are not in OLC mode.{/}")
         end
         return
     end
@@ -72,17 +75,12 @@ function M.execute(session_id, args_str, args)
     -- If area doesn't exist, need olc.areas permission to create it
     if not area_exists then
         if not has_permission(session_id, "olc.areas") then
-            send(session_id, "\r\nArea '" .. area_name .. "' does not exist "
-                .. "and you lack the 'olc.areas' permission to create it.\r\n")
+            player:send("{red}Area '{yellow}" .. area_name .. "{red}' does not exist and you lack the 'olc.areas' permission to create it.{/}")
             return
         end
 
         -- Get builder name from player
-        local builder_name = "Unknown"
-        if DAEMON.character then
-            local ok, player = pcall(DAEMON.character.get, char_id)
-            if ok and player then builder_name = player.name or "Unknown" end
-        end
+        local builder_name = player.name or "Unknown"
 
         -- Create the area skeleton
         local ok, err = pcall(function()
@@ -127,24 +125,24 @@ function M.execute(session_id, args_str, args)
                 DAEMON.journal.error("OLC: Failed to create area '" .. area_name
                     .. "': " .. tostring(err))
             end
-            send(session_id, "\r\n[OLC] Error creating area. See logs.\r\n")
+            player:send("{red}[OLC] Error creating area. See logs.{/}")
             return
         end
 
-        send(session_id, "\r\n[OLC] Created new area: " .. area_name .. "\r\n")
+        player:send("{green}[OLC] Created new area: {yellow}" .. area_name .. "{/}")
 
         -- Show the entrance room
         if DAEMON.world then
             local room = DAEMON.world.get_character_room_obj(char_id)
             if room then
-                send(session_id, room:get_appearance(session_id))
+                player:send(room:get_appearance(session_id))
             end
         end
     end
 
     -- Enter OLC mode
     DAEMON.olc.start(session_id, area_name)
-    send(session_id, "\r\n[OLC] Entering build mode for area: " .. area_name .. "\r\n")
+    player:send("{green}[OLC] Entering build mode for area: {yellow}" .. area_name .. "{/}")
 end
 
 return M

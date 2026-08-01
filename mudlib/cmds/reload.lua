@@ -46,17 +46,22 @@ local function expand_glob(glob)
 end
 
 function M.execute(session_id, args_str, args)
+    local player = get_player(session_id)
+    if not player then return end
+
     if not args[1] then
-        send(session_id, "\r\nUsage: reload <module|pattern>\r\n")
-        send(session_id, "Examples:\r\n")
-        send(session_id, "  reload login          — reload a single module\r\n")
-        send(session_id, "  reload lib/*          — reload all lib modules\r\n")
-        send(session_id, "  reload daemons/*_d    — reload matching daemons\r\n")
+        local lines = {}
+        table.insert(lines, "Usage: reload <module|pattern>")
+        table.insert(lines, "Examples:")
+        table.insert(lines, "  reload login          — reload a single module")
+        table.insert(lines, "  reload lib/*          — reload all lib modules")
+        table.insert(lines, "  reload daemons/*_d    — reload matching daemons")
+        player:send(table.concat(lines, "\r\n"))
         return
     end
 
     if type(reload) ~= "function" then
-        send(session_id, "Reload efun not available.\r\n")
+        player:send("{red}Reload efun not available.{/}")
         return
     end
 
@@ -67,24 +72,26 @@ function M.execute(session_id, args_str, args)
     if input:find("*") then
         local matches = expand_glob(input)
         if #matches == 0 then
-            send(session_id, "\r\nNo loaded modules match '" .. input .. "'.\r\n")
+            player:send("{yellow}No loaded modules match '" .. input .. "'.{/}")
             return
         end
 
-        send(session_id, "\r\nReloading " .. #matches .. " module(s) matching '" .. input .. "':\r\n")
+        local lines = {}
+        table.insert(lines, "{cyan}Reloading " .. #matches .. " module(s) matching '" .. input .. "':{/}")
         for _, mod_name in ipairs(matches) do
             -- The reload efun expects slash-separated paths
             local reload_path = mod_name:gsub("%.", "/")
-            send(session_id, "  " .. mod_name .. "\r\n")
+            table.insert(lines, "  " .. mod_name)
             reload(reload_path)
         end
-        send(session_id, "Done. Check server log for results.\r\n")
+        table.insert(lines, "{green}Done.{/} Check server log for results.")
+        player:send(table.concat(lines, "\r\n"))
     else
         -- Single module reload (existing behavior)
         local module_name = input
-        send(session_id, "\r\nReloading '" .. module_name .. "'...\r\n")
+        player:send("{cyan}Reloading '" .. module_name .. "'...{/}")
         reload(module_name)
-        send(session_id, "Reload request sent. Check server log for result.\r\n")
+        player:send("{green}Reload request sent.{/} Check server log for result.")
     end
 end
 
