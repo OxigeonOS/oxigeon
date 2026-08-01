@@ -31,9 +31,15 @@ function M.send_to_room(room_id, text, exclude_char_id)
 
     for _, char_id in ipairs(room:get_characters()) do
         if not excluded[char_id] then
-            local sid = M.find_session_for_character(char_id)
-            if sid then
-                send(sid, text .. "\r\n")
+            -- Use the Player object when available for color/wrap support
+            local player_obj = DAEMON.character and DAEMON.character.get(char_id)
+            if player_obj then
+                player_obj:send(text)
+            else
+                local sid = M.find_session_for_character(char_id)
+                if sid then
+                    send(sid, text .. "\r\n")
+                end
             end
         end
     end

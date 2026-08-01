@@ -33,6 +33,7 @@ Player.SAVE_FIELDS = {
     "channels",        -- List of channel names the player is subscribed to
     "custom",          -- Open-ended table for game-specific data
     "page_length",     -- Lines per page for pager (0 = disabled, nil = default 40)
+    "color_enabled",   -- Whether color is shown (true = default, false = stripped for screen readers)
 }
 
 -- ─── Default starting stats for new characters ──────────────────────────────
@@ -157,7 +158,8 @@ function Player:from_save(char_id, char_info, saved)
     obj.quest_flags = data.quest_flags
     obj.custom      = data.custom
     obj.channels    = data.channels
-    obj.page_length = saved.page_length  -- nil = default 40
+    obj.page_length   = saved.page_length     -- nil = default 40
+    obj.color_enabled = saved.color_enabled    -- nil = default true
 
     -- Wire up death hook to emit event
     obj.on_death = function(self)
@@ -319,20 +321,25 @@ function Player:get_width()
     return Player.DEFAULT_WRAP_WIDTH
 end
 
---- Internal: apply color and snoop forwarding after wrapping.
+--- Internal: apply color (or strip) and snoop forwarding after wrapping.
+-- Called as a Player method so it can check self.color_enabled.
 -- @param text string  Already-wrapped text
-local function process_output(session_id, text)
-    -- Apply ANSI color tags
+function Player:_process_output(text)
     local c = get_color()
     if c then
-        text = c.colorize(text)
+        -- Respect the player's color preference (nil defaults to true)
+        if self.color_enabled == false then
+            text = c.strip(text)
+        else
+            text = c.colorize(text)
+        end
     end
 
-    send(session_id, text .. "\r\n")
+    send(self.session_id, text .. "\r\n")
 
     -- Forward to snoopers if any
-    if DAEMON and DAEMON.snoop and DAEMON.snoop.is_snooped(session_id) then
-        local snoopers = DAEMON.snoop.get_snoopers(session_id)
+    if DAEMON and DAEMON.snoop and DAEMON.snoop.is_snooped(self.session_id) then
+        local snoopers = DAEMON.snoop.get_snoopers(self.session_id)
         for _, snooper_sid in ipairs(snoopers) do
             send(snooper_sid, "[SNOOP] " .. text .. "\r\n")
         end
@@ -346,7 +353,7 @@ end
 function Player:send(text)
     if self.session_id then
         local wrapped = strings.wrap(text, self:get_width())
-        process_output(self.session_id, wrapped)
+        self:_process_output(wrapped)
     end
 end
 
@@ -355,7 +362,7 @@ end
 -- @param text string  The text to send
 function Player:send_raw(text)
     if self.session_id then
-        process_output(self.session_id, text)
+        self:_process_output(text)
     end
 end
 
@@ -365,7 +372,7 @@ function Player:send_lines(...)
     if not self.session_id then return end
     local width = self:get_width()
     for _, text in ipairs({...}) do
-        process_output(self.session_id, strings.wrap(text, width))
+        self:_process_output(strings.wrap(text, width))
     end
 end
 
