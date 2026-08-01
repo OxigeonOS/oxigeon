@@ -37,23 +37,61 @@ function M.pad_left(s, width)
     return s:sub(-width)
 end
 
---- Wrap text to a given width
+--- Word-wrap text to a given width, preserving existing structure.
+-- Handles:
+--   - Existing hard line breaks (\n or \r\n) are preserved
+--   - Blank lines (paragraph separators) are preserved
+--   - Only lines exceeding `width` are wrapped at word boundaries
+--   - Output uses \r\n line endings (MUD convention)
+-- @param text  string  The text to wrap
+-- @param width number  Maximum line width (default 80)
+-- @return string       The wrapped text
 function M.wrap(text, width)
-    width = width or 78
-    local result = {}
-    local line = ""
-    for word in text:gmatch("%S+") do
-        if #line + #word + 1 > width then
-            table.insert(result, line)
-            line = word
+    width = width or 80
+    if not text or text == "" then return text end
+
+    -- Normalize line endings to \n for processing
+    text = text:gsub("\r\n", "\n")
+
+    -- Split into lines, preserving blank lines
+    local input_lines = {}
+    for line in (text .. "\n"):gmatch("([^\n]*)\n") do
+        input_lines[#input_lines + 1] = line
+    end
+
+    local output = {}
+    for _, line in ipairs(input_lines) do
+        -- Blank lines pass through (paragraph separators)
+        if line:match("^%s*$") then
+            output[#output + 1] = ""
+        elseif #line <= width then
+            -- Line fits, pass through
+            output[#output + 1] = line
         else
-            line = line == "" and word or line .. " " .. word
+            -- Line is too long — wrap at word boundaries
+            local current = ""
+            for word in line:gmatch("%S+") do
+                if current == "" then
+                    current = word
+                elseif #current + 1 + #word > width then
+                    output[#output + 1] = current
+                    current = word
+                else
+                    current = current .. " " .. word
+                end
+            end
+            if current ~= "" then
+                output[#output + 1] = current
+            end
         end
     end
-    if line ~= "" then
-        table.insert(result, line)
+
+    -- Remove trailing blank line if the input didn't end with one
+    if #output > 0 and output[#output] == "" and not text:match("\n$") then
+        output[#output] = nil
     end
-    return table.concat(result, "\r\n")
+
+    return table.concat(output, "\r\n")
 end
 
 --- Format a number with thousands separators

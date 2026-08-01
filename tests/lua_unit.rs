@@ -928,3 +928,512 @@ fn test_commands_parse_case_insensitive_verb() {
 
     assert_eq!(eval_str(&lua, "return verb"), "look");
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Item Instance tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_mobile_item_instance_add_creates_table() {
+    let lua = make_test_lua();
+    lua.load("Mobile = require('lib.mobile')").exec().unwrap();
+    lua.load(r#"mob = Mobile:new({ id = "t" })"#).exec().unwrap();
+
+    lua.load(r#"mob:add_item("sword")"#).exec().unwrap();
+
+    // add_item should create { template = "sword" }
+    assert!(eval_bool(&lua, r#"return type(mob.inventory[1]) == "table""#));
+    assert_eq!(eval_str(&lua, r#"return mob.inventory[1].template"#), "sword");
+}
+
+#[test]
+fn test_mobile_item_instance_has_item() {
+    let lua = make_test_lua();
+    lua.load("Mobile = require('lib.mobile')").exec().unwrap();
+    lua.load(r#"mob = Mobile:new({ id = "t" })"#).exec().unwrap();
+
+    lua.load(r#"mob:add_item("potion")"#).exec().unwrap();
+    assert!(eval_bool(&lua, r#"return mob:has_item("potion")"#));
+    assert!(!eval_bool(&lua, r#"return mob:has_item("elixir")"#));
+}
+
+#[test]
+fn test_mobile_item_instance_find_item() {
+    let lua = make_test_lua();
+    lua.load("Mobile = require('lib.mobile')").exec().unwrap();
+    lua.load(r#"mob = Mobile:new({ id = "t" })"#).exec().unwrap();
+
+    lua.load(r#"mob:add_item("key")"#).exec().unwrap();
+
+    // find_item returns entry table and index
+    assert!(eval_bool(&lua, r#"
+        local entry, idx = mob:find_item("key")
+        return entry ~= nil and idx == 1 and entry.template == "key"
+    "#));
+
+    // find non-existent returns nil
+    assert!(eval_bool(&lua, r#"
+        local entry, idx = mob:find_item("nope")
+        return entry == nil and idx == nil
+    "#));
+}
+
+#[test]
+fn test_mobile_item_instance_remove() {
+    let lua = make_test_lua();
+    lua.load("Mobile = require('lib.mobile')").exec().unwrap();
+    lua.load(r#"mob = Mobile:new({ id = "t" })"#).exec().unwrap();
+
+    lua.load(r#"mob:add_item("gem")"#).exec().unwrap();
+    lua.load(r#"mob:add_item("gem")"#).exec().unwrap();
+
+    assert_eq!(eval_int(&lua, "return #mob.inventory"), 2);
+
+    // Remove first occurrence
+    assert!(eval_bool(&lua, r#"return mob:remove_item("gem")"#));
+    assert_eq!(eval_int(&lua, "return #mob.inventory"), 1);
+
+    // Still has one
+    assert!(eval_bool(&lua, r#"return mob:has_item("gem")"#));
+}
+
+#[test]
+fn test_mobile_item_instance_add_instance() {
+    let lua = make_test_lua();
+    lua.load("Mobile = require('lib.mobile')").exec().unwrap();
+    lua.load(r#"mob = Mobile:new({ id = "t" })"#).exec().unwrap();
+
+    lua.load(r#"mob:add_item_instance({ template = "sword", enchant = "fire" })"#).exec().unwrap();
+
+    assert!(eval_bool(&lua, r#"return mob:has_item("sword")"#));
+    assert_eq!(eval_str(&lua, r#"return mob.inventory[1].enchant"#), "fire");
+}
+
+#[test]
+fn test_mobile_item_legacy_string_compat() {
+    let lua = make_test_lua();
+    lua.load("Mobile = require('lib.mobile')").exec().unwrap();
+    // Legacy: inventory with plain string entries
+    lua.load(r#"mob = Mobile:new({ id = "t", inventory = {"old_item"} })"#).exec().unwrap();
+
+    // has_item should still work with legacy strings
+    assert!(eval_bool(&lua, r#"return mob:has_item("old_item")"#));
+    assert!(eval_bool(&lua, r#"return mob:remove_item("old_item")"#));
+    assert!(!eval_bool(&lua, r#"return mob:has_item("old_item")"#));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Color tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_color_colorize_basic_tags() {
+    let lua = make_test_lua();
+    lua.load("color = require('lib.color')").exec().unwrap();
+
+    // {red} should become \27[31m
+    let result = eval_str(&lua, r#"return color.colorize("{red}hello{/}")"#);
+    assert!(result.contains("\x1b[31m"));
+    assert!(result.contains("hello"));
+    assert!(result.contains("\x1b[0m"));
+}
+
+#[test]
+fn test_color_colorize_multiple_tags() {
+    let lua = make_test_lua();
+    lua.load("color = require('lib.color')").exec().unwrap();
+
+    let result = eval_str(&lua, r#"return color.colorize("{bold}{cyan}test{/}")"#);
+    assert!(result.contains("\x1b[1m"));
+    assert!(result.contains("\x1b[36m"));
+}
+
+#[test]
+fn test_color_colorize_unknown_tag_preserved() {
+    let lua = make_test_lua();
+    lua.load("color = require('lib.color')").exec().unwrap();
+
+    let result = eval_str(&lua, r#"return color.colorize("{unknown}text")"#);
+    assert!(result.contains("{unknown}"));
+}
+
+#[test]
+fn test_color_strip_removes_all_tags() {
+    let lua = make_test_lua();
+    lua.load("color = require('lib.color')").exec().unwrap();
+
+    let result = eval_str(&lua, r#"return color.strip("{red}hello {bold}world{/}")"#);
+    assert_eq!(result, "hello world");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Checks tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_checks_has_item() {
+    let lua = make_test_lua();
+    lua.load("Mobile = require('lib.mobile')").exec().unwrap();
+    lua.load("checks = require('lib.checks')").exec().unwrap();
+
+    lua.load(r#"
+        player = Mobile:new({ id = "p1" })
+        player:add_item("key")
+        check_key = checks.has_item("key")
+        check_gem = checks.has_item("gem")
+    "#).exec().unwrap();
+
+    assert!(eval_bool(&lua, "return check_key(player)"));
+    assert!(!eval_bool(&lua, "local ok = check_gem(player); return ok"));
+}
+
+#[test]
+fn test_checks_has_level() {
+    let lua = make_test_lua();
+    lua.load("Mobile = require('lib.mobile')").exec().unwrap();
+    lua.load("checks = require('lib.checks')").exec().unwrap();
+
+    lua.load(r#"
+        player = Mobile:new({ id = "p1", stats = { level = 5 } })
+        check_low = checks.has_level(3)
+        check_exact = checks.has_level(5)
+        check_high = checks.has_level(10)
+    "#).exec().unwrap();
+
+    assert!(eval_bool(&lua, "return check_low(player)"));
+    assert!(eval_bool(&lua, "return check_exact(player)"));
+    assert!(!eval_bool(&lua, "local ok = check_high(player); return ok"));
+}
+
+#[test]
+fn test_checks_all_composite() {
+    let lua = make_test_lua();
+    lua.load("Mobile = require('lib.mobile')").exec().unwrap();
+    lua.load("checks = require('lib.checks')").exec().unwrap();
+
+    lua.load(r#"
+        player = Mobile:new({ id = "p1", stats = { level = 5 } })
+        player:add_item("key")
+        both = checks.all(checks.has_item("key"), checks.has_level(3))
+        fails = checks.all(checks.has_item("key"), checks.has_level(10))
+    "#).exec().unwrap();
+
+    assert!(eval_bool(&lua, "return both(player)"));
+    assert!(!eval_bool(&lua, "local ok = fails(player); return ok"));
+}
+
+#[test]
+fn test_checks_any_composite() {
+    let lua = make_test_lua();
+    lua.load("Mobile = require('lib.mobile')").exec().unwrap();
+    lua.load("checks = require('lib.checks')").exec().unwrap();
+
+    lua.load(r#"
+        player = Mobile:new({ id = "p1", stats = { level = 5 } })
+        either = checks.any(checks.has_item("key"), checks.has_level(3))
+        neither = checks.any(checks.has_item("gem"), checks.has_level(10))
+    "#).exec().unwrap();
+
+    assert!(eval_bool(&lua, "return either(player)"));
+    assert!(!eval_bool(&lua, "local ok = neither(player); return ok"));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Exit system tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_room_exit_string_target() {
+    let lua = make_test_lua();
+    lua.load("Room = require('lib.room')").exec().unwrap();
+    lua.load(r#"room = Room:new({ id = "test", exits = { north = "area.room2" } })"#).exec().unwrap();
+
+    assert!(eval_bool(&lua, r#"return room:has_exit("north")"#));
+    assert_eq!(eval_str(&lua, r#"return room:get_exit("north")"#), "area.room2");
+}
+
+#[test]
+fn test_room_exit_table_target() {
+    let lua = make_test_lua();
+    lua.load("Room = require('lib.room')").exec().unwrap();
+    lua.load(r#"room = Room:new({ id = "test", exits = {
+        north = { target = "area.room2", check_fail = "The door is locked." }
+    }})"#).exec().unwrap();
+
+    assert!(eval_bool(&lua, r#"return room:has_exit("north")"#));
+    assert_eq!(eval_str(&lua, r#"return room:get_exit("north")"#), "area.room2");
+}
+
+#[test]
+fn test_room_exit_hidden_excluded_from_appearance() {
+    let lua = make_test_lua();
+    lua.load("Room = require('lib.room')").exec().unwrap();
+    lua.load(r#"room = Room:new({
+        id = "test", short = "Test Room", long = "A room.",
+        exits = {
+            north = "area.room2",
+            secret = { target = "area.hidden", hidden = true }
+        }
+    })"#).exec().unwrap();
+
+    // get_exit_info should return both
+    assert!(eval_bool(&lua, r#"return room:get_exit_info("secret") ~= nil"#));
+
+    // has_exit should still find hidden
+    assert!(eval_bool(&lua, r#"return room:has_exit("secret")"#));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Death hook tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_mobile_take_damage_fires_death_hook() {
+    let lua = make_test_lua();
+    lua.load("Mobile = require('lib.mobile')").exec().unwrap();
+    lua.load(r#"
+        _death_fired = false
+        mob = Mobile:new({ id = "m1", stats = { hp = 10, max_hp = 10 } })
+        mob.on_death = function(self) _death_fired = true end
+    "#).exec().unwrap();
+
+    // Damage that doesn't kill shouldn't fire hook
+    lua.load(r#"mob:take_damage(5)"#).exec().unwrap();
+    assert!(!eval_bool(&lua, "return _death_fired"));
+
+    // Damage that kills should fire hook
+    lua.load(r#"mob:take_damage(5)"#).exec().unwrap();
+    assert!(eval_bool(&lua, "return _death_fired"));
+}
+
+#[test]
+fn test_mobile_take_damage_death_hook_only_fires_once() {
+    let lua = make_test_lua();
+    lua.load("Mobile = require('lib.mobile')").exec().unwrap();
+    lua.load(r#"
+        _death_count = 0
+        mob = Mobile:new({ id = "m1", stats = { hp = 5, max_hp = 10 } })
+        mob.on_death = function(self) _death_count = _death_count + 1 end
+    "#).exec().unwrap();
+
+    // Kill
+    lua.load(r#"mob:take_damage(10)"#).exec().unwrap();
+    assert_eq!(eval_int(&lua, "return _death_count"), 1);
+
+    // Already dead — shouldn't fire again
+    lua.load(r#"mob:take_damage(10)"#).exec().unwrap();
+    assert_eq!(eval_int(&lua, "return _death_count"), 1);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Player inventory migration tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_player_from_save_migrates_string_inventory() {
+    let lua = make_test_lua();
+    lua.load("Player = require('lib.player')").exec().unwrap();
+    lua.load(r#"
+        p = Player:from_save(1, { id = 1, name = "Test", account_id = 1 },
+            { inventory = { "old_sword", "old_shield" } })
+    "#).exec().unwrap();
+
+    // Both should be migrated to instance tables
+    assert!(eval_bool(&lua, r#"return type(p.inventory[1]) == "table""#));
+    assert_eq!(eval_str(&lua, r#"return p.inventory[1].template"#), "old_sword");
+    assert_eq!(eval_str(&lua, r#"return p.inventory[2].template"#), "old_shield");
+}
+
+#[test]
+fn test_player_from_save_preserves_instance_tables() {
+    let lua = make_test_lua();
+    lua.load("Player = require('lib.player')").exec().unwrap();
+    lua.load(r#"
+        p = Player:from_save(1, { id = 1, name = "Test", account_id = 1 },
+            { inventory = { { template = "magic_sword", enchant = "fire" } } })
+    "#).exec().unwrap();
+
+    assert!(eval_bool(&lua, r#"return type(p.inventory[1]) == "table""#));
+    assert_eq!(eval_str(&lua, r#"return p.inventory[1].template"#), "magic_sword");
+    assert_eq!(eval_str(&lua, r#"return p.inventory[1].enchant"#), "fire");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Item_d resolve tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_item_d_resolve_pristine() {
+    let lua = make_test_lua();
+    lua.load("Item = require('lib.item')").exec().unwrap();
+    lua.load("item_d = require('daemons.item_d')").exec().unwrap();
+
+    lua.load(r#"
+        local sword = Item:new({ id = "iron_sword", short = "an iron sword", value = 10 })
+        item_d.register(sword)
+    "#).exec().unwrap();
+
+    // Resolve a pristine instance (no overrides)
+    assert!(eval_bool(&lua, r#"
+        local entry = { template = "iron_sword" }
+        local resolved = item_d.resolve(entry)
+        return resolved ~= nil and resolved.short == "an iron sword" and resolved.value == 10
+    "#));
+}
+
+#[test]
+fn test_item_d_resolve_with_overrides() {
+    let lua = make_test_lua();
+    lua.load("Item = require('lib.item')").exec().unwrap();
+    lua.load("item_d = require('daemons.item_d')").exec().unwrap();
+
+    lua.load(r#"
+        local sword = Item:new({ id = "iron_sword", short = "an iron sword", value = 10 })
+        item_d.register(sword)
+    "#).exec().unwrap();
+
+    // Resolve with overrides — instance fields win
+    assert!(eval_bool(&lua, r#"
+        local entry = { template = "iron_sword", short = "a flaming sword", enchant = "fire" }
+        local resolved = item_d.resolve(entry)
+        return resolved.short == "a flaming sword" and resolved.value == 10 and resolved.enchant == "fire"
+    "#));
+}
+
+#[test]
+fn test_item_d_find_by_name_with_instances() {
+    let lua = make_test_lua();
+    lua.load("Item = require('lib.item')").exec().unwrap();
+    lua.load("item_d = require('daemons.item_d')").exec().unwrap();
+
+    lua.load(r#"
+        item_d.register(Item:new({ id = "red_potion", short = "a red potion" }))
+        item_d.register(Item:new({ id = "blue_gem", short = "a sparkling blue gem" }))
+    "#).exec().unwrap();
+
+    // Search with instance tables
+    assert!(eval_bool(&lua, r#"
+        local inv = { { template = "red_potion" }, { template = "blue_gem" } }
+        local tmpl_id, item = item_d.find_by_name("red", inv)
+        return tmpl_id == "red_potion" and item.short == "a red potion"
+    "#));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Snoop_d tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_snoop_d_basic_operations() {
+    let lua = make_test_lua();
+    lua.load("snoop = require('daemons.snoop_d')").exec().unwrap();
+
+    // Start snooping
+    assert!(eval_bool(&lua, r#"
+        local ok, _ = snoop.start("admin_sid", "player_sid")
+        return ok
+    "#));
+
+    // Check state
+    assert_eq!(eval_str(&lua, r#"return snoop.get_target("admin_sid")"#), "player_sid");
+    assert!(eval_bool(&lua, r#"return snoop.is_snooped("player_sid")"#));
+    assert!(!eval_bool(&lua, r#"return snoop.is_snooped("admin_sid")"#));
+
+    // Stop
+    assert!(eval_bool(&lua, r#"return snoop.stop("admin_sid")"#));
+    assert!(!eval_bool(&lua, r#"return snoop.is_snooped("player_sid")"#));
+}
+
+#[test]
+fn test_snoop_d_prevents_self_snoop() {
+    let lua = make_test_lua();
+    lua.load("snoop = require('daemons.snoop_d')").exec().unwrap();
+
+    assert!(!eval_bool(&lua, r#"
+        local ok, _ = snoop.start("sid1", "sid1")
+        return ok
+    "#));
+}
+
+#[test]
+fn test_snoop_d_cleanup() {
+    let lua = make_test_lua();
+    lua.load("snoop = require('daemons.snoop_d')").exec().unwrap();
+
+    lua.load(r#"snoop.start("admin1", "target1")"#).exec().unwrap();
+    lua.load(r#"snoop.start("admin2", "target1")"#).exec().unwrap();
+
+    // Cleanup target1 — should remove all snoops involving it
+    lua.load(r#"snoop.cleanup("target1")"#).exec().unwrap();
+
+    assert!(!eval_bool(&lua, r#"return snoop.is_snooped("target1")"#));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Pager_d tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_pager_d_basic_paging() {
+    let lua = make_test_lua();
+    lua.load("pager = require('daemons.pager_d')").exec().unwrap();
+
+    // Create a long text
+    lua.load(r#"
+        local lines = {}
+        for i = 1, 20 do lines[i] = "Line " .. i end
+        long_text = table.concat(lines, "\r\n")
+    "#).exec().unwrap();
+
+    // Not paging yet
+    assert!(!eval_bool(&lua, r#"return pager.is_paging("test_sid")"#));
+
+    // Start paging with page length of 5
+    lua.load(r#"pager.page("test_sid", long_text, 5)"#).exec().unwrap();
+
+    // Should be paging now
+    assert!(eval_bool(&lua, r#"return pager.is_paging("test_sid")"#));
+
+    // Stop paging
+    lua.load(r#"pager.stop("test_sid")"#).exec().unwrap();
+    assert!(!eval_bool(&lua, r#"return pager.is_paging("test_sid")"#));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Channel_d tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_channel_d_default_ooc() {
+    let lua = make_test_lua();
+    // Need stub for all_sessions
+    lua.load(r#"function all_sessions() return {} end"#).exec().unwrap();
+    lua.load("channel = require('daemons.channel_d')").exec().unwrap();
+
+    // OOC channel should exist by default
+    let channels = eval_int(&lua, r#"return #channel.list()"#);
+    assert!(channels >= 1, "Expected at least 1 default channel (ooc)");
+}
+
+#[test]
+fn test_channel_d_join_leave() {
+    let lua = make_test_lua();
+    lua.load(r#"function all_sessions() return {} end"#).exec().unwrap();
+    lua.load("channel = require('daemons.channel_d')").exec().unwrap();
+
+    // Join OOC
+    assert!(eval_bool(&lua, r#"
+        local ok, _ = channel.join("ooc", 42)
+        return ok
+    "#));
+
+    assert!(eval_bool(&lua, r#"return channel.is_subscribed("ooc", 42)"#));
+
+    // Leave
+    assert!(eval_bool(&lua, r#"
+        local ok, _ = channel.leave("ooc", 42)
+        return ok
+    "#));
+
+    assert!(!eval_bool(&lua, r#"return channel.is_subscribed("ooc", 42)"#));
+}

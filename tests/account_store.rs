@@ -28,7 +28,7 @@ fn test_create_account() {
     let account = store.create("testuser", "password123").unwrap();
     assert_eq!(account.username, "testuser");
     assert!(!account.password_hash.is_empty());
-    assert!(!account.is_admin);
+    assert!(account.is_admin); // First account is auto-promoted to admin
 }
 
 #[test]

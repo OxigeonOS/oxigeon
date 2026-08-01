@@ -36,12 +36,16 @@ function Room:get_appearance(session_id)
     -- Long description (resolved — can be dynamic)
     parts[#parts + 1] = resolve(self.long, self)
 
-    -- Obvious exits
+    -- Obvious exits (skip hidden exits)
     local exit_list = {}
-    for dir, _ in pairs(self.exits) do
-        exit_list[#exit_list + 1] = dir
+    for dir, exit in pairs(self.exits) do
+        local hidden = type(exit) == "table" and exit.hidden
+        if not hidden then
+            exit_list[#exit_list + 1] = dir
+        end
     end
     if #exit_list > 0 then
+        table.sort(exit_list)
         parts[#parts + 1] = "Obvious exits: " .. table.concat(exit_list, ", ")
     else
         parts[#parts + 1] = "Obvious exits: none"
@@ -110,12 +114,35 @@ function Room:get_characters()
 end
 
 -- ─── Exits ───────────────────────────────────────────────────────────────────
+-- Exits can be either:
+--   Simple:  exits = { north = "area.room_id" }
+--   Rich:    exits = { north = { target = "area.room_id", check = fn, on_traverse = fn, ... } }
 
+--- Check if an exit exists in a direction (including hidden exits).
 function Room:has_exit(direction)
     return self.exits[direction] ~= nil
 end
 
+--- Get the target room ID for an exit direction.
+-- Works with both string exits and table exits.
+-- @param direction string
+-- @return string|nil  The target room ID
 function Room:get_exit(direction)
+    local exit = self.exits[direction]
+    if type(exit) == "string" then
+        return exit
+    elseif type(exit) == "table" then
+        return exit.target
+    end
+    return nil
+end
+
+--- Get the full exit info table for a direction.
+-- Returns the raw exit value — either a string or a table with
+-- target, check, on_traverse, hidden, locked_desc, etc.
+-- @param direction string
+-- @return string|table|nil
+function Room:get_exit_info(direction)
     return self.exits[direction]
 end
 

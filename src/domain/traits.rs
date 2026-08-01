@@ -10,6 +10,7 @@ pub trait AccountStore: Send + Sync {
     fn find_by_id(&self, id: i64) -> Result<Option<Account>>;
     fn find_by_name(&self, name: &str) -> Result<Option<Account>>;
     fn update_password(&self, id: i64, new_password: &str) -> Result<()>;
+    fn set_admin(&self, id: i64, is_admin: bool) -> Result<()>;
     fn delete(&self, id: i64) -> Result<()>;
 }
 

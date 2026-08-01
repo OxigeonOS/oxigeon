@@ -1,29 +1,30 @@
--- mudlib/cmds/say.lua — Say something to all connected players
+-- mudlib/cmds/say.lua — Say something to everyone in the same room
 
 local M = {}
 
 M.name       = "say"
 M.aliases    = { "'" }    -- traditional MUD alias: 'hello world
 M.category   = "communication"
-M.summary    = "Say something aloud for everyone to hear."
+M.summary    = "Say something aloud to those nearby."
 M.permission = nil
 
 function M.execute(session_id, args_str, args)
     if args_str == "" then
         send(session_id, "\r\nSay what?\r\n")
-
         return
     end
 
-    local session = get_session(session_id)
-    local name = "Someone"
-    if session and session.character_id then
-        local char = get_character(session.character_id)
-        if char then name = char.name end
+    local player = get_player(session_id)
+    if not player then
+        send(session_id, "\r\nYou need to be in the game to do that.\r\n")
+        return
     end
 
-    broadcast("\r\n" .. name .. " says: " .. args_str .. "\r\n")
+    -- Send to the speaker
+    player:send("You say: " .. args_str)
 
+    -- Broadcast to the room (excluding the speaker)
+    player:message_room(player.name .. " says: " .. args_str)
 end
 
 return M

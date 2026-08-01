@@ -90,8 +90,17 @@ impl DieselAccountStore {
                 .execute(&mut conn)?;
         }  // conn is released back to pool here
 
-        self.find_by_name(username)?
-            .ok_or_else(|| OxigeonError::Internal("Account not found after insert".into()))
+        let account = self.find_by_name(username)?
+            .ok_or_else(|| OxigeonError::Internal("Account not found after insert".into()))?;
+
+        // Auto-promote the first account (id=1) to admin
+        if account.id == 1 {
+            self.set_admin(account.id, true)?;
+            return self.find_by_id(account.id)?
+                .ok_or_else(|| OxigeonError::Internal("Account not found after admin promotion".into()));
+        }
+
+        Ok(account)
     }
 
     pub fn authenticate(&self, username: &str, password: &str) -> Result<Account> {
@@ -137,6 +146,14 @@ impl DieselAccountStore {
         Ok(())
     }
 
+    pub fn set_admin(&self, id: i64, is_admin: bool) -> Result<()> {
+        let mut conn = self.pool.get_sqlite()?;
+        diesel::update(accounts::table.find(id))
+            .set(accounts::is_admin.eq(is_admin))
+            .execute(&mut conn)?;
+        Ok(())
+    }
+
     pub fn delete(&self, id: i64) -> Result<()> {
         let mut conn = self.pool.get_sqlite()?;
         diesel::delete(accounts::table.find(id))
@@ -160,6 +177,9 @@ impl crate::domain::traits::AccountStore for DieselAccountStore {
     }
     fn update_password(&self, id: i64, new_password: &str) -> Result<()> {
         DieselAccountStore::update_password(self, id, new_password)
+    }
+    fn set_admin(&self, id: i64, is_admin: bool) -> Result<()> {
+        DieselAccountStore::set_admin(self, id, is_admin)
     }
     fn delete(&self, id: i64) -> Result<()> {
         DieselAccountStore::delete(self, id)

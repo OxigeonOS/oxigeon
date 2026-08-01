@@ -37,7 +37,7 @@ function Mobile:new(data)
     obj.title      = data.title              -- Optional title ("the Blacksmith")
 
     -- ─── Inventory ───────────────────────────────────────────────────────────
-    obj.inventory  = data.inventory or {}    -- Array of item IDs
+    obj.inventory  = data.inventory or {}    -- Array of item instance tables: { template = "id", ... }
     obj.equipment  = data.equipment or {}    -- slot → item_id mapping
 
     -- ─── Behavior ────────────────────────────────────────────────────────────
@@ -92,10 +92,21 @@ function Mobile:is_alive()
 end
 
 --- Apply damage to the mobile. Clamps HP to 0.
+-- If HP reaches 0, fires the on_death hook (if set).
 -- @param amount number  Damage to apply
 -- @return number        Remaining HP
 function Mobile:take_damage(amount)
+    local was_alive = self.stats.hp > 0
     self.stats.hp = math.max(0, self.stats.hp - amount)
+
+    -- Fire death hook when transitioning from alive to dead
+    if was_alive and self.stats.hp == 0 and self.on_death then
+        local ok, err = pcall(self.on_death, self)
+        if not ok then
+            log("error", "MOBILE: on_death hook failed: " .. tostring(err))
+        end
+    end
+
     return self.stats.hp
 end
 
@@ -151,28 +162,56 @@ end
 
 -- ─── Inventory helpers ───────────────────────────────────────────────────────
 
---- Check if the mobile has a specific item.
--- @param item_id string
+--- Check if the mobile has an item by template ID.
+-- Supports both instance tables and legacy string entries.
+-- @param template_id string  The template ID to search for
 -- @return boolean
-function Mobile:has_item(item_id)
-    for _, id in ipairs(self.inventory) do
-        if id == item_id then return true end
+function Mobile:has_item(template_id)
+    for _, entry in ipairs(self.inventory) do
+        local tmpl = type(entry) == "table" and entry.template or entry
+        if tmpl == template_id then return true end
     end
     return false
 end
 
---- Add an item to the mobile's inventory.
--- @param item_id string
-function Mobile:add_item(item_id)
-    self.inventory[#self.inventory + 1] = item_id
+--- Add a pristine item to the mobile's inventory by template ID.
+-- @param template_id string
+function Mobile:add_item(template_id)
+    self.inventory[#self.inventory + 1] = { template = template_id }
 end
 
---- Remove an item from the mobile's inventory.
--- @param item_id string
+--- Add an item instance table directly to inventory.
+-- For items with per-instance overrides (enchantments, custom names, etc.).
+-- @param instance table  Must have at least { template = "id" }
+function Mobile:add_item_instance(instance)
+    if type(instance) ~= "table" or not instance.template then
+        log("warn", "MOBILE: add_item_instance called with invalid instance")
+        return
+    end
+    self.inventory[#self.inventory + 1] = instance
+end
+
+--- Find the first inventory entry matching a template ID.
+-- Returns the entry table and its index for direct modification.
+-- @param template_id string
+-- @return table|nil, number|nil  The inventory entry and its index
+function Mobile:find_item(template_id)
+    for i, entry in ipairs(self.inventory) do
+        local tmpl = type(entry) == "table" and entry.template or entry
+        if tmpl == template_id then
+            return entry, i
+        end
+    end
+    return nil, nil
+end
+
+--- Remove the first item matching a template ID from inventory.
+-- @param template_id string
 -- @return boolean  true if the item was found and removed
-function Mobile:remove_item(item_id)
-    for i, id in ipairs(self.inventory) do
-        if id == item_id then
+function Mobile:remove_item(template_id)
+    for i, entry in ipairs(self.inventory) do
+        local tmpl = type(entry) == "table" and entry.template or entry
+        if tmpl == template_id then
             table.remove(self.inventory, i)
             return true
         end

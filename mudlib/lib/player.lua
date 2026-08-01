@@ -31,6 +31,7 @@ Player.SAVE_FIELDS = {
     "gender",
     "tags",
     "custom",          -- Open-ended table for game-specific data
+    "page_length",     -- Lines per page for pager (0 = disabled, nil = default 40)
 }
 
 -- ─── Default starting stats for new characters ──────────────────────────────
@@ -91,7 +92,12 @@ function Player:from_save(char_id, char_info, saved)
     end
     if saved.inventory then
         for i, v in ipairs(saved.inventory) do
-            data.inventory[i] = v
+            -- Migrate legacy string entries to instance tables
+            if type(v) == "string" then
+                data.inventory[i] = { template = v }
+            else
+                data.inventory[i] = v
+            end
         end
     end
     if saved.equipment then
@@ -143,6 +149,17 @@ function Player:from_save(char_id, char_info, saved)
     obj.xp          = data.xp
     obj.quest_flags = data.quest_flags
     obj.custom      = data.custom
+    obj.page_length = saved.page_length  -- nil = default 40
+
+    -- Wire up death hook to emit event
+    obj.on_death = function(self)
+        if DAEMON and DAEMON.event then
+            DAEMON.event.emit("player.death", {
+                char_id    = self.char_id,
+                session_id = self.session_id,
+            })
+        end
+    end
 
     return obj
 end
@@ -263,6 +280,116 @@ function Player:examine()
     parts[#parts + 1] = "Level: " .. (self.stats.level or 1)
 
     return table.concat(parts, "\r\n") .. "\r\n"
+end
+
+-- ─── Communication ───────────────────────────────────────────────────────────
+
+local utils = require('lib.utils')
+local color  -- lazy-loaded to avoid circular requires
+
+local function get_color()
+    if not color then
+        local ok, mod = pcall(require, 'lib.color')
+        if ok then color = mod end
+    end
+    return color
+end
+
+--- Default wrap width when NAWS is unavailable.
+Player.DEFAULT_WRAP_WIDTH = 80
+
+--- Get the terminal width for this player's session.
+-- Uses NAWS if the client reported it, otherwise falls back to DEFAULT_WRAP_WIDTH.
+-- @return number  The wrap width
+function Player:get_width()
+    if self.session_id then
+        local session = get_session(self.session_id)
+        if session and session.window_width and session.window_width > 0 then
+            return session.window_width
+        end
+    end
+    return Player.DEFAULT_WRAP_WIDTH
+end
+
+--- Internal: apply color and snoop forwarding after wrapping.
+-- @param text string  Already-wrapped text
+local function process_output(session_id, text)
+    -- Apply ANSI color tags
+    local c = get_color()
+    if c then
+        text = c.colorize(text)
+    end
+
+    send(session_id, text .. "\r\n")
+
+    -- Forward to snoopers if any
+    if DAEMON and DAEMON.snoop and DAEMON.snoop.is_snooped(session_id) then
+        local snoopers = DAEMON.snoop.get_snoopers(session_id)
+        for _, snooper_sid in ipairs(snoopers) do
+            send(snooper_sid, "[SNOOP] " .. text .. "\r\n")
+        end
+    end
+end
+
+--- Send text to this player with automatic word wrapping and \r\n.
+-- Text is wrapped to the client's terminal width. Existing line breaks
+-- and paragraph separators are preserved. Color tags are translated to ANSI.
+-- @param text string  The text to send
+function Player:send(text)
+    if self.session_id then
+        local wrapped = utils.wrap(text, self:get_width())
+        process_output(self.session_id, wrapped)
+    end
+end
+
+--- Send text without word wrapping (for pre-formatted content like tables, ASCII art).
+-- Color tags are still processed.
+-- @param text string  The text to send
+function Player:send_raw(text)
+    if self.session_id then
+        process_output(self.session_id, text)
+    end
+end
+
+--- Send multiple lines of text to this player (each individually wrapped).
+-- @param ... string  Lines to send
+function Player:send_lines(...)
+    if not self.session_id then return end
+    local width = self:get_width()
+    for _, text in ipairs({...}) do
+        process_output(self.session_id, utils.wrap(text, width))
+    end
+end
+
+--- Send a message to everyone in the player's current room except this player.
+-- The message is wrapped to each recipient's terminal width.
+-- @param text string  The message to broadcast
+function Player:message_room(text)
+    if not self.char_id then return end
+    local room_id = DAEMON.world.get_character_room(self.char_id)
+    if room_id then
+        local messaging = require('lib.messaging')
+        messaging.send_to_room(room_id, text, self.char_id)
+    end
+end
+
+-- ─── Movement ────────────────────────────────────────────────────────────────
+
+--- Teleport this player to a room. Sends a room look on arrival.
+-- @param room_id string  The target room ID
+-- @return boolean        true if the move succeeded
+function Player:move_to(room_id)
+    if not self.char_id then return false end
+    if not DAEMON or not DAEMON.world then return false end
+
+    local ok = DAEMON.world.move_character(self.char_id, room_id)
+    if ok and self.session_id then
+        local room = DAEMON.world.get_character_room_obj(self.char_id)
+        if room then
+            send(self.session_id, room:get_appearance(self.session_id))
+        end
+    end
+    return ok
 end
 
 -- ─── Utility ─────────────────────────────────────────────────────────────────

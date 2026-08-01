@@ -275,6 +275,23 @@ fn register_session_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
                     if let Some(cid) = s.state.character_id() {
                         t.set("character_id", cid)?;
                     }
+                    if let Some(w) = s.capabilities.window_width {
+                        t.set("window_width", w)?;
+                    }
+                    if let Some(h) = s.capabilities.window_height {
+                        t.set("window_height", h)?;
+                    }
+                    if let Some(ref ttype) = s.capabilities.terminal_type {
+                        t.set("terminal_type", ttype.clone())?;
+                    }
+                    t.set("gmcp_supported", s.capabilities.gmcp_supported)?;
+                    if !s.capabilities.gmcp_packages.is_empty() {
+                        let pkgs = lua.create_table()?;
+                        for (i, pkg) in s.capabilities.gmcp_packages.iter().enumerate() {
+                            pkgs.set(i + 1, pkg.clone())?;
+                        }
+                        t.set("gmcp_packages", pkgs)?;
+                    }
                     Ok(LuaValue::Table(t))
                 }
             }
@@ -397,6 +414,20 @@ fn register_account_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
             }
         })?;
         globals.set("get_account", get_fn)?;
+    }
+    // set_admin(account_id, is_admin) -> bool
+    {
+        let store = ctx.account_store.clone();
+        let set_admin_fn = lua.create_function(move |_, (account_id, is_admin): (i64, bool)| {
+            match store.set_admin(account_id, is_admin) {
+                Ok(()) => Ok(true),
+                Err(e) => {
+                    tracing::warn!("set_admin failed for account {}: {}", account_id, e);
+                    Ok(false)
+                }
+            }
+        })?;
+        globals.set("set_admin", set_admin_fn)?;
     }
 
     Ok(())
@@ -558,6 +589,43 @@ fn register_utility_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
             }
         })?;
         globals.set("config", config_fn)?;
+    }
+    // list_dir(relative_path) -> table of filenames (without .lua extension)
+    // Lists .lua files in a directory relative to mudlib/ and game/ paths.
+    // e.g. list_dir("cmds") returns {"north", "look", "say", ...}
+    {
+        let cfg = ctx.server_config.clone();
+        let list_dir_fn = lua.create_function(move |lua, rel_path: String| {
+            let t = lua.create_table()?;
+            let mut idx = 1;
+            let mut seen = std::collections::HashSet::new();
+
+            // Search both game/ and mudlib/ directories
+            let game_path = cfg.game.game_path.as_deref().unwrap_or("./game");
+            let mudlib_path = &cfg.game.mudlib_path;
+            let search_dirs = vec![game_path.to_string(), mudlib_path.clone()];
+
+            for base in &search_dirs {
+                let dir = std::path::PathBuf::from(base).join(&rel_path);
+                if let Ok(entries) = std::fs::read_dir(&dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().and_then(|e| e.to_str()) == Some("lua") {
+                            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                                let name = stem.to_string();
+                                if seen.insert(name.clone()) {
+                                    t.set(idx, name)?;
+                                    idx += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Ok(LuaValue::Table(t))
+        })?;
+        globals.set("list_dir", list_dir_fn)?;
     }
 
     Ok(())
