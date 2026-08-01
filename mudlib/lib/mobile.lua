@@ -7,12 +7,24 @@
 
 local Object = require('lib.object')
 
+--- @class Mobile : Object
+--- @field stats table
+--- @field on_death function
+--- @field echoes table
+--- @field inventory table
+--- @field tags table
+--- @field aggressive boolean
+--- @field dialogue table
+--- @field skills table
+--- @field race string
+--- @field faction string
 local Mobile = setmetatable({}, { __index = Object })
 Mobile.__index = Mobile
 
 --- Create a new Mobile from a data table.
--- @param data table  Mobile definition
--- @return table      The new Mobile
+--- @override
+--- @param data table  Mobile definition
+--- @return table      The new Mobile
 function Mobile:new(data)
     local obj = Object.new(self, data)
 

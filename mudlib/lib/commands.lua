@@ -132,14 +132,19 @@ function M.dispatch(session_id, text)
     end
 
     local verb, args_str, args = M.parse(text)
+    --- add this check to satisfy linter
+    if not verb then
+        render_prompt(session_id)
+        return
+    end
     -- Resolve alias to canonical name (for system commands)
     local resolved_verb = _aliases[verb] or verb
+    local session = get_session(session_id)
 
     -- ── 1. Room actions ──────────────────────────────────────────────────
     -- Check if the verb matches a room-scoped action on the player's
     -- current room. Room actions take priority over system commands.
     if DAEMON and DAEMON.world then
-        local session = get_session(session_id)
         if session and session.character_id then
             local room = DAEMON.world.get_character_room_obj(session.character_id)
             if room then

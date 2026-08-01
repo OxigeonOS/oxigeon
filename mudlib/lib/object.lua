@@ -5,6 +5,10 @@
 -- Properties (short, description, smell, sound) can be either strings or
 -- functions that return strings (lfun pattern). Use resolve() to read them.
 
+--- @class Object
+--- @field id string
+--- @field short string
+--- @field description string
 local Object = {}
 Object.__index = Object
 

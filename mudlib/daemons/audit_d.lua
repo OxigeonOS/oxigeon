@@ -32,7 +32,7 @@ end
 
 --- Write an audit entry. Uses the audit_write efun (backed by Rust GameLogger).
 --- @param action  string   e.g. "cmd.spawn", "efun.reload"
---- @param success bool
+--- @param success boolean
 --- @param reason  string|nil  optional human-readable reason
 function M.log(action, success, reason)
     if type(audit_write) == "function" then
@@ -53,7 +53,7 @@ end
 --- @param verb       string   the command verb
 --- @param session_id string
 --- @param args_str   string   raw argument string (may be truncated in log)
---- @param ok         bool     pcall success
+--- @param ok         boolean  pcall success
 --- @param err        any      error if not ok
 function M.after_command(verb, session_id, args_str, ok, err)
     local cond = _watch[verb]

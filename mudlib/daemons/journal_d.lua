@@ -40,7 +40,7 @@ function M.error(msg, meta) return M.write("error", msg, meta) end
 --- Requires daemon.journal_d.read permission (enforced by journal_read efun).
 --- @param n      number  default 20
 --- @param level  string|nil  optional level filter ("error", "warn", etc.)
---- @return array of raw JSON strings
+--- @return {} array of raw JSON strings
 function M.recent(n, level)
     if type(journal_read) ~= "function" then return {} end
     return journal_read(n or 20, level)

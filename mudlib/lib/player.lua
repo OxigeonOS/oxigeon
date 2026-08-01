@@ -11,6 +11,13 @@
 
 local Mobile = require('lib.mobile')
 
+--- @class Player : Mobile
+--- @field char_id string
+--- @field color_enabled boolean
+--- @field name string
+--- @field session_id string
+--- @field title string
+--- @field quest_flags table
 local Player = setmetatable({}, { __index = Mobile })
 Player.__index = Player
 
