@@ -48,7 +48,8 @@ end
 -- @return string       The wrapped text
 function M.wrap(text, width)
     width = width or 80
-    if not text or text == "" then return text end
+    if text == nil or text == "" then return text end
+    if type(text) ~= "string" then text = tostring(text) end
 
     -- Normalize line endings to \n for processing
     text = text:gsub("\r\n", "\n")

@@ -23,7 +23,7 @@ function M.execute(session_id, args_str, args)
             table.insert(lines, string.format("  %-30s | Listeners: %d", ev, count))
         end
         if #events == 0 then table.insert(lines, "  (none)") end
-        player:send_lines(lines)
+        player:send(table.concat(lines, "\r\n") .. "\r\n")
         return
     end
 
@@ -38,7 +38,7 @@ function M.execute(session_id, args_str, args)
     for _, l in ipairs(listeners) do
         table.insert(lines, string.format("  %s", tostring(l)))
     end
-    player:send_lines(lines)
+    player:send(table.concat(lines, "\r\n") .. "\r\n")
 end
 
 return M

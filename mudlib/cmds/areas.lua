@@ -22,7 +22,7 @@ function M.execute(session_id, args_str, args)
             table.insert(lines, string.format("  %-20s | %-20s | Level: %-5s | Status: %-10s | Rooms: %d", name, meta.title or "Unknown", tostring(meta.level or "?"), meta.status or "unknown", #rooms))
         end
         if #lines == 1 then table.insert(lines, "  (none)") end
-        player:send_lines(lines)
+        player:send(table.concat(lines, "\r\n") .. "\r\n")
         return
     end
 
@@ -83,7 +83,7 @@ function M.execute(session_id, args_str, args)
             table.insert(lines, string.format("  %-30s | %-20s |", rid, short))
         end
     end
-    player:send_lines(lines)
+    player:send(table.concat(lines, "\r\n") .. "\r\n")
 end
 
 return M

@@ -1,8 +1,8 @@
 local M = {}
-M.name = 'stat'
-M.aliases = {'@stat'}
+M.name = 'objdump'
+M.aliases = {'@objdump'}
 M.category = 'admin'
-M.summary = 'Show detailed stats for a player or room.'
+M.summary = 'Show detailed information dump for a player or room.'
 M.permission = 'admin'
 
 local function format_dict(d)
@@ -24,13 +24,14 @@ function M.execute(session_id, args_str, args)
     if not player then return end
 
     if not args_str or args_str == "" then
-        player:send("Usage: stat <player_name> | <room_id>\r\n")
+        player:send("Usage: objdump <player_name> | <room_id>\r\n")
         return
     end
 
     local target_player = nil
-    for _, s in pairs(all_sessions()) do
-        if s.state == "playing" and s.character_id then
+    for _, sid in ipairs(all_sessions()) do
+        local s = get_session(sid)
+        if s and s.state == "playing" and s.character_id then
             local p = DAEMON.character and DAEMON.character.get(s.character_id)
             if p and p.name:lower() == args_str:lower() then
                 target_player = p
@@ -42,7 +43,7 @@ function M.execute(session_id, args_str, args)
     if target_player then
         local p = target_player
         local lines = {}
-        table.insert(lines, string.format("─── Player: %s ─────────────────────────────", p.name))
+        table.insert(lines, string.format("─── {green}Player{/}: %s ─────────────────────────────", p.name))
         table.insert(lines, string.format("  Char ID: %s | Account: %s | Session: %s", tostring(p.char_id), tostring(p.account_id), tostring(p.session_id)))
         
         local room_id = DAEMON.world and DAEMON.world.get_character_room(p.char_id) or "Unknown"
@@ -84,14 +85,14 @@ function M.execute(session_id, args_str, args)
         table.insert(lines, "  Tags: " .. format_array(p.tags))
         table.insert(lines, "  Custom: " .. format_dict(p.custom))
 
-        player:send_lines(lines)
+        player:send(table.concat(lines, "\r\n") .. "\r\n")
         return
     end
 
     local room = DAEMON.world and DAEMON.world.get_room(args_str)
     if room then
         local lines = {}
-        table.insert(lines, string.format("─── Room: %s ─────────────", room.id))
+        table.insert(lines, string.format("─── {cyan}Room{/}: %s ─────────────", room.id))
         table.insert(lines, string.format("  Short: %s", room.short or "(none)"))
         
         local area_name = room.id:match("^(.-)%.")
@@ -155,7 +156,7 @@ function M.execute(session_id, args_str, args)
             table.insert(lines, "    (none)")
         end
         
-        player:send_lines(lines)
+        player:send(table.concat(lines, "\r\n") .. "\r\n")
         return
     end
 

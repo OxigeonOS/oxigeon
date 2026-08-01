@@ -32,9 +32,10 @@ function M.execute(session_id, args_str, args)
 
     local playing = 0
     local total_sessions = 0
-    for _, s in pairs(all_sessions()) do
+    for _, sid in ipairs(all_sessions()) do
         total_sessions = total_sessions + 1
-        if s.state == "playing" then
+        local s = get_session(sid)
+        if s and s.state == "playing" then
             playing = playing + 1
         end
     end
@@ -100,7 +101,7 @@ function M.execute(session_id, args_str, args)
     table.insert(lines, string.format(" Daemons:     %d loaded", daemon_count))
     table.insert(lines, "")
 
-    player:send_lines(lines)
+    player:send(table.concat(lines, "\r\n") .. "\r\n")
 end
 
 return M

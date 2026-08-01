@@ -15,8 +15,9 @@ function M.execute(session_id, args_str, args)
     table.insert(lines, string.rep("-", 98))
 
     local count = 0
-    for sid, s in pairs(all_sessions()) do
-        if s.state == "playing" and s.character_id then
+    for _, sid in ipairs(all_sessions()) do
+        local s = get_session(sid)
+        if s and s.state == "playing" and s.character_id then
             local p = get_character(s.character_id)
             if p then
                 count = count + 1
@@ -30,7 +31,7 @@ function M.execute(session_id, args_str, args)
     table.insert(lines, string.rep("-", 98))
     table.insert(lines, string.format("Total players: %d", count))
 
-    player:send_lines(lines)
+    player:send(table.concat(lines, "\r\n") .. "\r\n")
 end
 
 return M

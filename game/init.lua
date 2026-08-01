@@ -1,34 +1,9 @@
--- game/init.lua — Game layer entry point
+-- game/init.lua — Game content layer entry point
 -- Loaded by the engine after mudlib/init.lua.
--- Initializes game-specific daemons, loads areas, and registers system tasks.
-
--- ─── Daemons ─────────────────────────────────────────────────────────────────
--- Each daemon load is protected so one failure doesn't prevent the others.
+-- Registers game-specific areas. All infrastructure (daemons, commands,
+-- tasks, libraries) lives in mudlib/. This file handles authored content only.
 
 local ok, err
-
--- Ensure the first account is always admin (covers pre-existing databases)
-if type(set_admin) == "function" then
-    pcall(set_admin, 1, true)
-end
-
-ok, err = pcall(function() DAEMON.room = require('daemons.room_d') end)
-if not ok then log("error", "Failed to load room_d daemon: " .. tostring(err)) end
-
-ok, err = pcall(function() DAEMON.character = require('daemons.character_d') end)
-if not ok then log("error", "Failed to load character_d daemon: " .. tostring(err)) end
-
-ok, err = pcall(function() DAEMON.world = require('daemons.world_d') end)
-if not ok then log("error", "Failed to load world_d daemon: " .. tostring(err)) end
-
-ok, err = pcall(function() DAEMON.codegen = require('daemons.codegen_d') end)
-if not ok then log("error", "Failed to load codegen_d daemon: " .. tostring(err)) end
-
-ok, err = pcall(function() DAEMON.olc = require('daemons.olc_d') end)
-if not ok then log("error", "Failed to load olc_d daemon: " .. tostring(err)) end
-
-ok, err = pcall(function() DAEMON.items = require('daemons.item_d') end)
-if not ok then log("error", "Failed to load item_d daemon: " .. tostring(err)) end
 
 -- ─── Areas ───────────────────────────────────────────────────────────────────
 -- Each area lives in its own subdirectory under game/areas/.
@@ -75,31 +50,3 @@ else
 end
 
 log("info", "Game world loaded successfully.")
-
--- ─── System Tasks ────────────────────────────────────────────────────────────
--- Tasks are defined in game/tasks/ and registered here using ticker_d.
--- Intervals are pulled from server.toml via the config() efun.
-
--- Autosave — periodically save all loaded player data to prevent data loss
-if DAEMON.ticker and DAEMON.character then
-    local autosave_interval = config("game.autosave_seconds") or 300
-    if autosave_interval > 0 then
-        local autosave = require('tasks.autosave')
-        DAEMON.ticker.every(autosave_interval, "system.autosave", autosave.run)
-        log("info", "Autosave timer registered (every " .. autosave_interval .. "s)")
-    else
-        log("info", "Autosave disabled (autosave_seconds = 0)")
-    end
-end
-
--- Area reset — periodically reload area Lua and clear transient state
-if DAEMON.ticker and DAEMON.world then
-    local reset_interval = config("game.area_reset_seconds") or 900
-    if reset_interval > 0 then
-        local area_reset = require('tasks.area_reset')
-        DAEMON.ticker.every(reset_interval, "system.area_reset", area_reset.run)
-        log("info", "Area reset timer registered (every " .. reset_interval .. "s)")
-    else
-        log("info", "Area resets disabled (area_reset_seconds = 0)")
-    end
-end

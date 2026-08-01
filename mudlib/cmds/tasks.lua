@@ -44,7 +44,7 @@ function M.execute(session_id, args_str, args)
         end
         if count == 0 then table.insert(lines, "  (none)") end
         
-        player:send_lines(lines)
+        player:send(table.concat(lines, "\r\n") .. "\r\n")
         return
     end
 

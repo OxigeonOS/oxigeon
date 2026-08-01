@@ -346,10 +346,16 @@ fn hot_reload(lua: &Lua, module_name: &str, mudlib_path: &str) {
             }
         }
 
-        // 2. Clear from package.loaded
+        // 2. Clear from package.loaded (both slash and dot variants)
+        //    Lua's require() caches with dot-separated keys ("cmds.tasks")
+        //    but users pass slash-separated paths ("cmds/tasks") to reload.
         let package: LuaTable = lua.globals().get("package")?;
         let loaded: LuaTable = package.get("loaded")?;
+        let dot_key = module_name.replace('/', ".");
         loaded.set(module_name, LuaValue::Nil)?;
+        if dot_key != module_name {
+            loaded.set(dot_key.as_str(), LuaValue::Nil)?;
+        }
 
         // 3. Find and load the file directly
         let safe_name = module_name.replace('.', "/");
@@ -363,7 +369,10 @@ fn hot_reload(lua: &Lua, module_name: &str, mudlib_path: &str) {
 
                 match module_val {
                     Ok(val) => {
-                        loaded.set(module_name, val)?;
+                        loaded.set(module_name, val.clone())?;
+                        if dot_key != module_name {
+                            loaded.set(dot_key.as_str(), val)?;
+                        }
 
                         // 4. Call on_load hook if it exists
                         if let Ok(hook) = lua.globals().get::<LuaFunction>("on_load") {
