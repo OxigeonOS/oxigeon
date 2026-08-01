@@ -53,6 +53,8 @@ fn make_efun_context(
             game_path: Some(mudlib_path.join("game").to_string_lossy().to_string()),
             command_paths: None,
             start_room: None,
+            area_reset_seconds: Some(900),
+            autosave_seconds: Some(300),
         },
         sessions: SessionsConfig {
             multisession_mode: MultisessionMode::Single,

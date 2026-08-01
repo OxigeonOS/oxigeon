@@ -39,7 +39,13 @@ local COMMAND_LIST = [[
 
   Admin
   -----
-  reload <mod> Hot-reload a Lua module (requires permission)
+  reload <mod>  Hot-reload a Lua module (requires permission)
+  stat <target> Inspect a player or room in detail
+  mudstatus     Server status dashboard
+  areas         List/manage/reset areas
+  tasks         List/manage background tasks
+  events        List event subscriptions
+  awho          Detailed admin who list
 
   Type 'help <topic>' for details on a topic.
   (Full topic help system coming soon.)

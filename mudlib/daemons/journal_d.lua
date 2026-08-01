@@ -1,4 +1,4 @@
--- mudlib/daemons/journald.lua
+-- mudlib/daemons/journal_d.lua
 -- Journal Daemon — general server log for info/warn/error messages.
 --
 -- Any code can call DAEMON.journal.info/warn/error to write structured
@@ -37,7 +37,7 @@ function M.warn(msg, meta)  return M.write("warn",  msg, meta) end
 function M.error(msg, meta) return M.write("error", msg, meta) end
 
 --- Read recent journal entries.
---- Requires daemon.journald.read permission (enforced by journal_read efun).
+--- Requires daemon.journal_d.read permission (enforced by journal_read efun).
 --- @param n      number  default 20
 --- @param level  string|nil  optional level filter ("error", "warn", etc.)
 --- @return array of raw JSON strings
@@ -64,6 +64,6 @@ function M.format_entry(json_str)
     end
 end
 
-log("info", "journald daemon loaded")
+log("info", "journal_d daemon loaded")
 
 return M

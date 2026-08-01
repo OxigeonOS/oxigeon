@@ -1,4 +1,4 @@
--- mudlib/lib/utils.lua — Shared Lua utilities for Oxigeon mudlibs
+-- mudlib/lib/strings.lua — String manipulation utilities
 
 local M = {}
 
@@ -106,24 +106,6 @@ function M.format_number(n)
         end
     end
     return result
-end
-
---- Check if a value is in a table
-function M.contains(t, val)
-    for _, v in ipairs(t) do
-        if v == val then return true end
-    end
-    return false
-end
-
---- Deep copy a table
-function M.deepcopy(t)
-    if type(t) ~= "table" then return t end
-    local copy = {}
-    for k, v in pairs(t) do
-        copy[k] = M.deepcopy(v)
-    end
-    return copy
 end
 
 return M

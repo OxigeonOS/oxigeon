@@ -292,7 +292,7 @@ end
 
 -- ─── Communication ───────────────────────────────────────────────────────────
 
-local utils = require('lib.utils')
+local strings = require('lib.strings')
 local color  -- lazy-loaded to avoid circular requires
 
 local function get_color()
@@ -345,7 +345,7 @@ end
 -- @param text string  The text to send
 function Player:send(text)
     if self.session_id then
-        local wrapped = utils.wrap(text, self:get_width())
+        local wrapped = strings.wrap(text, self:get_width())
         process_output(self.session_id, wrapped)
     end
 end
@@ -365,7 +365,7 @@ function Player:send_lines(...)
     if not self.session_id then return end
     local width = self:get_width()
     for _, text in ipairs({...}) do
-        process_output(self.session_id, utils.wrap(text, width))
+        process_output(self.session_id, strings.wrap(text, width))
     end
 end
 

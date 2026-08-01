@@ -10,7 +10,7 @@ Oxigeon is structured in three layers. Each layer has a specific responsibility 
 │                                                             │
 │  mudlib/                → Core system layer                 │
 │  ├── init.lua           → setup daemons, event hooks        │
-│  ├── daemons/           → journald, auditd, ticker_d,       │
+│  ├── daemons/           → journal_d, audit_d, ticker_d,     │
 │  │                        event_d, prompt_d                 │
 │  └── lib/               → object, item, weapon, armor,      │
 │                           mobile, player, commands, utils    │

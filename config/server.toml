@@ -13,6 +13,13 @@ command_paths = ["cmds"]
 # Room ID where characters spawn on login
 start_room = "wizard_workshop.entrance"
 
+# How often areas reset in seconds (re-evaluates area Lua, clears object state).
+# Set to 0 to disable periodic resets. Default: 900 (15 minutes).
+area_reset_seconds = 900
+# How often player data is auto-saved in seconds.
+# Set to 0 to disable autosave. Default: 300 (5 minutes).
+autosave_seconds = 300
+
 [sessions]
 # How multiple client connections per account are handled:
 #   "single"           - New connection kicks old one (traditional MUD)

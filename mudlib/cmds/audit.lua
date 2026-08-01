@@ -12,10 +12,10 @@ M.name       = "audit"
 M.aliases    = {}
 M.category   = "admin"
 M.summary    = "Audit log: read entries and manage the command watch list."
-M.permission = "daemon.auditd.read"
+M.permission = "daemon.audit_d.read"
 
 -- Permissions for the management subcommands (checked inline)
-local MANAGE_PERM = "daemon.auditd.manage"
+local MANAGE_PERM = "daemon.audit_d.manage"
 
 --- Format a raw audit JSON line for display.
 local function format_entry(raw)
@@ -39,7 +39,7 @@ function M.execute(session_id, args_str, args)
     if sub == "list" then
         send(session_id, "\r\n=== Audit Watch List ===\r\n")
         if not (DAEMON and DAEMON.audit) then
-            send(session_id, "  auditd daemon not loaded.\r\n")
+            send(session_id, "  audit_d daemon not loaded.\r\n")
         
             return
         end
@@ -73,7 +73,7 @@ function M.execute(session_id, args_str, args)
             return
         end
         if not DAEMON or not DAEMON.audit then
-            send(session_id, "\r\nauditd daemon not loaded.\r\n")
+            send(session_id, "\r\naudit_d daemon not loaded.\r\n")
         
             return
         end
@@ -102,7 +102,7 @@ function M.execute(session_id, args_str, args)
             return
         end
         if not DAEMON or not DAEMON.audit then
-            send(session_id, "\r\nauditd daemon not loaded.\r\n")
+            send(session_id, "\r\naudit_d daemon not loaded.\r\n")
         
             return
         end
@@ -131,7 +131,7 @@ function M.execute(session_id, args_str, args)
     elseif type(audit_read) == "function" then
         entries = audit_read(count)
     else
-        send(session_id, "\r\nauditd not available.\r\n")
+        send(session_id, "\r\naudit_d not available.\r\n")
     
         return
     end

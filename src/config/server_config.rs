@@ -21,6 +21,10 @@ pub struct GameConfig {
     pub command_paths: Option<Vec<String>>,
     /// Room ID where new characters spawn. e.g. "wizard_workshop.entrance"
     pub start_room: Option<String>,
+    /// How often areas reset in seconds. 0 = disabled. Default: 900 (15 minutes).
+    pub area_reset_seconds: Option<u64>,
+    /// How often player data is auto-saved in seconds. 0 = disabled. Default: 300 (5 minutes).
+    pub autosave_seconds: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

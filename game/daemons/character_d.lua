@@ -26,7 +26,7 @@ local M = {}
 -- In-memory cache: char_id -> Player object
 M._cache = {}
 
---- Helper: log an error to both log() and journald (if available).
+--- Helper: log an error to both log() and journal_d (if available).
 local function log_error(message)
     log("error", message)
     if DAEMON and DAEMON.journal then
@@ -34,7 +34,7 @@ local function log_error(message)
     end
 end
 
---- Helper: log a warning to both log() and journald (if available).
+--- Helper: log a warning to both log() and journal_d (if available).
 local function log_warn(message)
     log("warn", message)
     if DAEMON and DAEMON.journal then

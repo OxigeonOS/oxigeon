@@ -1,4 +1,4 @@
--- mudlib/daemons/auditd.lua
+-- mudlib/daemons/audit_d.lua
 -- Audit Daemon — tracks privileged command runs and efun permission events.
 --
 -- Exposes:
@@ -111,7 +111,7 @@ function M.watch(verb, condition)
     end
     _watch[verb] = condition
     M.save_watch()
-    M.log("auditd.watch.add", true, verb .. "=" .. condition)
+    M.log("audit_d.watch.add", true, verb .. "=" .. condition)
     return true
 end
 
@@ -120,7 +120,7 @@ function M.unwatch(verb)
     if not _watch[verb] then return false end
     _watch[verb] = nil
     M.save_watch()
-    M.log("auditd.watch.rm", true, verb)
+    M.log("audit_d.watch.rm", true, verb)
     return true
 end
 
@@ -163,7 +163,7 @@ end
 -- ─── Reading entries ─────────────────────────────────────────────────────────
 
 --- Read the last n audit entries. Returns array of raw JSON strings.
---- Requires daemon.auditd.read permission (enforced by audit_read efun).
+--- Requires daemon.audit_d.read permission (enforced by audit_read efun).
 --- @param n number  default 20
 function M.recent(n)
     if type(audit_read) ~= "function" then return {} end
@@ -175,7 +175,7 @@ end
 -- Load watch table from disk on module load
 M.load_watch()
 
-log("info", "auditd daemon loaded (watching " .. (function()
+log("info", "audit_d daemon loaded (watching " .. (function()
     local c = 0
     for _ in pairs(_watch) do c = c + 1 end
     return c

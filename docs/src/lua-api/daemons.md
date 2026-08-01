@@ -21,8 +21,8 @@ DAEMON.journal.log("info", "Server startup complete.")
 
 | Daemon | Key | Purpose |
 |--------|-----|---------|
-| `journald` | `DAEMON.journal` | Structured logging to server console and log files. |
-| `auditd` | `DAEMON.audit` | Security and compliance audit trail for player/admin actions. |
+| `journal_d` | `DAEMON.journal` | Structured logging to server console and log files. |
+| `audit_d` | `DAEMON.audit` | Security and compliance audit trail for player/admin actions. |
 | `ticker_d` | `DAEMON.ticker` | Timer scheduler — manages Lua callbacks for Tokio-backed async timers. |
 | `event_d` | `DAEMON.event` | Signal/event system — Godot-style named event channels with subscribe/emit. |
 | `prompt_d` | `DAEMON.prompt` | Prompt template engine — per-player customizable prompt rendering with variable substitution. |
@@ -37,12 +37,12 @@ DAEMON.journal.log("info", "Server startup complete.")
 | `codegen_d` | `DAEMON.codegen` | Code generation for OLC — produces clean Lua data files for rooms and area metadata. |
 | `olc_d` | `DAEMON.olc` | Online Creation session manager — tracks per-session OLC state (area, room, mode). |
 
-### journald vs auditd
+### journal_d vs audit_d
 
 These serve distinct purposes:
 
-- **journald** (`DAEMON.journal`) — "What went wrong?" Operational events: errors, warnings, daemon load/unload, module reloads.
-- **auditd** (`DAEMON.audit`) — "Who did this?" Security trail: admin commands, permission denials, privileged actions.
+- **journal_d** (`DAEMON.journal`) — "What went wrong?" Operational events: errors, warnings, daemon load/unload, module reloads.
+- **audit_d** (`DAEMON.audit`) — "Who did this?" Security trail: admin commands, permission denials, privileged actions.
 
 ## Creating Your Own Daemon
 

@@ -43,7 +43,7 @@
 - `DAEMON.ticker.after(delay, id, fn)` — one-shot with Lua callback
 - `DAEMON.ticker.every(interval, id, fn)` — repeating with Lua callback
 - `DAEMON.ticker.remove(id)` — cancel timer and callback
-- Input validation, pcall-wrapped callbacks, journald error logging
+- Input validation, pcall-wrapped callbacks, journal_d error logging
 
 #### Event System (EVENT_D)
 - Godot-style signals — named event channels with subscribe/emit
@@ -60,7 +60,7 @@
 - New config keys: `game.command_paths`, `game.start_room`, `game.game_path`
 
 #### Observability
-- Structured error logging via journald for all critical operations
+- Structured error logging via journal_d for all critical operations
 - `pcall`-wrapped cleanup chains (disconnect, init loading)
 - Input validation in all daemons with logged warnings
 
@@ -138,7 +138,8 @@
   `on_load`, `on_unload`), command dispatcher (`help`, `who`, `time`, `say`, `quit`)
 - `mudlib/login.lua` — full login/registration flow with ECHO masking; calls
   `authenticate_session()` + `enter_game_session()` for proper session state transitions
-- `mudlib/lib/utils.lua` — string/table utilities
+- `mudlib/lib/strings.lua` — string utilities
+- `mudlib/lib/tables.lua` — table utilities
 
 #### Documentation
 - mdbook-based documentation served at `docs/` (`mdbook serve docs/ --port 3000`)

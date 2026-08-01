@@ -12,7 +12,7 @@ local M = {}
 -- Registry: item_id → Item object
 M._items = {}
 
---- Helper: log errors to both log() and journald.
+--- Helper: log errors to both log() and journal_d.
 local function log_error(message)
     log("error", message)
     if DAEMON and DAEMON.journal then

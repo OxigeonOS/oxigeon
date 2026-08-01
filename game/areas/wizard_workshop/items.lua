@@ -1,4 +1,4 @@
--- game/items/wizard_workshop_items.lua — Item definitions for the Wizard's Workshop
+-- game/areas/wizard_workshop/items.lua — Item definitions for the Wizard's Workshop
 -- All items used in the workshop puzzle are defined here and registered
 -- with ITEM_D during game init.
 

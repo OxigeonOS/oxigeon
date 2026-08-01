@@ -21,7 +21,7 @@ M._callbacks = {}
 
 -- ─── Helpers ─────────────────────────────────────────────────────────────────
 
---- Log an error to both log() and journald (if available).
+--- Log an error to both log() and journal_d (if available).
 local function log_error(message)
     log("error", message)
     if DAEMON and DAEMON.journal then

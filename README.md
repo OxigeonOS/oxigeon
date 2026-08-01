@@ -32,7 +32,8 @@ oxigeon/
 │   ├── init.lua           # Entry point: on_connect, on_input, on_disconnect
 │   ├── login.lua          # Login/registration flow
 │   └── lib/
-│       └── utils.lua      # Shared utilities
+│       ├── strings.lua    # String utilities
+│       └── tables.lua     # Table utilities
 │
 ├── migrations/            # Diesel database migrations
 │

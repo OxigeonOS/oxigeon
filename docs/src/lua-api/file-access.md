@@ -123,7 +123,7 @@ the mudlib (via `..`).
 | Path | Allowed | Reason |
 |------|---------|--------|
 | `data/players.db` | ✅ | Normal relative path |
-| `lib/utils.lua` | ✅ | Subdirectory |
+| `lib/strings.lua` | ✅ | Subdirectory |
 | `../../etc/passwd` | ❌ | Contains `..` |
 | `subdir/../../outside` | ❌ | Contains `..` |
 | `/etc/passwd` | ❌ | Absolute path is rejected |

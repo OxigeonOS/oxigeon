@@ -6,14 +6,14 @@
 -- DAEMON is a global table; all daemons attach themselves here on load.
 DAEMON = {}
 
--- Load core daemons (order matters: auditd and journald are foundational)
+-- Load core daemons (order matters: audit_d and journal_d are foundational)
 local ok, err
 
-ok, err = pcall(function() DAEMON.journal = require("daemons.journald") end)
-if not ok then log("warn", "Failed to load journald daemon: " .. tostring(err)) end
+ok, err = pcall(function() DAEMON.journal = require("daemons.journal_d") end)
+if not ok then log("warn", "Failed to load journal_d daemon: " .. tostring(err)) end
 
-ok, err = pcall(function() DAEMON.audit   = require("daemons.auditd") end)
-if not ok then log("warn", "Failed to load auditd daemon: " .. tostring(err)) end
+ok, err = pcall(function() DAEMON.audit   = require("daemons.audit_d") end)
+if not ok then log("warn", "Failed to load audit_d daemon: " .. tostring(err)) end
 
 ok, err = pcall(function() DAEMON.ticker  = require("daemons.ticker_d") end)
 if not ok then log("warn", "Failed to load ticker_d daemon: " .. tostring(err)) end
@@ -183,8 +183,8 @@ function on_load(module_name)
     -- The hot-reload system updates package.loaded, but DAEMON.x still
     -- points to the old table unless we reassign here.
     local daemon_map = {
-        ["daemons.journald"]     = "journal",
-        ["daemons.auditd"]       = "audit",
+        ["daemons.journal_d"]    = "journal",
+        ["daemons.audit_d"]      = "audit",
         ["daemons.ticker_d"]     = "ticker",
         ["daemons.event_d"]      = "event",
         ["daemons.prompt_d"]     = "prompt",

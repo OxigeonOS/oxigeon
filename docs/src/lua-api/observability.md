@@ -35,8 +35,8 @@ Daemons are singleton Lua modules loaded at startup and stored in the global `DA
 
 ```lua
 -- Available after mudlib init:
-DAEMON.journal   -- journald daemon
-DAEMON.audit     -- auditd daemon
+DAEMON.journal   -- journal_d daemon
+DAEMON.audit     -- audit_d daemon
 ```
 
 ### Daemon Loading
@@ -44,13 +44,13 @@ DAEMON.audit     -- auditd daemon
 ```lua
 -- mudlib/init.lua loads daemons automatically:
 DAEMON = {}
-DAEMON.journal = require("daemons.journald")
-DAEMON.audit   = require("daemons.auditd")
+DAEMON.journal = require("daemons.journal_d")
+DAEMON.audit   = require("daemons.audit_d")
 ```
 
 ---
 
-## journald — Server Journal
+## journal_d — Server Journal
 
 The journal is a general-purpose log for info, warnings, errors, and debug output.
 All Lua crashes are automatically written here by the driver.
@@ -102,7 +102,7 @@ journal [count] [level]
 > journal warn
 ```
 
-**Requires:** `daemon.journald.read` permission
+**Requires:** `daemon.journal_d.read` permission
 
 ### Journal Log Entry Format
 
@@ -136,7 +136,7 @@ This means **you never lose a Lua crash** — every error is persisted to disk.
 
 ---
 
-## auditd — Audit Trail
+## audit_d — Audit Trail
 
 The audit log records security-relevant events: privilege use, permission denials,
 and any command the server owner decides to watch.
@@ -179,8 +179,8 @@ audit add <command> <condition>   -- watch a command
 audit rm <command>                -- stop watching a command
 ```
 
-**Reading** requires: `daemon.auditd.read`
-**Managing** (add/rm) requires: `daemon.auditd.manage`
+**Reading** requires: `daemon.audit_d.read`
+**Managing** (add/rm) requires: `daemon.audit_d.manage`
 
 #### Examples
 
@@ -351,9 +351,9 @@ end
 
 | Permission | Required for |
 |------------|--------------|
-| `daemon.journald.read` | Reading journal entries (`journal` command, `journal_read()`) |
-| `daemon.auditd.read` | Reading audit entries (`audit` command, `audit_read()`) |
-| `daemon.auditd.manage` | Adding/removing audit watches (`audit add`, `audit rm`) |
+| `daemon.journal_d.read` | Reading journal entries (`journal` command, `journal_read()`) |
+| `daemon.audit_d.read` | Reading audit entries (`audit` command, `audit_read()`) |
+| `daemon.audit_d.manage` | Adding/removing audit watches (`audit add`, `audit rm`) |
 | `daemon.alert` | Sending staff alerts (`alert` command, `broadcast_to_perm("daemon.alert", ...)`) |
 | `daemon.announce` | Server-wide announcements (`announce` command) |
 | `daemon.broadcast` | Using `broadcast_to_perm()` efun |
@@ -362,11 +362,11 @@ end
 Grant these like any other permission:
 
 ```lua
-grant_permission("admin",   "daemon.auditd.read")
-grant_permission("admin",   "daemon.auditd.manage")
-grant_permission("admin",   "daemon.journald.read")
+grant_permission("admin",   "daemon.audit_d.read")
+grant_permission("admin",   "daemon.audit_d.manage")
+grant_permission("admin",   "daemon.journal_d.read")
 grant_permission("admin",   "daemon.alert")
 grant_permission("admin",   "daemon.announce")
-grant_permission("builder", "daemon.journald.read")
+grant_permission("builder", "daemon.journal_d.read")
 grant_permission("builder", "efun.verify")
 ```

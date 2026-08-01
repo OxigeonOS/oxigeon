@@ -49,8 +49,8 @@ Oxigeon runs Lua in a controlled sandbox designed to prevent untrusted mudlib co
 `require` is available but restricted:
 
 ```lua
--- ✅ Allowed — loads from mudlib/lib/utils.lua
-local utils = require("lib.utils")
+-- ✅ Allowed — loads from mudlib/lib/strings.lua
+local strings = require("lib.strings")
 
 -- ❌ Blocked — path traversal
 local evil = require("../../evil")
@@ -59,7 +59,7 @@ local evil = require("../../evil")
 local evil = require("/etc/passwd")
 ```
 
-Dots in module names are converted to directory separators: `require("lib.utils")` → `mudlib/lib/utils.lua`.
+Dots in module names are converted to directory separators: `require("lib.strings")` → `mudlib/lib/strings.lua`.
 
 ## Memory & CPU Limits
 

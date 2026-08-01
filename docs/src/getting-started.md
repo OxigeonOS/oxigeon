@@ -86,8 +86,8 @@ mudlib/
 │   ├── mobile.lua     ← NPCs, monsters (→ Player)
 │   └── player.lua     ← player object (persistence via CHARACTER_D)
 ├── daemons/
-│   ├── journald.lua   ← structured logging
-│   ├── auditd.lua     ← audit trail
+│   ├── journal_d.lua  ← structured logging
+│   ├── audit_d.lua    ← audit trail
 │   ├── ticker_d.lua   ← timer scheduler
 │   ├── event_d.lua    ← signal/event system
 │   └── prompt_d.lua   ← prompt template engine

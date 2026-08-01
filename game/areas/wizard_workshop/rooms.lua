@@ -1,4 +1,4 @@
--- game/areas/wizard_workshop.lua — A musty old wizard's workshop
+-- game/areas/wizard_workshop/rooms.lua — A musty old wizard's workshop
 -- 7 rooms defined as pure data tables with logic separated at the top.
 --
 -- Puzzle: Three potions (red, blue, green) must be combined in the
@@ -45,7 +45,7 @@ end
 -- Item IDs used:
 --   "potion_red", "potion_blue", "potion_green" — reagent potions
 --   "empty_vial" — needed to collect the result
---   "purple_potion" — the teleportation potion (defined in items/wizard_workshop_items.lua)
+--   "purple_potion" — the teleportation potion (defined in areas/wizard_workshop/items.lua)
 --   "manasteel_bar" — treasure in the vault
 --
 -- The expected order is: red, blue, green.

@@ -20,7 +20,7 @@ Every operation that can fail must either:
 
 Silent failures (empty `if not x then return end` with no logging) are **not acceptable** for operations involving data persistence, world state, or player actions.
 
-### 2. Use journald for Structured Error Logging
+### 2. Use journal_d for Structured Error Logging
 
 `log(level, msg)` writes to the server console (Rust tracing). `DAEMON.journal` writes to the **structured journal** (persisted, searchable, queryable by admins).
 
@@ -71,14 +71,14 @@ Daemon functions that receive IDs or tables should validate before acting:
 - Log a warning if called with unexpected arguments
 - Return a clear failure value (false, nil) rather than crashing
 
-## journald vs auditd
+## journal_d vs audit_d
 
 These are two separate logging daemons with distinct purposes:
 
-### journald (`DAEMON.journal`)
+### journal_d (`DAEMON.journal`)
 **Purpose:** General-purpose structured server log.
 
-Use journald for operational events — things a server operator or developer needs to see:
+Use journal_d for operational events — things a server operator or developer needs to see:
 - Daemon load/unload events
 - Errors and warnings during gameplay (save failures, missing rooms, bad lfun returns)
 - Module hot-reloads
@@ -91,10 +91,10 @@ DAEMON.journal.info("Module reloaded: areas.wizard_workshop")
 
 Entries are written to `logs/journal.log` via the Rust `GameLogger`. Searchable by level, readable via `DAEMON.journal.recent(n, level)`.
 
-### auditd (`DAEMON.audit`)
+### audit_d (`DAEMON.audit`)
 **Purpose:** Security and compliance audit trail for player/admin actions.
 
-Use auditd for tracking **who did what** — things a moderation team needs to review:
+Use audit_d for tracking **who did what** — things a moderation team needs to review:
 - Privileged command executions (spawn, ban, grant)
 - Permission denials
 - Admin actions
@@ -107,7 +107,7 @@ DAEMON.audit.after_command("spawn", session_id, args_str, ok, err)
 
 Entries are written to `logs/audit.log` via the Rust `GameLogger`. Commands can be added to the watch list with `DAEMON.audit.watch("spawn", "all")`.
 
-**Rule of thumb:** If the question is "what went wrong?" → journald. If the question is "who did this?" → auditd.
+**Rule of thumb:** If the question is "what went wrong?" → journal_d. If the question is "who did this?" → audit_d.
 
 ## Lua Coding Conventions
 

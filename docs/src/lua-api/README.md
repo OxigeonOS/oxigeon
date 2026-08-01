@@ -14,7 +14,7 @@ Efuns are Rust functions exposed to Lua — they form the bridge between your mu
 - **[Character Data & Persistence](./character-data.md)** — `CHARACTER_D`, `save_character_data()`, `load_character_data()`
 - **[Efuns — Driver Functions](./efuns.md)** — `send()`, `send_prompt()`, `broadcast()`, `authenticate_session()`, `set_object_state()`, `schedule_timer()`, `reload()`, etc.
 - **[Event Hooks](./events.md)** — `on_connect`, `on_input`, `on_disconnect`, `on_gmcp`, `on_timer`, `on_load`, `on_unload`
-- **[Observability & Logging](./observability.md)** — journald, auditd, server info
+- **[Observability & Logging](./observability.md)** — journal_d, audit_d, server info
 - **[Permissions & Roles](./permissions.md)** — RBAC system, role management, permission checks
 - **[File & System Access](./file-access.md)** — `read_file()`, `write_file()`, `list_dir()`, `os_time()`, `os_date()`, etc.
 - **[Sandboxing & Security](./sandboxing.md)** — What is and isn't available, and why.

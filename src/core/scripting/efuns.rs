@@ -585,6 +585,14 @@ fn register_utility_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
                     Ok(LuaValue::Boolean(cfg.accounts.allow_creation)),
                 "sessions.multisession_mode" =>
                     Ok(LuaValue::String(lua.create_string("single")?)),
+                "game.area_reset_seconds" => {
+                    let val = cfg.game.area_reset_seconds.unwrap_or(900);
+                    Ok(LuaValue::Integer(val as i64))
+                }
+                "game.autosave_seconds" => {
+                    let val = cfg.game.autosave_seconds.unwrap_or(300);
+                    Ok(LuaValue::Integer(val as i64))
+                }
                 _ => Ok(LuaValue::Nil),
             }
         })?;
