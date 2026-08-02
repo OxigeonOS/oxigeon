@@ -1,0 +1,17 @@
+{
+  "$schema": "https://raw.githubusercontent.com/LuaLS/vscode-lua/master/setting/schema.json",
+  "runtime.version": "LuaJIT",
+  "runtime.path": [
+    "?.lua",
+    "?/init.lua",
+    "mudlib/?.lua",
+    "mudlib/?/init.lua",
+    "game/?.lua",
+    "game/?/init.lua"
+  ],
+  "runtime.pathStrict": false,
+  "workspace.library": ["types"],
+  "workspace.ignoreDir": ["target", "logs", ".git", "docs/book"],
+  "diagnostics.globals": ["DAEMON"],
+  "diagnostics.disable": ["lowercase-global"]
+}

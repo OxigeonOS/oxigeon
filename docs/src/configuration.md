@@ -40,6 +40,40 @@ bind = "0.0.0.0"
 port = 4000
 ```
 
+### `[servers.debug]`
+
+Optional — omit the section entirely to disable, which is the default. Enables
+the Lua debug adapter for VS Code. See
+[Debugging & Tracing](./lua-api/debugging.md).
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Listen for DAP clients and load the Lua `debug` stdlib |
+| `bind` | string | `"127.0.0.1"` | Bind address. **Never expose** — see below |
+| `port` | integer | `4711` | Listen port |
+| `auto_continue_secs` | integer | `300` | Resume the VM if the editor stops responding while stopped (`0` = never) |
+| `trace_capacity` | integer | `5000` | `trace show` ring buffer size, in records |
+| `timing_capacity` | integer | `200` | `trace timings` ring buffer size |
+
+```toml
+[servers.debug]
+enabled = true
+bind = "127.0.0.1"
+port = 4711
+```
+
+> **Freeze-the-world.** Hitting a breakpoint stops the entire Lua VM — every
+> player is frozen until you continue. Connections stay alive and input queues,
+> but repeating timers accumulate during the pause and fire as a burst on
+> resume. This is a development tool.
+
+> **Security.** The adapter grants unauthenticated arbitrary Lua execution in
+> the game VM: `evaluate` is a REPL with no login. Enabling it also loads the
+> `debug` standard library through mlua's unsafe constructor — the table is
+> hidden from `_G` before any mudlib code runs, and `package.loadlib` is closed
+> back up, but the VM no longer has mlua's safety guarantees. Leave this
+> disabled in production.
+
 ### `[logging]`
 
 | Key | Type | Default | Description |

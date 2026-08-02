@@ -1,0 +1,7 @@
+{
+  "recommendations": [
+    "sumneko.lua",
+    "rust-lang.rust-analyzer",
+    "tamasfe.even-better-toml"
+  ]
+}

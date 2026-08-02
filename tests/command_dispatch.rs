@@ -81,6 +81,7 @@ fn make_efun_context(
         game_logger,
         started_at: std::time::Instant::now(),
         started_at_utc: "2026-01-01T00:00:00Z".to_string(),
+        debug_state: oxigeon::core::scripting::debugger::DebugState::shared(1024, 64),
     }
 }
 

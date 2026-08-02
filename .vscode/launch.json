@@ -1,0 +1,24 @@
+{
+  // Requires tools/vscode-oxigeon-debug to be installed, and
+  // [servers.debug] enabled = true in config/driver.toml.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "oxigeon-lua",
+      "request": "attach",
+      "name": "Attach to Oxigeon",
+      "host": "127.0.0.1",
+      "port": 4711
+    },
+    {
+      // Same, but dumps the whole DAP conversation to the Debug Console.
+      // Use this first when something looks wrong.
+      "type": "oxigeon-lua",
+      "request": "attach",
+      "name": "Attach to Oxigeon (protocol trace)",
+      "host": "127.0.0.1",
+      "port": 4711,
+      "trace": true
+    }
+  ]
+}

@@ -18,6 +18,7 @@
   - [Event Hooks](./lua-api/events.md)
   - [File & System Access](./lua-api/file-access.md)
   - [Observability & Logging](./lua-api/observability.md)
+  - [Debugging & Tracing](./lua-api/debugging.md)
   - [Permissions & Roles](./lua-api/permissions.md)
   - [Sandboxing & Security](./lua-api/sandboxing.md)
 - [Configuration Reference](./configuration.md)

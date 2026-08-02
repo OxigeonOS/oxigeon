@@ -375,6 +375,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "389ca41296e6190b48053de0321d02a77f32f8a5d2461dd38762c0593805c6d6"
 dependencies = [
  "futures-core",
+ "futures-sink",
  "futures-task",
  "pin-project-lite",
  "slab",
@@ -680,6 +681,7 @@ dependencies = [
  "diesel",
  "diesel_migrations",
  "flate2",
+ "futures-util",
  "libsqlite3-sys",
  "mlua",
  "rand_core",

@@ -15,7 +15,12 @@ logs/
 .env.local
 
 # Editor artifacts
-.vscode/
+# Note: this must be `.vscode/*`, not `.vscode/`. Git never descends into an
+# excluded *directory*, so negations below a bare `.vscode/` are silently
+# ignored and the shared debug config would never be committed.
+.vscode/*
+!.vscode/launch.json
+!.vscode/extensions.json
 .idea/
 *.swp
 *.swo

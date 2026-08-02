@@ -1,0 +1,60 @@
+{
+  "name": "oxigeon-debug",
+  "displayName": "Oxigeon Lua Debug",
+  "description": "Attach the VS Code debugger to a running Oxigeon MUD server.",
+  "publisher": "oxigeon",
+  "version": "0.1.0",
+  "engines": { "vscode": "^1.75.0" },
+  "categories": ["Debuggers"],
+  "main": "./extension.js",
+  "activationEvents": ["onDebugResolve:oxigeon-lua"],
+  "contributes": {
+    "breakpoints": [{ "language": "lua" }],
+    "debuggers": [
+      {
+        "type": "oxigeon-lua",
+        "label": "Oxigeon Lua",
+        "languages": ["lua"],
+        "configurationAttributes": {
+          "attach": {
+            "required": ["port"],
+            "properties": {
+              "host": {
+                "type": "string",
+                "description": "Host the Oxigeon debug adapter is bound to.",
+                "default": "127.0.0.1"
+              },
+              "port": {
+                "type": "number",
+                "description": "Port from [servers.debug] in config/driver.toml.",
+                "default": 4711
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "oxigeon-lua",
+            "request": "attach",
+            "name": "Attach to Oxigeon",
+            "host": "127.0.0.1",
+            "port": 4711
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Oxigeon: Attach to running server",
+            "description": "Attach to an Oxigeon MUD with [servers.debug] enabled.",
+            "body": {
+              "type": "oxigeon-lua",
+              "request": "attach",
+              "name": "Attach to Oxigeon",
+              "host": "127.0.0.1",
+              "port": 4711
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

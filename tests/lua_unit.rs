@@ -1437,3 +1437,42 @@ fn test_channel_d_join_leave() {
 
     assert!(!eval_bool(&lua, r#"return channel.is_subscribed("ooc", 42)"#));
 }
+
+// ─── cmds/trace.lua ──────────────────────────────────────────────────────────
+
+/// The trace command is a thin front-end over the Rust efuns, so the only Lua
+/// logic worth testing is its argument parsing — which is why `parse_args` is
+/// factored out of `execute`.
+#[test]
+fn test_trace_command_parse_args() {
+    let lua = make_test_lua();
+    lua.load("trace = require('cmds.trace')").exec().unwrap();
+
+    let check = |args: &str, want_sub: &str, want_count: &str, want_scope: &str| {
+        let src = format!(
+            "local s, c, sc = trace.parse_args({args})
+             return s .. '|' .. tostring(c) .. '|' .. tostring(sc)"
+        );
+        let got: String = lua.load(src.as_str()).eval().unwrap();
+        assert_eq!(got, format!("{want_sub}|{want_count}|{want_scope}"), "for args {args}");
+    };
+
+    check("{}", "status", "nil", "nil");
+    check("{'ON'}", "on", "nil", "nil");
+    check("{'lines', 'all'}", "lines", "nil", "all");
+    check("{'show', '25'}", "show", "25", "nil");
+    check("{'calls', 'all', '10'}", "calls", "10", "all");
+    // Non-numeric junk should not be mistaken for a count.
+    check("{'timings', 'wat'}", "timings", "nil", "nil");
+}
+
+#[test]
+fn test_trace_command_exposes_the_standard_command_shape() {
+    let lua = make_test_lua();
+    lua.load("trace = require('cmds.trace')").exec().unwrap();
+
+    assert!(eval_bool(&lua, "return trace.name == 'trace'"));
+    assert!(eval_bool(&lua, "return trace.category == 'admin'"));
+    assert!(eval_bool(&lua, "return trace.permission == 'admin'"));
+    assert!(eval_bool(&lua, "return type(trace.execute) == 'function'"));
+}

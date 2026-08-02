@@ -4,7 +4,7 @@ pub mod driver_config;
 pub mod server_config;
 pub mod permissions_config;
 
-pub use driver_config::{DriverConfig, DatabaseConfig, DatabaseBackend, TelnetServerConfig};
+pub use driver_config::{DriverConfig, DatabaseConfig, DatabaseBackend, TelnetServerConfig, DebugServerConfig};
 pub use server_config::{ServerConfig, GameConfig, SessionsConfig, AccountsConfig, LimitsConfig, MultisessionMode};
 pub use permissions_config::PermissionConfig;
 

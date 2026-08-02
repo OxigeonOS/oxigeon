@@ -30,6 +30,7 @@ pub struct Driver {
     pub session_handler: Arc<RwLock<SessionHandler>>,
     pub script_engine: ScriptEngine,
     pub db_pool: AnyPool,
+    pub debug_state: crate::core::scripting::debugger::SharedDebugState,
 }
 
 impl Driver {
@@ -83,6 +84,11 @@ impl Driver {
         let started_at_utc = utc_now();
         tracing::info!("Game logging to {:?}/{{audit,journal}}.log", log_dir);
 
+        // Shared with the DAP listener started in `run()`. Created here because
+        // the Lua thread claims its request channel at startup.
+        let debug_cfg = driver_config.servers.debug.clone().unwrap_or_default();
+        let debug_state = crate::core::scripting::debugger::DebugState::from_config(&debug_cfg);
+
         let efun_ctx = EfunContext {
             session_handler: session_handler.clone(),
             account_store: account_store.clone(),
@@ -95,6 +101,7 @@ impl Driver {
             game_logger,
             started_at,
             started_at_utc,
+            debug_state: debug_state.clone(),
         };
 
         let script_engine = ScriptEngine::start(mudlib_path, efun_ctx, engine_cmd_tx, engine_cmd_rx)?;
@@ -106,6 +113,7 @@ impl Driver {
             session_handler,
             script_engine,
             db_pool,
+            debug_state,
         })
     }
 
@@ -117,6 +125,30 @@ impl Driver {
         if !telnet_config.enabled {
             tracing::warn!("Telnet server is disabled in config");
             return Ok(());
+        }
+
+        // Debug adapter, if configured. Started before the accept loop so an
+        // editor can attach while the game is still idle.
+        if let Some(dbg) = self.driver_config.servers.debug.as_ref().filter(|d| d.enabled) {
+            match crate::core::scripting::debugger::dap::serve(
+                &dbg.bind,
+                dbg.port,
+                self.debug_state.clone(),
+            )
+            .await
+            {
+                Ok(addr) => {
+                    tracing::info!("Lua debug adapter listening on {}", addr);
+                    if !addr.ip().is_loopback() {
+                        tracing::warn!(
+                            "debug adapter bound to {} — it grants unauthenticated control \
+                             of the game VM and must not be reachable off-host",
+                            addr.ip()
+                        );
+                    }
+                }
+                Err(e) => tracing::error!("Failed to start debug adapter: {}", e),
+            }
         }
 
         let mut listener = TelnetListener::new(telnet_config);

@@ -407,6 +407,46 @@ function os_time() end
 function os_date(format) end
 
 -- ═══════════════════════════════════════════════════════════════════════════════
+-- Debugging / tracing
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+---@class TraceStatus
+---@field mode         string    "off" | "time" | "calls" | "lines"
+---@field armed        boolean   whether the Lua hook is currently installed
+---@field all_sessions boolean
+---@field sessions     string[]  opted-in session ids
+---@field records      integer   trace records currently buffered
+---@field capacity     integer   trace ring capacity
+---@field timings      integer   command timings currently buffered
+---@field dropped      integer   records evicted because the ring was full
+
+--- Enable or disable execution tracing.
+--- Installs a Lua debug hook, which forces the traced code onto the interpreter
+--- (no JIT) — enable only while investigating, and turn it off afterwards.
+---@param mode  string       "off" | "time" | "calls" | "lines"
+---@param scope string|nil   nil = calling session, "all" = every session, or a session id
+---@return boolean ok
+---@return string|nil err
+function trace_set(mode, scope) end
+
+--- Current trace settings and buffer usage.
+---@return TraceStatus
+function trace_status() end
+
+--- Most recent trace records, oldest first, preformatted as plain text.
+---@param limit integer|nil  default 40
+---@return string[]
+function trace_show(limit) end
+
+--- Most recent per-command timings, preformatted as plain text with a header row.
+---@param limit integer|nil  default 20
+---@return string[]
+function trace_timings(limit) end
+
+--- Empty both the trace and timing ring buffers.
+function trace_clear() end
+
+-- ═══════════════════════════════════════════════════════════════════════════════
 -- Mudlib-defined globals (from init.lua, available everywhere)
 -- ═══════════════════════════════════════════════════════════════════════════════
 

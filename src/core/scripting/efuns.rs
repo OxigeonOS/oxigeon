@@ -29,6 +29,8 @@ pub struct EfunContext {
     pub game_logger:        Arc<GameLogger>,
     pub started_at:         Instant,
     pub started_at_utc:     String,  // ISO 8601 captured at startup
+    /// Shared control block for tracing and the debug adapter
+    pub debug_state:        crate::core::scripting::debugger::SharedDebugState,
 }
 
 // The currently-active session ID for the Lua thread.
@@ -70,7 +72,7 @@ fn resolve_session_char(
 /// Check if the current session has a required efun permission.
 /// Returns Ok(()) if allowed, Err(LuaError) if denied.
 /// On denial, writes an audit log entry.
-fn check_efun_permission(
+pub(crate) fn check_efun_permission(
     efun_name: &str,
     perm_config: &PermissionConfig,
     sh: &Arc<RwLock<SessionHandler>>,
@@ -113,6 +115,7 @@ pub fn register_all(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
     register_timer_efuns(lua, ctx)?;
     register_permission_efuns(lua, ctx)?;
     register_observability_efuns(lua, ctx)?;
+    super::debugger::efuns::register_debug_efuns(lua, ctx)?;
     Ok(())
 }
 

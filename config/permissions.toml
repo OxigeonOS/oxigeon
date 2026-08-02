@@ -28,6 +28,15 @@ verify_file = "efun.verify"
 journal_read = "daemon.journal_d.read"
 audit_read   = "daemon.audit_d.read"
 
+# ─── Debugging / tracing ─────────────────────────────────────────────────────
+# Gated independently of cmds/trace.lua's own `admin` permission, so mudlib code
+# cannot enable tracing by calling the efun directly.
+trace_set     = "efun.trace"
+trace_status  = "efun.trace"
+trace_show    = "efun.trace"
+trace_timings = "efun.trace"
+trace_clear   = "efun.trace"
+
 [directories]
 # Maps mudlib path prefixes to {read, write} permission requirements.
 # Longest-prefix match wins. Omit read or write to leave that op unrestricted.
