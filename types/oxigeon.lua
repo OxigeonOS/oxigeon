@@ -179,7 +179,7 @@ function server_info() end
 ---@field name string
 ---@field version string
 ---@field started_at string
----@field uptime_secs number
+---@field uptime_seconds number
 ---@field connected_sessions integer
 ---@field lua_memory_kb number
 
