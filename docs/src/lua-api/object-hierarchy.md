@@ -13,13 +13,8 @@ Object (mudlib/lib/object.lua)
 │       Exits, contents, actions, scenery items, appearance rendering.
 │
 ├── Item (mudlib/lib/item.lua)
-│   │   Weight, value, slot, stackability, interaction hooks, tags.
-│   │
-│   ├── Weapon (mudlib/lib/weapon.lua)
-│   │       Damage range, speed, weapon/damage type, requirements, combat messaging.
-│   │
-│   └── Armor (mudlib/lib/armor.lua)
-│           Defense, armor type, resistances, stat bonuses, encumbrance.
+│       Weight, value, slot, stackability, interaction hooks, tags.
+│       Roles are COMPONENTS, not subclasses — see the note below.
 │
 └── Mobile (mudlib/lib/mobile.lua)
     │   Stats, inventory, equipment, AI behavior, echoes, patrol,
@@ -27,8 +22,38 @@ Object (mudlib/lib/object.lua)
     │
     └── Player (mudlib/lib/player.lua)
             Database persistence (from_save/to_save), XP, gold,
-            quest flags, skills, session link.
+            quest flags, session link.
 ```
+
+> [!IMPORTANT]
+> **`Weapon` and `Armor` are no longer classes.** They are *archetypes* —
+> functions that build a plain `Item` carrying data-only components:
+>
+> ```lua
+> local Weapon = require('lib.weapon')
+> local dagger = Weapon{ id = "silver_dagger", damage = {2, 8},
+>                        damage_type = "magic", required_level = 3 }
+>
+> dagger.weapon     --> { min = 2, max = 8, speed = 1.0, damage_type = "magic", ... }
+> dagger.requires   --> { level = 3 }
+> Weapon.is(dagger) --> true
+> Weapon.roll_damage(dagger, roll)
+> ```
+>
+> Every method those classes had was a pure function of the item's own data, so
+> the inheritance bought the method-call syntax and nothing else — while an item
+> that is a weapon *and* a light source *and* a quest token had no single class
+> it could be. Three parts, kept apart:
+>
+> | | Holds | Rule |
+> |---|---|---|
+> | **Archetype** `Weapon{...}` | construction | flat authoring data in, an `Item` out |
+> | **Component** `item.weapon` | data | no functions, no metatables; its presence is the has-component test |
+> | **System** `lib/weapon.lua` | behaviour | module functions taking the item — never installed on the instance |
+>
+> This is the rule [`effect_d`](./effects.md) already follows for definitions
+> versus instances, applied to the object model. Authoring does not change: an
+> area file writes the same flat table it always did.
 
 ---
 
@@ -45,17 +70,31 @@ The root base class. Every entity inherits these fields and methods.
 | `id` | string | `"unknown"` | Unique identifier (e.g. `"town.square"`, `"player.42"`) |
 | `short` | string \| function | `"Something"` | Display name. Supports lfun pattern. |
 | `description` | string \| function | `"You see nothing special."` | Full description. Supports lfun pattern. |
+| `stats` | table \| nil | — | Where [traits](./traits.md) are stored. Copied from `data.stats`; left absent when nothing was authored, because storage is what decides which traits an entity has. |
 
 ### Methods
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `new` | `Object:new(data) → obj` | Constructor. Initializes id, short, description from a data table. |
+| `new` | `Object:new(data) → obj` | Constructor. Initializes id, short, description and `stats` from a data table. |
 | `resolve` | `Object.resolve(value, obj) → string\|nil` | **Static.** Resolves lfun properties: returns strings as-is, calls functions with `obj` as argument. |
+| `trait` | `obj:trait(id) → number` | The effective value of a [trait](./traits.md), after the trait graph and every effect have had their say. The default when the object does not hold it. |
+| `has_trait` | `obj:has_trait(id) → bool` | Whether the object holds it at all — a different question from what it is worth. |
 | `get_state` | `obj:get_state(key) → any` | Get a driver-side state value, scoped to this object's `id`. |
 | `set_state` | `obj:set_state(key, value)` | Set a driver-side state value. |
 | `get_all_state` | `obj:get_all_state() → table\|nil` | Get all state key/values for this object. |
 | `clear_state` | `obj:clear_state()` | Clear all state for this object. |
+
+> [!IMPORTANT]
+> **`trait()` lives here, on `Object`, not on `Mobile`.** It was `Mobile:stat`
+> until a trait stopped meaning "a character statistic": a sword's durability
+> and a room's corruption are traits in exactly the sense a mob's strength is,
+> and one accessor should answer for all of them. The rename was hard, with no
+> alias — this codebase deleted `create_sandboxed_env` to have one boundary
+> rather than two.
+>
+> `obj.stats[id]` is the *stored* value, which for a buffed or derived trait is
+> the wrong answer. Read `obj:trait(id)`.
 
 ---
 
@@ -97,7 +136,7 @@ Represents a location in the game world.
 
 ### Inherited from Object
 
-`resolve()`, `get_state()`, `set_state()`, `get_all_state()`, `clear_state()`
+`resolve()`, `trait()`, `has_trait()`, `get_state()`, `set_state()`, `get_all_state()`, `clear_state()`
 
 ---
 
@@ -137,89 +176,135 @@ Base class for all tangible things: weapons, armor, potions, keys, treasure.
 
 ### Inherited from Object
 
-`resolve()`, `get_state()`, `set_state()`, `get_all_state()`, `clear_state()`
+`resolve()`, `trait()`, `has_trait()`, `get_state()`, `set_state()`, `get_all_state()`, `clear_state()`
 
 ---
 
-## Weapon
+## Weapon — archetype, component, system
 
-**File:** [`mudlib/lib/weapon.lua`](file:///c:/Code/oxigeon/mudlib/lib/weapon.lua) — Inherits from **Item** → Object
+**File:** [`mudlib/lib/weapon.lua`](file:///c:/Code/oxigeon/mudlib/lib/weapon.lua) — **not a class.** Produces an `Item`.
 
-Represents any weapon: swords, axes, bows, staves, daggers.
+```lua
+local Weapon = require('lib.weapon')
 
-### Fields (own)
+local dagger = Weapon{ id = "silver_dagger", short = "a silver dagger",
+                       damage = {2, 8}, speed = 1.2, damage_type = "magic",
+                       required_level = 3 }
+```
+
+### Authoring fields
+
+Unchanged from the class this replaces. `damage` accepts `8`, `{2, 8}` or
+`{ min = 2, max = 8 }`.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `damage` | table | `{ min=1, max=1 }` | Damage range. Accepts `{ min, max }`, `{ N, N }`, or a single number. |
+| `damage` | number \| table | `1` | Damage spread. |
 | `speed` | number | `1.0` | Attack speed multiplier. |
 | `weapon_type` | string \| nil | — | `"sword"`, `"axe"`, `"bow"`, `"staff"`, etc. |
 | `damage_type` | string | `"physical"` | `"physical"`, `"fire"`, `"ice"`, `"magic"`. |
 | `two_handed` | boolean | `false` | Requires both hand slots. |
 | `range` | string | `"melee"` | `"melee"` or `"ranged"`. |
-| `required_level` | number \| nil | — | Minimum level to equip. |
-| `required_strength` | number \| nil | — | Minimum strength to equip. |
-| `hit_message` | string \| function \| nil | — | Custom hit text (lfun). |
-| `miss_message` | string \| function \| nil | — | Custom miss text (lfun). |
-| `crit_message` | string \| function \| nil | — | Custom critical hit text (lfun). |
+| `required_level` / `required_strength` / `required_dexterity` | number \| nil | — | Becomes the [`requires`](#requires) component. |
+| `hit_message` / `miss_message` / `crit_message` | string \| function \| nil | — | Combat text (lfun). |
 
-### Methods (own)
+### The `item.weapon` component
 
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `new` | `Weapon:new(data) → weapon` | Constructor. Defaults `slot` to `"weapon"`. |
-| `roll_damage` | `weapon:roll_damage() → number` | Random damage between min and max. |
-| `avg_damage` | `weapon:avg_damage() → number` | Average of min and max. |
-| `dps` | `weapon:dps() → number` | Average damage × speed. |
-| `meets_requirements` | `weapon:meets_requirements(stats) → bool, reason?` | Check level/strength requirements. |
-| `examine` | `weapon:examine() → string` | Full text with damage, type, speed, element. **Overrides Item.** |
+`{ min, max, speed, weapon_type, damage_type, two_handed, range, hit_message, miss_message, crit_message }`
 
-### Inherited from Item
+`item.weapon ~= nil` **is** the has-component test.
 
-`is_equippable()`, `is_stackable()`, `has_tag()`, `display_name()`
+> [!WARNING]
+> The three message fields are lfuns and may hold functions. That is safe only
+> because they live on a **template**, which is code and is never serialized.
+> An item *instance* must not carry them — the same definitions-versus-instances
+> rule [`effect_d`](./effects.md) follows.
 
-### Inherited from Object
+### The system
 
-`resolve()`, `get_state()`, `set_state()`, `get_all_state()`, `clear_state()`
+| Function | |
+|---|---|
+| `Weapon{data}` / `Weapon.new(data)` | build an `Item` with the component |
+| `Weapon.is(item)` | `-> boolean` |
+| `Weapon.roll_damage(item, roll)` | `-> number \| nil`. **`roll` is injected** — pass `DAEMON.combat._roll` so a pinned fight stays pinned. The class version called `math.random` directly, which made it a second source of randomness nothing could override. |
+| `Weapon.avg_damage(item)` / `Weapon.dps(item)` | `-> number \| nil` |
+| `Weapon.from_data(data)` | build just the component |
+| `Weapon.describe(item)` | `-> array of examine lines` |
+
+There is deliberately no `Weapon:new(...)`; the colon form would suggest a class.
 
 ---
 
-## Armor
+## Armor — archetype, component, system
 
-**File:** [`mudlib/lib/armor.lua`](file:///c:/Code/oxigeon/mudlib/lib/armor.lua) — Inherits from **Item** → Object
+**File:** [`mudlib/lib/armor.lua`](file:///c:/Code/oxigeon/mudlib/lib/armor.lua) — **not a class.** Produces an `Item`.
 
-Represents any defensive equipment: helmets, breastplates, shields, boots, gloves, robes.
+```lua
+local Armor = require('lib.armor')
 
-### Fields (own)
+local cloak = Armor{ id = "warded_cloak", short = "a warded cloak", slot = "back",
+                     defense = 4, armor_type = "cloth", resist = { magic = 6 } }
+```
+
+### Authoring fields
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `defense` | number | `1` | Base damage reduction. |
 | `armor_type` | string | `"medium"` | `"cloth"`, `"light"`, `"medium"`, `"heavy"`. |
-| `resist` | table | `{}` | Damage type → reduction value (e.g. `{ fire = 5, ice = -3 }`). |
-| `required_level` | number \| nil | — | Minimum level to equip. |
-| `required_strength` | number \| nil | — | For heavy armor. |
-| `required_dexterity` | number \| nil | — | For light armor. |
-| `stat_bonus` | table | `{}` | Passive stat bonuses while equipped (e.g. `{ max_hp = 20 }`). |
+| `resist` | table | `{}` | Damage type → reduction. Negative is a weakness: `{ fire = 5, ice = -3 }`. |
+| `stat_bonus` | table | `{}` | Passive trait bonuses while worn, e.g. `{ max_hp = 20 }`. |
+| `required_level` / `required_strength` / `required_dexterity` | number \| nil | — | Becomes the [`requires`](#requires) component. |
 
-### Methods (own)
+Omitting `slot` logs a warning and defaults to `"chest"`.
 
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `new` | `Armor:new(data) → armor` | Constructor. Defaults `slot` to `"chest"`. Warns if no slot set. |
-| `get_defense` | `armor:get_defense() → number` | Base defense + any `defense_bonus` from object state. |
-| `get_resist` | `armor:get_resist(damage_type) → number` | Resistance for a specific damage type (0 if none). |
-| `meets_requirements` | `armor:meets_requirements(stats) → bool, reason?` | Check level/strength/dexterity requirements. |
-| `encumbrance` | `armor:encumbrance() → number` | Weight class tier: cloth=0, light=1, medium=2, heavy=3. |
-| `examine` | `armor:examine() → string` | Full text with defense, type, resistances, bonuses. **Overrides Item.** |
+### The `item.armour` component
 
-### Inherited from Item
+`{ defense, armor_type, resist, stat_bonus }` — note the component key is
+`armour` while the module is `armor.lua`, so it does not collide with the
+`armor_type` field inside it.
 
-`is_equippable()`, `is_stackable()`, `has_tag()`, `display_name()`
+### The system
 
-### Inherited from Object
+| Function | |
+|---|---|
+| `Armor{data}` / `Armor.new(data)` | build an `Item` with the component |
+| `Armor.is(item)` | `-> boolean` |
+| `Armor.defense(item)` | base + any `defense_bonus` from object state |
+| `Armor.resist(item, damage_type)` | `-> number`, **0 when unmentioned**, so callers add unconditionally |
+| `Armor.encumbrance(item)` | cloth 0, light 1, medium 2, heavy 3 |
+| `Armor.from_data(data)` / `Armor.describe(item)` | |
 
-`resolve()`, `get_state()`, `set_state()`, `get_all_state()`, `clear_state()`
+> [!NOTE]
+> `Armor.defense` reads `defense_bonus` from object state, which is keyed on the
+> item's `id`. While items are shared registry templates, every copy of a
+> breastplate shares one enchantment. Per-instance identity is what fixes it.
+
+---
+
+## Requires
+
+**File:** [`mudlib/lib/requires.lua`](file:///c:/Code/oxigeon/mudlib/lib/requires.lua)
+
+One requirement check, shared by every kind of item. `Weapon` and `Armor` each
+carried their own near-identical `meets_requirements`; Armor tested dexterity
+and Weapon did not, for no recorded reason. Now every item gets all three.
+
+```lua
+item.requires = { level = 3, strength = 16, dexterity = 12 }   -- absent = unconstrained
+```
+
+| Function | |
+|---|---|
+| `Requires.met(item, source)` | `-> boolean, reason?`. An item with no component is always usable. |
+| `Requires.from_data(data)` | returns **nil** when nothing is required, so the component stays absent rather than becoming an empty table |
+| `Requires.describe(item)` | the `examine` line, or nil |
+
+`source` may be an entity (anything answering `:trait(id)`), a plain stats table,
+or an entity with a `.stats` table. **The entity form is the correct one** —
+`entity.stats[id]` is the *stored* value, which for a buffed or derived trait is
+the wrong answer. Refusal messages are emitted in a fixed order, so a character
+short on two counts is always told about the same one first.
 
 ---
 
@@ -276,13 +361,18 @@ Base class for all living entities: monsters, NPCs, shopkeepers, quest givers.
 | `has_tag` | `mob:has_tag(tag) → bool` | Check for a tag. |
 | `is_aggressive` | `mob:is_aggressive() → bool` | Check aggressive flag. |
 | `get_dialogue` | `mob:get_dialogue(keyword) → string\|nil` | Get a dialogue response (lfun-resolved). |
-| `get_skill` | `mob:get_skill(skill) → number` | Get skill level (0 if unlearned). |
-| `set_skill` | `mob:set_skill(skill, level)` | Set skill level. |
 | `examine` | `mob:examine() → string` | Full text with race, faction, level. |
+
+> [!NOTE]
+> **`get_skill` / `set_skill` and the `skills` table are gone.** They existed as
+> a parallel `skill -> level` map only because traits could not be sparse. A
+> skill is a `category = "skill"` trait the entity happens to hold now, so it
+> reads through `mob:trait("swordsmanship")` and gains clamping, bounds and a
+> derived mastery for free. See [Traits](./traits.md).
 
 ### Inherited from Object
 
-`resolve()`, `get_state()`, `set_state()`, `get_all_state()`, `clear_state()`
+`resolve()`, `trait()`, `has_trait()`, `get_state()`, `set_state()`, `get_all_state()`, `clear_state()`
 
 ---
 
@@ -337,11 +427,11 @@ The `SAVE_FIELDS` table declares which fields are serialized by `to_save()`.
 
 ### Inherited from Mobile
 
-`is_alive()`, `take_damage()`, `heal()`, `get_level()`, `roll_echo()`, `has_item()`, `add_item()`, `remove_item()`, `has_tag()`, `is_aggressive()`, `get_dialogue()`, `get_skill()`, `set_skill()`
+`is_alive()`, `take_damage()`, `heal()`, `get_level()`, `roll_echo()`, `has_item()`, `add_item()`, `remove_item()`, `has_tag()`, `is_aggressive()`, `get_dialogue()`
 
 ### Inherited from Object
 
-`resolve()`, `get_state()`, `set_state()`, `get_all_state()`, `clear_state()`
+`resolve()`, `trait()`, `has_trait()`, `get_state()`, `set_state()`, `get_all_state()`, `clear_state()`
 
 ---
 
@@ -349,15 +439,18 @@ The `SAVE_FIELDS` table declares which fields are serialized by `to_save()`.
 
 Some classes override methods defined by their parent. When overridden, the child's version is called:
 
-| Method | Object | Room | Item | Weapon | Armor | Mobile | Player |
-|--------|--------|------|------|--------|-------|--------|--------|
-| `new` | ✦ | ✦ | ✦ | ✦ | ✦ | ✦ | `from_save` |
-| `examine` | — | `get_appearance` | ✦ | ✦ | ✦ | ✦ | ✦ |
-| `display_name` | — | — | ✦ | ↑ | ↑ | — | ✦ |
-| `has_tag` | — | — | ✦ | ↑ | ↑ | ✦ | ↑ |
-| `meets_requirements` | — | — | — | ✦ | ✦ | — | — |
-| `resolve` | ✦ | ↑ | ↑ | ↑ | ↑ | ↑ | ↑ |
-| `get_state` | ✦ | ↑ | ↑ | ↑ | ↑ | ↑ | ↑ |
-| `set_state` | ✦ | ↑ | ↑ | ↑ | ↑ | ↑ | ↑ |
+| Method | Object | Room | Item | Mobile | Player |
+|--------|--------|------|------|--------|--------|
+| `new` | ✦ | ✦ | ✦ | ✦ | `from_save` |
+| `examine` | — | `get_appearance` | ✦ | ✦ | ✦ |
+| `display_name` | — | — | ✦ | — | ✦ |
+| `has_tag` | — | — | ✦ | ✦ | ↑ |
+| `resolve` | ✦ | ↑ | ↑ | ↑ | ↑ |
+| `get_state` | ✦ | ↑ | ↑ | ↑ | ↑ |
+| `set_state` | ✦ | ↑ | ↑ | ↑ | ↑ |
 
 **Legend:** ✦ = defines the method · ↑ = inherits from parent · — = not applicable
+
+`Weapon` and `Armor` have no column: they are not classes and override nothing.
+Their behaviour is module functions, and `meets_requirements` is gone entirely —
+both copies became the shared [`Requires.met`](#requires).

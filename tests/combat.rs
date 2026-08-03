@@ -53,7 +53,7 @@ fn a_mob_has_its_own_health_not_the_templates() {
         .unwrap();
     assert_eq!(
         vm.eval("local rats = DAEMON.mobs.in_room('wizard_workshop.pantry') \
-                 return tostring(rats[1]:stat('hp') ~= rats[2]:stat('hp'))")
+                 return tostring(rats[1]:trait('hp') ~= rats[2]:trait('hp'))")
             .unwrap(),
         "true",
         "wounding one rat must not wound every rat that shares the template"
@@ -64,17 +64,17 @@ fn a_mob_has_its_own_health_not_the_templates() {
 fn a_round_resolves_an_attack_in_both_directions() {
     let mut vm = arena();
     vm.eval("DAEMON.combat.engage(p, rat) \
-             _rat_before = rat:stat('hp') _p_before = p:stat('hp') return 'ok'")
+             _rat_before = rat:trait('hp') _p_before = p:trait('hp') return 'ok'")
         .unwrap();
     vm.eval("DAEMON.combat.round() return 'ok'").unwrap();
 
     assert_eq!(
-        vm.eval("return tostring(rat:stat('hp') < _rat_before)").unwrap(),
+        vm.eval("return tostring(rat:trait('hp') < _rat_before)").unwrap(),
         "true",
         "the attacker did no damage"
     );
     assert_eq!(
-        vm.eval("return tostring(p:stat('hp') < _p_before)").unwrap(),
+        vm.eval("return tostring(p:trait('hp') < _p_before)").unwrap(),
         "true",
         "the target did not fight back"
     );
@@ -89,14 +89,14 @@ fn a_mitigation_effect_changes_what_a_hit_costs() {
     let unbuffed = vm
         .eval("DAEMON.trait.set_cur(p, 'hp', 100) \
                DAEMON.combat.attack_once(rat, p) \
-               return tostring(100 - p:stat('hp'))")
+               return tostring(100 - p:trait('hp'))")
         .unwrap();
 
     let buffed = vm
         .eval("DAEMON.trait.set_cur(p, 'hp', 100) \
                DAEMON.effect.apply(p, 'stoneskin', { duration = 600 }) \
                DAEMON.combat.attack_once(rat, p) \
-               return tostring(100 - p:stat('hp'))")
+               return tostring(100 - p:trait('hp'))")
         .unwrap();
 
     let (unbuffed, buffed): (i64, i64) = (unbuffed.parse().unwrap(), buffed.parse().unwrap());
@@ -263,7 +263,7 @@ fn the_combat_ticker_is_registered() {
          rat = DAEMON.mobs.in_room('wizard_workshop.pantry')[1] \
          {LOADED_DICE} \
          DAEMON.combat.engage(p, rat) \
-         _before = rat:stat('hp') return 'ok'"
+         _before = rat:trait('hp') return 'ok'"
     ))
     .unwrap();
 
@@ -272,7 +272,7 @@ fn the_combat_ticker_is_registered() {
     });
 
     assert_eq!(
-        vm.eval("return tostring(rat:stat('hp') < _before)").unwrap(),
+        vm.eval("return tostring(rat:trait('hp') < _before)").unwrap(),
         "true",
         "the round did not resolve through the engine's timer dispatch"
     );

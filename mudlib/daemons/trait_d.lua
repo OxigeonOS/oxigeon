@@ -38,8 +38,16 @@
 --   DAEMON.trait.base(entity, id)      what is stored
 --   DAEMON.trait.set_base / set_cur / adjust
 --   DAEMON.trait.touch(entity)         settle regeneration
---   DAEMON.trait.all(entity)           everything, for `score`
---   DAEMON.trait.attach / detach / bump / bump_all
+--   DAEMON.trait.all(entity, category) what the entity holds, for `score`
+--   DAEMON.trait.has / forget / present / categories
+--   DAEMON.trait.attach / seed / detach / bump / bump_all
+--
+-- Presence is decided by storage, never declared: an entity has a stored-kind
+-- trait when there is a number for it, and a derived trait when everything it
+-- reads is present. A sword has `dps` because it has damage and speed; it has
+-- no `willpower` because it has no `wisdom`, and nothing had to say so. That is
+-- what keeps a recompute proportional to what the entity holds rather than to
+-- how many skills the game has ever defined.
 --
 -- See docs/src/lua-api/traits.md.
 
@@ -54,6 +62,40 @@ local KINDS = { attribute = true, derived = true, gauge = true, counter = true }
 -- Traits whose value is computed from a base, and which effects may therefore
 -- modify. The other two store what they are.
 local MODIFIABLE = { attribute = true, derived = true }
+
+--- `sets = "item"` and `sets = {"character", "mob"}` mean the same kind of
+--- thing, so accept both. A map rather than an array, so `seed` tests
+--- membership without a scan.
+---
+--- Saying nothing and saying nothing-at-all are different answers, and the
+--- difference is load-bearing:
+---
+---   sets omitted        -> { character }   every trait written before sets
+---                                          existed keeps behaving as it did
+---   sets = {} / false   -> {}              seeded by nothing, deliberately
+---
+--- The second is what a skill is. Not having swordsmanship until you learn it
+--- is the point of sparse traits, so a skill must be able to say "no set"
+--- rather than be tagged into one nobody happens to call `seed` with — that
+--- would make its absence an accident of which call sites exist.
+local function normalize_sets(spec)
+    if spec == nil then return { character = true } end
+    if spec == false then return {} end
+
+    local out = {}
+    if type(spec) == "string" then
+        out[spec] = true
+    elseif type(spec) == "table" then
+        for _, name in ipairs(spec) do
+            if type(name) == "string" then out[name] = true end
+        end
+    else
+        -- A number, a function: not a set list. Treat it as unsaid rather than
+        -- as none, so a typo does not silently stop seeding a character stat.
+        return { character = true }
+    end
+    return out
+end
 
 local function log_error(message)
     log("error", message)
@@ -88,14 +130,20 @@ end
 local _memo = setmetatable({}, { __mode = "k" })
 local _entity_gen = setmetatable({}, { __mode = "k" })
 
+-- Which traits each entity actually holds, in evaluation order. Guarded by the
+-- same two counters as `_memo` and weak-keyed for the same reason. Unlike the
+-- value memo it needs no expiry check: an effect ending changes what a trait is
+-- worth, never whether the entity has one.
+local _present = setmetatable({}, { __mode = "k" })
+
 -- Guards `touch` re-entering itself through `value`.
 local _settling = false
 
 -- ─── Registration ────────────────────────────────────────────────────────────
 
 --- Declare one trait.
---- @param spec table  { id, kind, label, group, depends, formula, min, max,
----                      round, default, regen, hidden }
+--- @param spec table  { id, kind, category, label, group, depends, formula,
+---                      min, max, round, default, regen, hidden, always, sets }
 --- @return boolean
 function M.define(spec)
     if type(spec) ~= "table" or type(spec.id) ~= "string" or #spec.id == 0 then
@@ -127,6 +175,15 @@ function M.define(spec)
         id      = spec.id,
         kind    = kind,
         label   = spec.label or spec.id,
+        -- What this number *is* in the game's vocabulary — stat, skill,
+        -- resource, condition, reputation. Freeform on purpose: the mudlib
+        -- defines no closed list, so a game invents a category without touching
+        -- the driver. It is a lens for commands and never changes behaviour; the
+        -- moment a category is tempted to *mean* something, that belongs on the
+        -- spec as its own declared field. Defaults to "stat" so every trait
+        -- defined before this field existed still appears in `score`.
+        category = spec.category or "stat",
+        -- Which heading it sorts under *within* one command. Presentational.
         group   = spec.group or "general",
         depends = spec.depends or {},
         formula = spec.formula,
@@ -136,6 +193,11 @@ function M.define(spec)
         default = spec.default or 0,
         regen   = spec.regen,
         hidden  = spec.hidden or false,
+        -- Present on every entity regardless of what it stores. See build_present.
+        always  = spec.always or false,
+        -- Which seed sets start an entity off with this trait. Not a filter on
+        -- reads — presence is decided by storage.
+        sets    = normalize_sets(spec.sets),
     }
     r.order = nil          -- the graph changed; it must be sealed again
     r.gen = r.gen + 1
@@ -208,6 +270,24 @@ function M.seal()
     end
 
     r.order = order
+
+    -- `rank` is a trait's position in the evaluation order. It exists so a
+    -- per-entity subset can be sorted back into dependency order without
+    -- walking the whole registry — which is the point of the subset.
+    for _, def in pairs(r.defs) do def.rank = nil end
+    for i, id in ipairs(order) do
+        if r.defs[id] then r.defs[id].rank = i end
+    end
+    -- Failed traits were pruned out of `order` and so have no rank. Rank them
+    -- after everything else, by id: without this the subset sort would see
+    -- equal keys and produce a `pairs`-dependent order.
+    local unranked = {}
+    for id, def in pairs(r.defs) do
+        if not def.rank then unranked[#unranked + 1] = id end
+    end
+    table.sort(unranked)
+    for i, id in ipairs(unranked) do r.defs[id].rank = #order + i end
+
     r.regen = {}
     for _, id in ipairs(order) do
         local def = r.defs[id]
@@ -243,6 +323,7 @@ function M.bump_all()
     local r = root()
     r.gen = r.gen + 1
     for entity in pairs(_memo) do _memo[entity] = nil end
+    for entity in pairs(_present) do _present[entity] = nil end
 end
 
 -- ─── Resolution ──────────────────────────────────────────────────────────────
@@ -251,6 +332,154 @@ local function stats_of(entity)
     if type(entity) ~= "table" then return nil end
     entity.stats = entity.stats or {}
     return entity.stats
+end
+
+--- Work out which traits this entity actually holds.
+---
+--- Storage decides. An entity has a stored-kind trait when there is a number
+--- for it; it has a derived trait when everything that trait reads is present.
+--- Applicability is therefore never declared and so can never rot — the same
+--- reasoning that makes `depends` enforced rather than advisory. A sword has
+--- `dps` because it has damage and speed; it has no `willpower` because it has
+--- no `wisdom`, and nothing had to say so.
+--- @return table  array of trait ids, in evaluation order
+local function build_present(entity)
+    local r = root()
+    if not r.order then M.seal() end
+    local stats = stats_of(entity)
+    if not stats then return {} end
+
+    local has = {}
+
+    -- Stored kinds. `stats._at` is a table of regeneration anchors, so the
+    -- number test skips it without needing to know about it. A number stored
+    -- under an id no trait has claimed is inert rather than an error — a save
+    -- written before its trait file loaded must not be a failure.
+    for id, value in pairs(stats) do
+        if type(value) == "number" then
+            local def = r.defs[id]
+            if def and def.kind ~= "derived" then has[id] = true end
+        end
+    end
+
+    -- `always` is the escape hatch for a trait whose formula is meaningful on
+    -- defaults alone. It means what it says: present on every entity. If this
+    -- turns out to be common, the presence rule above is the thing that is
+    -- wrong.
+    for id, def in pairs(r.defs) do
+        if def.always and not r.failed[id] then has[id] = true end
+    end
+
+    -- Derived kinds, to a fixpoint: one derived trait may read another, and
+    -- `pairs` gives no useful order to discover that in.
+    local changed = true
+    while changed do
+        changed = false
+        for id, def in pairs(r.defs) do
+            if def.kind == "derived" and not has[id] and not r.failed[id] then
+                local ready = true
+                for _, d in ipairs(def.depends) do
+                    if not has[d] then ready = false; break end
+                end
+                if ready then has[id] = true; changed = true end
+            end
+        end
+    end
+
+    -- Bounds are dependencies too. A gauge clamped by a trait the entity does
+    -- not have is a gauge with no ceiling, which is a different trait from the
+    -- one that was defined — so it is absent instead. Removal cascades, because
+    -- a derived trait may read the gauge that just went, so repeat until stable.
+    local removed = true
+    while removed do
+        removed = false
+        for id in pairs(has) do
+            local def = r.defs[id]
+            local ok = true
+            if def.min ~= nil and type(def.min) == "string" and not has[def.min] then ok = false end
+            if def.max ~= nil and type(def.max) == "string" and not has[def.max] then ok = false end
+            if ok and def.kind == "derived" then
+                for _, d in ipairs(def.depends) do
+                    if not has[d] then ok = false; break end
+                end
+            end
+            if not ok then
+                has[id] = nil
+                removed = true
+            end
+        end
+    end
+
+    local list = {}
+    for id in pairs(has) do list[#list + 1] = id end
+    table.sort(list, function(a, b)
+        return (r.defs[a].rank or 0) < (r.defs[b].rank or 0)
+    end)
+    return list
+end
+
+--- The entity's traits, cached until the definitions or the entity change.
+local function present_of(entity)
+    local r = root()
+    if not r.order then M.seal() end
+    local egen = _entity_gen[entity] or 0
+    local cached = _present[entity]
+    if cached and cached.gen == r.gen and cached.egen == egen then
+        return cached.list
+    end
+    local list = build_present(entity)
+    _present[entity] = { gen = r.gen, egen = egen, list = list }
+    return list
+end
+
+--- Which traits this entity holds, in evaluation order.
+--- @param entity table
+--- @return table  array of trait ids
+function M.present(entity)
+    if type(entity) ~= "table" then return {} end
+    local list = present_of(entity)
+    local out = {}
+    for i, id in ipairs(list) do out[i] = id end
+    return out
+end
+
+--- Does this entity have this trait at all?
+---
+--- A different question from what it is worth. `value` answers an absent trait
+--- with its default so arithmetic stays safe; this is how you ask whether the
+--- character has ever learned the skill.
+--- @param entity table
+--- @param id string
+--- @return boolean
+function M.has(entity, id)
+    if type(entity) ~= "table" or type(id) ~= "string" then return false end
+    for _, present in ipairs(present_of(entity)) do
+        if present == id then return true end
+    end
+    return false
+end
+
+--- Take a trait away from an entity — unlearning a skill, an enchantment
+--- stripped. Derived traits are not stored, so they cannot be forgotten
+--- directly: remove what they read instead.
+--- @param entity table
+--- @param id string
+--- @return boolean  whether anything was removed
+function M.forget(entity, id)
+    if type(entity) ~= "table" or type(id) ~= "string" then return false end
+    local def = root().defs[id]
+    if def and def.kind == "derived" then
+        log_warn("TRAIT_D.forget('" .. id .. "'): a derived trait is not stored; "
+            .. "remove one of the traits it depends on")
+        return false
+    end
+    local stats = stats_of(entity); if not stats then return false end
+    if stats[id] == nil then return false end
+
+    stats[id] = nil
+    if stats._at then stats._at[id] = nil end
+    M.bump(entity)
+    return true
 end
 
 --- Resolve a bound that may be a number, another trait, or nothing.
@@ -304,7 +533,10 @@ local function recompute(entity)
         end,
     })
 
-    for _, id in ipairs(order_of(r)) do
+    -- The entity's own traits, not the registry's. This is what keeps a
+    -- recompute proportional to what the entity holds rather than to how many
+    -- skills the game has ever defined.
+    for _, id in ipairs(present_of(entity)) do
         local def = r.defs[id]
         if def then
             local raw
@@ -395,18 +627,28 @@ end
 
 --- Every trait at once — for `score`, and for a test that wants to compare the
 --- whole picture.
---- @return table  array of { id, label, group, kind, base, value, hidden, max }
-function M.all(entity)
+---
+--- Commands name what they show: `score` renders `category == "stat"`, `skills`
+--- renders `category == "skill"`, `traits` renders everything. Filtering here
+--- rather than in each command would put the lens in the wrong place, so this
+--- returns the lot and carries `category` on every row.
+--- @param entity table
+--- @param category string|nil  when given, only traits in that category
+--- @return table  array of { id, label, group, category, kind, base, value, hidden, max }
+function M.all(entity, category)
     local r = root()
     if not r.order then M.seal() end
     M.touch(entity)
     local values = fresh(entity) or recompute(entity)
     local out = {}
-    for _, id in ipairs(r.order or {}) do
+    -- What this entity has, not what the game defines — otherwise `score` on a
+    -- sword lists its willpower.
+    for _, id in ipairs(present_of(entity)) do
         local def = r.defs[id]
-        if def then
+        if def and (category == nil or def.category == category) then
             out[#out + 1] = {
                 id = id, label = def.label, group = def.group, kind = def.kind,
+                category = def.category,
                 base = M.base(entity, id), value = values[id] or def.default,
                 hidden = def.hidden,
                 max = type(def.max) == "string" and values[def.max] or def.max,
@@ -414,6 +656,24 @@ function M.all(entity)
             }
         end
     end
+    return out
+end
+
+--- Which categories this entity's traits fall into, sorted. What an admin
+--- command lists so a mis-categorised trait has somewhere to show up.
+--- @param entity table
+--- @return table  array of category names
+function M.categories(entity)
+    local r = root()
+    local seen, out = {}, {}
+    for _, id in ipairs(present_of(entity)) do
+        local def = r.defs[id]
+        if def and not seen[def.category] then
+            seen[def.category] = true
+            out[#out + 1] = def.category
+        end
+    end
+    table.sort(out)
     return out
 end
 
@@ -550,32 +810,38 @@ end
 
 -- ─── Lifecycle ───────────────────────────────────────────────────────────────
 
---- Prepare an entity's stats for use: fill in defaults, drop anything stored
---- for a trait that is now derived, and clamp gauges into their current bounds.
+--- Prepare an entity's stats for use, without deciding what it should have.
 ---
---- The middle one is a real migration. `max_hp` used to be a stored number; it
---- is a derived trait now, so a saved value would shadow the formula forever.
+--- Two jobs, and neither of them is materialising a stat block: drop anything
+--- stored for a trait that is now derived, and clamp the gauges the entity
+--- actually holds into their current bounds. Cheap enough to run on every item
+--- instance, which is why seeding is a separate call.
+---
+--- The first is a real migration. `max_hp` used to be a stored number; it is a
+--- derived trait now, so a saved value would shadow the formula forever.
 function M.attach(entity)
     local r = root()
     if not r.order then M.seal() end
     local stats = stats_of(entity); if not stats then return false end
     stats._at = stats._at or {}
 
-    for id, def in pairs(r.defs) do
-        if def.kind == "derived" then
-            if stats[id] ~= nil then stats[id] = nil end
-        elseif type(stats[id]) ~= "number" then
-            stats[id] = def.default
-        end
+    -- Over the entity's own keys, not the registry's — an item must not pay for
+    -- every skill the game has ever defined. Collected first because clearing a
+    -- key mid-traversal is a rule not worth relying on.
+    local stale = {}
+    for id in pairs(stats) do
+        local def = r.defs[id]
+        if def and def.kind == "derived" then stale[#stale + 1] = id end
     end
+    for _, id in ipairs(stale) do stats[id] = nil end
 
     M.bump(entity)
 
     -- Bounds may have moved while the character was away — a level-up, an item
-    -- gone from a slot — so clamp after the defaults are in place.
+    -- gone from a slot — so clamp what is here into its current range.
     _settling = true
     local now = os_time()
-    for _, id in ipairs(r.order or {}) do
+    for _, id in ipairs(present_of(entity)) do
         local def = r.defs[id]
         if def and def.kind == "gauge" then
             local min, max = gauge_bounds(entity, def)
@@ -591,6 +857,34 @@ function M.attach(entity)
 
     M.bump(entity)
     return true
+end
+
+--- Give an entity the traits a named set says it starts with.
+---
+--- This is the only thing that makes a trait exist for an entity that has never
+--- stored one. After it runs, storage is the truth — which is why seeding is a
+--- creation-time convenience rather than a filter consulted on every read.
+--- A skill is deliberately in no set: not having swordsmanship until you learn
+--- it is the point.
+--- @param entity table
+--- @param set string|nil  defaults to "character"
+--- @return number  how many traits were written
+function M.seed(entity, set)
+    local r = root()
+    if not r.order then M.seal() end
+    local stats = stats_of(entity); if not stats then return 0 end
+    set = type(set) == "string" and set or "character"
+
+    local written = 0
+    for id, def in pairs(r.defs) do
+        if def.kind ~= "derived" and def.sets[set] and type(stats[id]) ~= "number" then
+            stats[id] = def.default
+            written = written + 1
+        end
+    end
+
+    M.attach(entity)
+    return written
 end
 
 --- Forget an entity's memo. The stats themselves belong to the entity and are

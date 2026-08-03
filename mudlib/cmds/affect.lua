@@ -22,6 +22,8 @@ local USAGE = {
     "  affect heal <n>             heal, through the pipeline",
     "  affect xp <n>               award experience, through the pipeline",
     "  affect settle               settle regenerating gauges now",
+    "  affect learn <id> [n]       give yourself a trait you do not have",
+    "  affect unlearn <id>         take one away again",
     "  affect traits               every trait, base and effective",
     "  affect defs                 registered effect definitions",
     "  affect cache                state cache statistics",
@@ -100,7 +102,7 @@ function M.execute(session_id, args_str, args)
     if verb == "damage" then
         local amount = tonumber(args[2])
         if not amount then player:send("How much damage?") return end
-        local before = player:stat("hp")
+        local before = player:trait("hp")
         local remaining, dealt = player:take_damage(amount, {
             damage_type = args[3] or "physical",
             attacker = player,
@@ -113,7 +115,7 @@ function M.execute(session_id, args_str, args)
     if verb == "heal" then
         local amount = tonumber(args[2])
         if not amount then player:send("Heal how much?") return end
-        local before = player:stat("hp")
+        local before = player:trait("hp")
         local now_hp, healed = player:heal(amount, { source = "admin" })
         player:send(string.format(
             "{green}%d requested, %d applied.{/} HP %d -> %d", amount, healed, before, now_hp))
@@ -132,6 +134,38 @@ function M.execute(session_id, args_str, args)
     if verb == "settle" then
         local changed = DAEMON.trait.touch(player)
         player:send(changed and "Gauges settled." or "Nothing to settle.")
+        return
+    end
+
+    -- Learning and unlearning. `set_base` on an absent trait creates it, which
+    -- is the entire mechanism — there is no separate "grant" path, because
+    -- presence is decided by storage rather than declared anywhere.
+    if verb == "learn" then
+        local id = args[2]
+        if not id then player:send("Learn what?") return end
+        if not DAEMON.trait.get_def(id) then
+            player:send("{red}No trait '" .. id .. "' is defined. See `traits defs`.{/}")
+            return
+        end
+        local level = tonumber(args[3]) or 1
+        local had = DAEMON.trait.has(player, id)
+        if not DAEMON.trait.set_base(player, id, level) then
+            player:send("{red}Could not set '" .. id .. "' — a derived trait has no base.{/}")
+            return
+        end
+        player:send(string.format("{green}%s %s at %d.{/}",
+            had and "Set" or "Learned", id, level))
+        pcall(DAEMON.audit.log, "cmd.affect", true, "learned " .. id .. " " .. level)
+        return
+    end
+
+    if verb == "unlearn" or verb == "forget" then
+        local id = args[2]
+        if not id then player:send("Unlearn what?") return end
+        local removed = DAEMON.trait.forget(player, id)
+        player:send(removed
+            and ("{yellow}Forgot " .. id .. ".{/}")
+            or ("{red}You do not have '" .. id .. "'.{/}"))
         return
     end
 

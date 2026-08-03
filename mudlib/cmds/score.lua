@@ -36,7 +36,11 @@ function M.execute(session_id, args_str, args)
         return
     end
 
-    local traits = DAEMON.trait.all(player)
+    -- `category == "stat"` and not everything: once a character knows forty
+    -- skills, an unfiltered score is a wall of text. Everything defined before
+    -- categories existed defaults to "stat", so this shows exactly what it
+    -- always did. `skills` and `traits` name what they show the same way.
+    local traits = DAEMON.trait.all(player, "stat")
     if #traits == 0 then
         player:send("{yellow}No attributes are defined in this game.{/}")
         return

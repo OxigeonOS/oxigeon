@@ -7,6 +7,7 @@ M.summary = 'Look at your surroundings or examine an item.'
 M.permission = nil
 
 local Object = require('lib.object')
+local Light  = require('lib.light')
 
 function M.execute(session_id, args_str, args)
     local player = get_player(session_id)
@@ -26,6 +27,23 @@ function M.execute(session_id, args_str, args)
 
     if not room then
         player:send("{red}You are nowhere. This is concerning.{/}")
+        return
+    end
+
+    -- `Room.light_level` has been a field since rooms existed and nothing read
+    -- it. This is what reads it — and it is checked before *everything*,
+    -- because "look at the lever" in a pitch-dark room should not work either.
+    -- Exits stay listed: you can feel your way to a doorway.
+    if not Light.can_see(player, room) then
+        player:send("{cyan}" .. Light.DARKNESS .. "{/}")
+        local exits = {}
+        for dir, exit in pairs(room.exits or {}) do
+            if not (type(exit) == "table" and exit.hidden) then exits[#exits + 1] = dir end
+        end
+        table.sort(exits)
+        if #exits > 0 then
+            player:send("You can feel your way " .. table.concat(exits, ", ") .. ".")
+        end
         return
     end
 

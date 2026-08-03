@@ -78,11 +78,13 @@ fn check_dir_permission(
 pub fn register_io_file_efuns(
     lua: &Lua,
     mudlib_path: &std::path::Path,
+    game_path: Option<&std::path::Path>,
     perm_config: Arc<PermissionConfig>,
     sh: Arc<std::sync::RwLock<SessionHandler>>,
 ) -> mlua::Result<()> {
     let globals = lua.globals();
     let root = mudlib_path.to_path_buf();
+    let game_root = game_path.map(|p| p.to_path_buf());
 
     // read_file(path) -> string|nil
     {
@@ -197,41 +199,89 @@ pub fn register_io_file_efuns(
     }
 
     // list_dir(path) -> table|nil   (array of {name, is_dir, size})
+    //
+    // This is the *only* `list_dir`. There used to be a second one registered
+    // later, from `register_utility_efuns`, which overwrote this one — and it
+    // joined the caller's path straight onto the two roots with no jail check
+    // and no permission check, so `list_dir("../../..")` escaped. The jailed
+    // implementation existed the whole time and production never reached it,
+    // which is the same failure shape as the sandbox and instruction-limit bugs
+    // `CLAUDE.md`'s testing section was written about. `tests/list_dir_jail.rs`
+    // asks the question through the engine's own VM, so a helper-level test
+    // cannot pass while the reachable version is broken.
+    //
+    // Both roots are searched because command and area discovery spans the
+    // mudlib and the game layer, and each is jailed against its own root: a
+    // path that escapes one is refused for that root rather than for the call,
+    // so listing `cmds` still works when only one layer has it. Entries are
+    // deduplicated by name with the game layer winning, matching `package.path`
+    // order — the layer that would be required is the layer that is reported.
     {
         let root = root.clone();
+        let game_root = game_root.clone();
+        let perm_config = perm_config.clone();
+        let sh = sh.clone();
         let f = lua.create_function(move |lua, path: String| {
-            let real = match resolve_jailed_path(&root, &path) {
-                Ok(p) => p,
-                Err(e) => {
-                    tracing::warn!("list_dir jail violation: {}", e);
-                    return Ok(LuaValue::Nil);
-                }
-            };
-            let rd = match std::fs::read_dir(&real) {
-                Ok(rd) => rd,
-                Err(e) => {
-                    tracing::debug!("list_dir '{}': {}", path, e);
-                    return Ok(LuaValue::Nil);
-                }
-            };
             let arr = lua.create_table()?;
             let mut idx = 1usize;
-            for entry in rd.flatten() {
-                let meta = match entry.metadata() {
-                    Ok(m) => m,
-                    Err(_) => continue,
+            let mut seen = std::collections::HashSet::new();
+            let mut any_root_readable = false;
+
+            let roots: Vec<&std::path::PathBuf> =
+                game_root.iter().chain(std::iter::once(&root)).collect();
+
+            for base in roots {
+                let real = match resolve_jailed_path(base, &path) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::warn!("list_dir jail violation: {}", e);
+                        continue;
+                    }
                 };
-                let name = entry.file_name().to_string_lossy().into_owned();
-                let is_dir = meta.is_dir();
-                let size: i64 = if is_dir { 0 } else { meta.len() as i64 };
-                let t = lua.create_table()?;
-                t.set("name", name)?;
-                t.set("is_dir", is_dir)?;
-                t.set("size", size)?;
-                arr.set(idx, t)?;
-                idx += 1;
+                // Reading a directory is a read. The mudlib root is the one
+                // `permissions.toml` describes, so a game-root listing is not
+                // gated by it — there is no rule that could name it.
+                if base == &root && !check_dir_permission(&real, &root, "read", &perm_config, &sh) {
+                    tracing::warn!("list_dir permission denied for '{}'", path);
+                    continue;
+                }
+                let rd = match std::fs::read_dir(&real) {
+                    Ok(rd) => rd,
+                    Err(e) => {
+                        tracing::debug!("list_dir '{}': {}", path, e);
+                        continue;
+                    }
+                };
+                any_root_readable = true;
+                for entry in rd.flatten() {
+                    let meta = match entry.metadata() {
+                        Ok(m) => m,
+                        Err(_) => continue,
+                    };
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if !seen.insert(name.clone()) {
+                        continue;
+                    }
+                    let is_dir = meta.is_dir();
+                    let size: i64 = if is_dir { 0 } else { meta.len() as i64 };
+                    let t = lua.create_table()?;
+                    t.set("name", name)?;
+                    t.set("is_dir", is_dir)?;
+                    t.set("size", size)?;
+                    arr.set(idx, t)?;
+                    idx += 1;
+                }
             }
-            Ok(LuaValue::Table(arr))
+
+            // `nil` for "no such directory, or refused" and an empty table for
+            // "a directory with nothing in it" — the caller can tell a missing
+            // command path from an empty one, which is the difference between a
+            // misconfiguration and a fact.
+            if any_root_readable {
+                Ok(LuaValue::Table(arr))
+            } else {
+                Ok(LuaValue::Nil)
+            }
         })?;
         globals.set("list_dir", f)?;
     }
@@ -262,6 +312,22 @@ pub fn register_io_file_efuns(
             }
         })?;
         globals.set("delete_file", f)?;
+    }
+
+    // uuid() -> string
+    //
+    // A globally unique handle for something that needs addressing but has no
+    // natural key. Item instances are the first user: a monotonic counter is
+    // enough for mobs, which are never saved, but a container in a player's
+    // inventory *is* saved — and a counter that restarts at zero on every boot
+    // would hand out an id that already means something else in somebody's save
+    // file. That is a data-corruption bug that only shows up after a restart.
+    //
+    // v4, so it carries no timestamp and no MAC address: an id that leaks when
+    // the server was started is an id that leaks more than an id needs to.
+    {
+        let f = lua.create_function(|_, ()| Ok(uuid::Uuid::new_v4().to_string()))?;
+        globals.set("uuid", f)?;
     }
 
     // os_time() -> number  (Unix timestamp as float seconds)

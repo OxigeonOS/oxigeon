@@ -32,7 +32,11 @@ Player.SAVE_FIELDS = {
     "gold",
     "xp",
     "quest_flags",
-    "skills",
+    -- `skills` used to live here as a parallel skill -> level map. It existed
+    -- only because traits could not be sparse; a skill is a counter the
+    -- character happens to hold now, so it saves under `stats` and gains
+    -- clamping, bounds and a derived mastery for free. `from_save` migrates
+    -- any blob still carrying the old table.
     "title",
     "race",
     "gender",
@@ -62,7 +66,6 @@ Player.DEFAULTS = {
     inventory   = {},
     equipment   = {},
     quest_flags = {},
-    skills      = {},
     custom      = {},
 }
 
@@ -88,7 +91,6 @@ function Player:from_save(char_id, char_info, saved)
     data.inventory   = {}
     data.equipment   = {}
     data.quest_flags = {}
-    data.skills      = {}
     data.custom      = {}
     data.channels    = {}
     data.gold        = Player.DEFAULTS.gold
@@ -120,9 +122,19 @@ function Player:from_save(char_id, char_info, saved)
             data.quest_flags[k] = v
         end
     end
-    if saved.skills then
+    -- Migration: a skill is a trait now, so an old blob's parallel skill map
+    -- moves into `stats`. Storage is where presence comes from, so a skill
+    -- lands as present the moment its number does — and if the trait file
+    -- defining it has not loaded, the number sits there inert rather than
+    -- failing, and starts answering when the definition arrives.
+    --
+    -- `data.stats` first, so a value already migrated on a previous save wins
+    -- and this cannot walk a character's progress backwards.
+    if type(saved.skills) == "table" then
         for k, v in pairs(saved.skills) do
-            data.skills[k] = v
+            if type(k) == "string" and type(v) == "number" and data.stats[k] == nil then
+                data.stats[k] = v
+            end
         end
     end
     if saved.custom then
@@ -178,13 +190,14 @@ function Player:from_save(char_id, char_info, saved)
         end
     end
 
-    -- Fill in any trait this character has never had, drop anything stored for
-    -- a trait that is derived now, and clamp gauges into their current range.
-    -- Also brings their effects back into memory.
+    -- Give them the character set — filling in any trait they have never had —
+    -- then drop anything stored for a trait that is derived now and clamp the
+    -- gauges into their current range. Traits outside the set, a learned skill
+    -- among them, come back from their saved stats and are not seeded.
     if DAEMON and DAEMON.trait then
-        local ok, err = pcall(DAEMON.trait.attach, obj)
+        local ok, err = pcall(DAEMON.trait.seed, obj, "character")
         if not ok then
-            log("error", "PLAYER: could not attach traits for char "
+            log("error", "PLAYER: could not seed traits for char "
                 .. tostring(char_id) .. ": " .. tostring(err))
         end
     end
@@ -192,6 +205,36 @@ function Player:from_save(char_id, char_info, saved)
         local ok, err = pcall(DAEMON.effect.attach, obj)
         if not ok then
             log("error", "PLAYER: could not attach effects for char "
+                .. tostring(char_id) .. ": " .. tostring(err))
+        end
+    end
+
+    -- Carried items rejoin the world index, and any container's contents come
+    -- back out of the entry they were folded into on the way to disk.
+    if DAEMON and DAEMON.items then
+        local ok, err = pcall(function()
+            local Carry = require('lib.carry')
+            Carry.unpack(obj.inventory)
+            for _, entry in pairs(obj.equipment or {}) do
+                if type(entry) == "table" then Carry.ensure_registered(entry) end
+            end
+        end)
+        if not ok then
+            log("error", "PLAYER: could not restore items for char "
+                .. tostring(char_id) .. ": " .. tostring(err))
+        end
+    end
+
+    -- `equip:` effects are `persist = false` and so are gone by design. What is
+    -- worn is saved; the aura is derived from it, and this is where it is
+    -- derived. Doing it the other way round — persisting the aura — would be a
+    -- second copy of the truth that can disagree with the first.
+    if DAEMON and DAEMON.effect and DAEMON.items then
+        local ok, err = pcall(function()
+            require('lib.equipment').refresh_all(obj)
+        end)
+        if not ok then
+            log("error", "PLAYER: could not rebuild equipment effects for char "
                 .. tostring(char_id) .. ": " .. tostring(err))
         end
     end
@@ -217,6 +260,23 @@ function Player:to_save()
             end
         end
     end
+
+    -- A container's contents live in ITEM_D's location index, which is memory
+    -- only — correct for a sword on a floor, wrong for a backpack in somebody's
+    -- pack. `pack` folds them onto the entry so they are written; `unpack` in
+    -- `from_save` puts them back in the index on the way in.
+    if DAEMON and DAEMON.items and type(data.inventory) == "table" then
+        local ok, packed = pcall(function()
+            return require('lib.carry').pack(self.inventory)
+        end)
+        if ok then
+            data.inventory = packed
+        else
+            log("error", "PLAYER: could not pack container contents for char "
+                .. tostring(self.char_id) .. ": " .. tostring(packed))
+        end
+    end
+
     return data
 end
 
@@ -297,6 +357,25 @@ function Player:set_quest_flag(flag, value)
     self.quest_flags[flag] = value
 end
 
+--- Remove a quest flag entirely.
+---
+--- `set_quest_flag(flag, nil)` cannot do this — a missing value means `true`,
+--- which is the convenient default for the common case and makes "unset it"
+--- unexpressible. That is the same reason the document store needs `db_unset`
+--- alongside `db_update`: Lua tables cannot hold nil, so deletion needs its own
+--- verb wherever "absent" and "false" are different states.
+---
+--- They are different here: a quest that is *not active* and a quest that is
+--- active-and-false would both read as falsey, but only the first should let
+--- you take it on again.
+--- @param flag string
+--- @return boolean  whether anything was removed
+function Player:clear_quest_flag(flag)
+    if self.quest_flags[flag] == nil then return false end
+    self.quest_flags[flag] = nil
+    return true
+end
+
 --- Get a quest flag.
 -- @param flag string   The flag name
 -- @return any          The value, or nil
@@ -361,8 +440,13 @@ Player.DEFAULT_WRAP_WIDTH = 80
 -- @return number  The wrap width
 function Player:get_width()
     if self.session_id then
-        local session = get_session(self.session_id)
-        if session and session.window_width and session.window_width > 0 then
+        -- Protected: `get_session` *raises* on a malformed id rather than
+        -- returning nil, and this sits under every line of output the game
+        -- sends. A Player holding a stale session id — one that disconnected
+        -- mid-write, one restored from a save — would take down whatever was
+        -- trying to talk to them, which is the worst possible moment for it.
+        local ok, session = pcall(get_session, self.session_id)
+        if ok and session and session.window_width and session.window_width > 0 then
             return session.window_width
         end
     end

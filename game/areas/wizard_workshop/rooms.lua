@@ -165,10 +165,10 @@ local function pour_potion(session_id, args_str, args)
         )
 
         -- Deal 15% max HP damage
-        local damage = math.floor(player.stats.max_hp * 0.15)
+        local damage = math.floor(player:trait("max_hp") * 0.15)
         local remaining = player:take_damage(damage)
         player:send("You take " .. damage .. " damage from the explosion! (HP: "
-            .. remaining .. "/" .. player.stats.max_hp .. ")")
+            .. remaining .. "/" .. player:trait("max_hp") .. ")")
 
         player:send_lines(
             "The ruined mixture evaporates. The cauldron is unharmed, but your",

@@ -1,3 +1,15 @@
+-- mudlib/daemons/task_d.lua — Named, inspectable, controllable periodic work.
+--
+-- A thin layer over `ticker_d`, and the difference is the whole point: a raw
+-- ticker is anonymous and fire-and-forget, while a task has an id you can
+-- list, pause, resume and run on demand. That is what an operator needs at
+-- three in the morning when one periodic job is misbehaving and the rest must
+-- keep running.
+--
+-- `sort`ed listing and a human `label` exist because the `tasks` command is the
+-- only window onto this, and a window that reorders itself between two reads is
+-- most of the way to useless.
+
 local M = {}
 
 local _tasks = {}
@@ -9,11 +21,19 @@ local function log_error(msg)
     end
 end
 
+--- Schedule recurring work under a name.
+--- @param config table  { id, interval, func, label?, enabled?, run_now? }
+--- @return boolean ok, string|nil why
 function M.schedule(config)
+    if type(config) ~= "table" then return false, "Invalid task config" end
     local id = config.id
-    if not id or type(config.func) ~= "function" or not config.interval then 
-        return false, "Invalid task config" 
+    -- `run` as well as `func`: two callers wrote the field two ways and the
+    -- one that guessed wrong got a task that silently never registered.
+    local func = config.func or config.run
+    if not id or type(func) ~= "function" or not config.interval then
+        return false, "Invalid task config"
     end
+    config.func = func
     
     M.cancel(id)
     
@@ -22,6 +42,9 @@ function M.schedule(config)
     
     _tasks[id] = {
         id = id,
+        -- What it is for, in words, so `tasks` reads as a list of jobs rather
+        -- than a list of identifiers.
+        label = config.label or id,
         interval = config.interval,
         func = config.func,
         paused = not enabled,
@@ -63,18 +86,37 @@ function M.cancel(id)
     return false
 end
 
+--- Every scheduled task, in id order.
+---
+--- Sorted rather than `pairs` order: this is what `tasks` prints, and a list
+--- that reshuffles between two reads cannot be compared against itself.
+--- @return table  array of { id, label, interval, last_run, run_count, paused }
 function M.list()
     local result = {}
-    for id, t in pairs(_tasks) do
+    for _, t in pairs(_tasks) do
         table.insert(result, {
             id = t.id,
+            label = t.label,
             interval = t.interval,
             last_run = t.last_run,
             run_count = t.run_count,
             paused = t.paused
         })
     end
+    table.sort(result, function(a, b) return a.id < b.id end)
     return result
+end
+
+--- One task's state, or nil.
+--- @param id string
+--- @return table|nil
+function M.get(id)
+    local t = _tasks[id]
+    if not t then return nil end
+    return {
+        id = t.id, label = t.label, interval = t.interval,
+        last_run = t.last_run, run_count = t.run_count, paused = t.paused,
+    }
 end
 
 function M.run_now(id)

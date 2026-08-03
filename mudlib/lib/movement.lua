@@ -107,8 +107,17 @@ function M.move(session_id, direction)
     local opp_dir = M.OPPOSITES[direction] or "somewhere"
     messaging.send_to_room(target_room_id, char_name .. " arrives from the " .. opp_dir .. ".", char_id)
 
-    local appearance = target_room:get_appearance(session_id)
-    send(session_id, appearance)
+    -- Arriving somewhere pitch dark says so rather than printing the room.
+    -- Walking is still allowed: feeling your way through a mine is the point of
+    -- the mine, and a movement system that refused would make a lantern a key
+    -- rather than a light.
+    local Light = require('lib.light')
+    local player = get_player(session_id)
+    if player and not Light.can_see(player, target_room) then
+        send(session_id, "\r\n" .. Light.DARKNESS .. "\r\n")
+    else
+        send(session_id, target_room:get_appearance(session_id))
+    end
 
     -- Send GMCP Room.Info update
     if DAEMON and DAEMON.gmcp then

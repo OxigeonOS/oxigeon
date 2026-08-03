@@ -1,12 +1,57 @@
+-- mudlib/daemons/death_d.lua — What happens when a character dies.
+--
+-- Where the dead reappear is a *game* decision, so it comes from
+-- `game.respawn_room` in server.toml rather than from a constant in the mudlib.
+-- It was `wizard_workshop.entrance` here for a long time — a driver-layer file
+-- naming one specific game's room, which meant a second game could not use this
+-- daemon without editing it. `game.start_room` is the fallback, because a game
+-- that says where characters begin has already answered this question well
+-- enough to boot.
+
 local M = {}
 
+--- The config key, with the two fallbacks, resolved fresh rather than cached:
+--- a hot reload of this file should pick up an edited server.toml, and this is
+--- read once per death rather than once per command.
+local function configured_respawn_room()
+    if type(config) ~= "function" then return nil end
+    local ok, room = pcall(config, "game.respawn_room")
+    if ok and type(room) == "string" and #room > 0 then return room end
+    local sok, start = pcall(config, "game.start_room")
+    if sok and type(start) == "string" and #start > 0 then return start end
+    return nil
+end
+
 M._config = {
-    respawn_room = "wizard_workshop.entrance",
+    -- nil means "ask the config". `configure{ respawn_room = ... }` still wins,
+    -- so a game daemon can override it at runtime without touching a file.
+    respawn_room = nil,
     respawn_delay = 5,
     hp_on_respawn = 0.25,
     xp_penalty = 0.0,
     drop_gold = false
 }
+
+--- Where a corpse gets up. Explicit override, then config, then the last-resort
+--- literal — which is only reachable on a server that has configured no start
+--- room at all, and is logged when it is used so it never becomes the answer by
+--- accident.
+--- @return string
+function M.respawn_room()
+    if type(M._config.respawn_room) == "string" and #M._config.respawn_room > 0 then
+        return M._config.respawn_room
+    end
+    local configured = configured_respawn_room()
+    if configured then return configured end
+
+    log("warn", "DEATH_D: neither game.respawn_room nor game.start_room is set; "
+        .. "falling back to wizard_workshop.entrance")
+    if DAEMON and DAEMON.journal then
+        pcall(DAEMON.journal.warn, "DEATH_D: no respawn room configured — "
+            .. "set game.respawn_room in server.toml")
+    end
+    return "wizard_workshop.entrance"
+end
 
 local function log_error(msg)
     log("error", msg)
@@ -68,14 +113,14 @@ function M.handle_respawn(char_id, session_id)
     -- they died, and they would be handed all the intervening seconds of
     -- healing the instant they respawned.
     if DAEMON and DAEMON.trait and DAEMON.trait.get_def and DAEMON.trait.get_def("hp") then
-        local max_hp = player:stat("max_hp")
+        local max_hp = player:trait("max_hp")
         DAEMON.trait.set_cur(player, "hp", math.floor(max_hp * M._config.hp_on_respawn))
     elseif player.stats and player.stats.max_hp then
         player.stats.hp = math.floor(player.stats.max_hp * M._config.hp_on_respawn)
     end
 
     local move_ok, move_err = pcall(function()
-        player:move_to(M._config.respawn_room)
+        player:move_to(M.respawn_room())
     end)
     if not move_ok then log_error("death_d move error: " .. tostring(move_err)) end
 

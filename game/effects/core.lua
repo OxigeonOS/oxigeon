@@ -69,7 +69,7 @@ return {
         hooks = {
             heartbeat = { phase = "post", fn = function(ev, ctx)
                 local e = ctx.entity
-                local missing = e:stat("max_hp") - e:stat("hp")
+                local missing = e:trait("max_hp") - e:trait("hp")
                 if missing <= 0 then return end
                 local amount = math.max(1, math.floor(missing * 0.02 * (ev.ticks or 1)))
                 e:heal(amount, { source = "effect:regeneration" })
@@ -108,5 +108,34 @@ return {
         desc = "Something is very wrong.",
         duration = 1800, stack = "refresh", survives_death = true,
         modifiers = { willpower = -2 },
+    },
+
+    --- The buff `wardskin` applies. A `condition` over `lib/checks.lua`, so it
+    --- is refused *before* it lands rather than landing and expiring — those
+    --- are different, and only one of them can tell you why.
+    {
+        id = "wardskin", label = "Wardskin",
+        desc = "Your skin has gone hard and slightly grey.",
+        duration = 120, potency = 2, stack = "refresh",
+        -- Only on someone with the will for it. `spell_power` is derived from
+        -- a derived trait, so this reaches two levels into the graph.
+        condition = function(entity)
+            if entity.trait and entity:trait("willpower") < 0 then
+                return false, "your will is not in it"
+            end
+            return true
+        end,
+        modifiers = { constitution = 1 },
+        hooks = {
+            damage_taken = { phase = "reduce", fn = function(ev, ctx)
+                ev.amount = math.max(0, ev.amount - (ctx.potency or 2))
+            end },
+        },
+        on_apply = function(ctx)
+            if ctx.entity.send then ctx.entity:send("{cyan}Your skin hardens and greys.{/}") end
+        end,
+        on_expire = function(ctx)
+            if ctx.entity.send then ctx.entity:send("{cyan}Your skin goes soft again.{/}") end
+        end,
     },
 }

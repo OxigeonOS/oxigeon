@@ -1,6 +1,6 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ServerConfig {
     pub game: GameConfig,
     pub sessions: SessionsConfig,
@@ -15,9 +15,61 @@ pub struct ServerConfig {
     pub documents: crate::domain::models::document::DocumentLimits,
 }
 
+/// Settings that have a default the driver applies when the key is absent.
+///
+/// `config()` is a *generic* reader — it serialises this struct and walks a
+/// dotted path — so without this table an unset optional key would answer `nil`
+/// and every caller would have to repeat the default. Repeating a default is
+/// how two parts of a system come to disagree about what it is.
+///
+/// Only keys whose absence has a meaning other than "off" belong here. A key
+/// the driver genuinely has no default for stays absent, and `nil` is the
+/// honest answer.
+pub const CONFIG_DEFAULTS: &[(&str, i64)] = &[
+    ("game.area_reset_seconds", 900),
+    ("game.autosave_seconds", 300),
+    ("game.cache_flush_seconds", 5),
+    ("game.cache_flush_budget", 32),
+    ("game.cache_evict_seconds", 900),
+    ("game.cooldown_durable_seconds", 60),
+    ("game.effect_sweep_seconds", 5),
+    ("game.effect_heartbeat_seconds", 3),
+    ("game.combat_round_seconds", 3),
+    ("game.shutdown_timeout_seconds", 30),
+];
+
+impl ServerConfig {
+    /// The whole configuration as JSON, for the generic `config()` efun.
+    ///
+    /// Built once at VM construction and walked per lookup. Serialising here
+    /// rather than naming each key in a `match` is the difference between
+    /// adding a config key and adding a config key *plus a Rust edit* — the
+    /// eighteen-key allowlist this replaced meant every new game-layer setting
+    /// needed one.
+    pub fn as_lookup_json(&self) -> serde_json::Value {
+        let mut root = serde_json::to_value(self).unwrap_or(serde_json::Value::Null);
+        for (path, default) in CONFIG_DEFAULTS {
+            let (section, key) = match path.split_once('.') {
+                Some(pair) => pair,
+                None => continue,
+            };
+            let slot = root
+                .get_mut(section)
+                .and_then(|s| s.as_object_mut())
+                .map(|obj| obj.entry(key.to_string()).or_insert(serde_json::Value::Null));
+            if let Some(slot) = slot {
+                if slot.is_null() {
+                    *slot = serde_json::Value::from(*default);
+                }
+            }
+        }
+        root
+    }
+}
+
 /// The worker pool that runs Lua off the game thread.
 /// See [`crate::core::compute`].
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ComputeConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -83,7 +135,7 @@ impl Default for ComputeConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct GameConfig {
     pub name: String,
     pub mudlib_path: String,
@@ -129,6 +181,19 @@ pub struct GameConfig {
     /// exists so a mudlib that wedges in `on_shutdown` cannot leave the process
     /// hanging. When it expires the server logs an error and exits anyway.
     pub shutdown_timeout_seconds: Option<u64>,
+
+    /// Everything else under `[game]`.
+    ///
+    /// The game layer needs settings the driver has no opinion about — where
+    /// the dead respawn, how long a shop takes to restock, which area the
+    /// builders own. Without this each one is a Rust edit before Lua can read
+    /// it, and `death_d` hardcoding `wizard_workshop.entrance` in the *mudlib*
+    /// layer is exactly what that pressure produces.
+    ///
+    /// Flattened, so an unrecognised key is captured rather than rejected, and
+    /// readable from Lua as `config("game.<key>")` like any other.
+    #[serde(flatten, default)]
+    pub extra: std::collections::HashMap<String, toml::Value>,
 }
 
 impl GameConfig {
@@ -138,13 +203,13 @@ impl GameConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct SessionsConfig {
     pub multisession_mode: MultisessionMode,
     pub max_connections: usize,
 }
 
-#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum MultisessionMode {
     Single,
@@ -153,14 +218,14 @@ pub enum MultisessionMode {
     FullMulti,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct AccountsConfig {
     pub allow_creation: bool,
     pub min_password_length: usize,
     pub max_characters_per_account: usize,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct LimitsConfig {
     pub lua_memory_mb: usize,
     pub lua_instruction_limit: u64,

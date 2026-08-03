@@ -10,8 +10,8 @@ Infrastructure concerns — which servers run, database, logging.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `backend` | string | `"sqlite"` | Database backend: `"sqlite"` or `"postgresql"` |
-| `url` | string | `"oxigeon.db"` | SQLite filename or PostgreSQL connection string |
+| `backend` | string | `"sqlite"` | **`"sqlite"` only** — see below |
+| `url` | string | `"oxigeon.db"` | SQLite filename |
 | `pool_size` | integer | `5` | Connection pool size |
 
 ```toml
@@ -19,11 +19,19 @@ Infrastructure concerns — which servers run, database, logging.
 backend = "sqlite"
 url = "oxigeon.db"
 pool_size = 5
-
-# PostgreSQL example:
-# backend = "postgresql"
-# url = "postgres://user:pass@localhost/oxigeon"
 ```
+
+> [!WARNING]
+> **`postgresql` parses and does not work.** Only the SQLite Diesel feature is
+> enabled and the driver calls `get_sqlite()` unconditionally, so selecting
+> PostgreSQL logs "PostgreSQL" and then misbehaves. The value is accepted
+> because the enum has always had it; it has never had a runtime path.
+>
+> This is recorded rather than removed because the abstraction it implies —
+> `AnyPool`, one connection type behind a trait — is the right shape and is
+> worth keeping. What is missing is the second implementation, the migrations
+> for it, and a test that runs against it. A backend nobody can test is a
+> backend nobody should ship.
 
 ### `[servers.telnet]`
 
@@ -87,6 +95,15 @@ level = "info"
 # file = "logs/oxigeon.log"
 ```
 
+`file` appends, creates any parent directory, and writes without ANSI escapes —
+colour codes in a log someone will `grep` are noise, and the terminal is not
+reading it. A path that cannot be opened is reported on stderr and logging falls
+back to stdout, rather than failing silently.
+
+> This key was parsed and then **ignored** for a long time: only `level` was
+> read, so setting a path produced no file and no warning. A config key that
+> looks like it works and does nothing is worse than one that does not exist.
+
 ---
 
 ## server.toml
@@ -112,6 +129,8 @@ Game-level concerns — name, account policy, session behavior, Lua limits.
 | `effect_sweep_seconds` | integer | How often expired effects are swept. 0 disables. Default: 5 |
 | `effect_heartbeat_seconds` | integer | Drives effects that tick. 0 disables. Default: 3 |
 | `combat_round_seconds` | integer | Seconds per combat round. 0 disables. Default: 3 |
+| `respawn_room` | string | Where the dead reappear. Falls back to `start_room` |
+| *anything else* | any | Captured and readable from Lua as `config("game.<key>")` |
 
 ```toml
 [game]
@@ -133,6 +152,22 @@ accepts 0 to turn the corresponding ticker off entirely — which is what the te
 harness does, so a timer never fires in the background of an unrelated test. See
 [State Cache](./lua-api/state-cache.md), [Effects](./lua-api/effects.md) and
 [Combat](./lua-api/combat.md).
+
+**`[game]` is open.** Any key the driver has no opinion about is captured rather
+than rejected, and reachable from Lua as `config("game.<key>")` with no Rust
+change:
+
+```toml
+[game]
+respawn_room = "thornhollow.square"
+shop_restock_seconds = 600
+builder_area = "sandbox"
+```
+
+`config()` used to be an eighteen-key allowlist in Rust, so every game-layer
+setting needed a driver edit before Lua could see it — and that pressure is why
+`death_d`, a *mudlib* file, once had `wizard_workshop.entrance` written into it.
+See [`config()`](./lua-api/efuns.md#configkey--any).
 
 ### `[sessions]`
 

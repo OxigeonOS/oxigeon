@@ -243,7 +243,7 @@ impl ComputeBridge {
 
                     let current = epoch.load(Ordering::Relaxed);
                     if built.as_ref().is_none_or(|(e, _)| *e != current) {
-                        match vm::build(&cfg, &mudlib, &game) {
+                        match vm::build(&cfg, &mudlib, &game, (n as u64) ^ (current << 8)) {
                             Ok(new) => built = Some((current, new)),
                             Err(e) => {
                                 tracing::error!("compute: could not build a VM: {e}");

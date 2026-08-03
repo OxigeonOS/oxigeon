@@ -129,7 +129,7 @@ pub struct ComputeVm {
 /// first if a budget is wanted, install the intrinsics, *then* close the
 /// sandbox, then set the path. Anything registered after `apply_sandbox` would
 /// not be subject to it.
-pub fn build(cfg: &ComputeConfig, mudlib: &Path, game: &Path) -> LuaResult<ComputeVm> {
+pub fn build(cfg: &ComputeConfig, mudlib: &Path, game: &Path, salt: u64) -> LuaResult<ComputeVm> {
     let lua = Lua::new();
 
     // Same bargain as the game VM: a budget needs the interpreter, because
@@ -154,6 +154,14 @@ pub fn build(cfg: &ComputeConfig, mudlib: &Path, game: &Path) -> LuaResult<Compu
 
     register_intrinsics(&lua, &ctl)?;
     crate::core::scripting::sandbox::apply_sandbox(&lua)?;
+
+    // Each worker gets its own sequence. LuaJIT seeds from a constant, so
+    // without this every worker VM — and every rebuild of one after a reload —
+    // would replay the same numbers, which is precisely wrong for the facility
+    // meant to run simulations. `salt` is the worker index, so two workers
+    // built in the same nanosecond still diverge.
+    crate::core::scripting::sandbox::seed_prng(&lua, salt)?;
+
     set_package_path(&lua, mudlib, game)?;
 
     if cfg.instruction_limit > 0 {
@@ -376,7 +384,7 @@ return M
 "#;
 
     fn vm_with(cfg: ComputeConfig, dir: &tempfile::TempDir) -> ComputeVm {
-        build(&cfg, dir.path(), dir.path()).unwrap()
+        build(&cfg, dir.path(), dir.path(), 0).unwrap()
     }
 
     #[test]

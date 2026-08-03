@@ -246,7 +246,7 @@ impl Query {
 
 // ─── limits ──────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct DocumentLimits {
     #[serde(default = "default_max_bytes")]
     pub max_bytes: usize,

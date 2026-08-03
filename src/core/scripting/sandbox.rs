@@ -125,6 +125,46 @@ pub fn apply_sandbox(lua: &Lua) -> LuaResult<()> {
     Ok(())
 }
 
+/// Give this VM its own random sequence.
+///
+/// LuaJIT starts every VM from a constant seed, and `math.randomseed` appeared
+/// nowhere in `mudlib/`, `game/`, `src/` or `tests/` — so two fresh VMs both
+/// returned `794206293` for the first `math.random(1, 1e9)`. That means
+/// identical combat to-hit and damage rolls, identical loot outcomes, identical
+/// weighted echo choices and identical virtual-room description variation on
+/// every restart. It is not a subtle bias; it is the same game twice.
+///
+/// Seeded in Rust at VM construction rather than in `mudlib/init.lua`, so it
+/// covers **every** VM the engine builds: compute workers have their own, and
+/// they are the ones meant to run simulations. `salt` distinguishes VMs built
+/// in the same nanosecond, which is what a worker pool does.
+///
+/// `DAEMON.combat._roll` stays overridable, so a test that wants pinned numbers
+/// is deterministic by choice rather than by accident.
+pub fn seed_prng(lua: &Lua, salt: u64) -> LuaResult<()> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+
+    // Mixed rather than added: consecutive workers salted 0, 1, 2 in the same
+    // nanosecond would otherwise get seeds one apart, and LuaJIT's generator
+    // does not scramble adjacent seeds well enough for that to be independent.
+    let mut seed = nanos ^ salt.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    seed ^= seed >> 33;
+    seed = seed.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+    seed ^= seed >> 33;
+
+    // A double carries 53 bits exactly, and `math.randomseed` takes a number.
+    let seed = (seed & 0x1F_FFFF_FFFF_FFFF) as f64;
+
+    let f: mlua::Function = lua.globals().get::<LuaTable>("math")?.get("randomseed")?;
+    f.call::<()>(seed)?;
+    Ok(())
+}
+
 /// Replace `load` and `loadstring` with wrappers that refuse binary chunks.
 ///
 /// Pre-compiled LuaJIT bytecode is not validated on load and is a known route

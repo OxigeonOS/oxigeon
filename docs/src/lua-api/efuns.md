@@ -246,22 +246,46 @@ send(session_id, "Server time: " .. now .. "\n")
 ```
 
 ### `config(key) → any`
-Read a server configuration value.
-
-| Key | Type | Example |
-|-----|------|---------|
-| `"game.name"` | string | `"My MUD"` |
-| `"game.mudlib_path"` | string | `"./mudlib"` |
-| `"game.game_path"` | string | `"./game"` |
-| `"game.command_paths"` | array | `["game/cmds", "mudlib/cmds"]` |
-| `"game.start_room"` | string | `"wizard_workshop.entrance"` |
-| `"accounts.allow_creation"` | bool | `true` |
-| `"accounts.max_characters_per_account"` | integer | `1` |
+Read a server configuration value by **dotted path**. Any key in `server.toml`
+is readable — this walks the parsed configuration rather than consulting a list
+of keys someone remembered to add.
 
 ```lua
 local name = config("game.name")
-send(session_id, "Welcome to " .. name .. "!\n")
+send(session_id, "Welcome to " .. name .. "!
+")
+
+config("game.command_paths")         --> { "cmds" }   (a table)
+config("limits.lua_memory_mb")       --> 64
+config("sessions.multisession_mode") --> "single"
+config("nonsense.key")               --> nil          (never an error)
 ```
+
+An unknown key is `nil`, not an error: Lua reads config with `or <fallback>`
+throughout, and raising would turn every typo into a dead daemon rather than a
+default.
+
+**`[game]` accepts keys the driver has no opinion about.** They are captured
+rather than rejected, and readable the same way:
+
+```toml
+[game]
+respawn_room = "thornhollow.square"
+shop_restock_seconds = 600
+```
+
+```lua
+local room = config("game.respawn_room")
+```
+
+That is why `death_d` no longer has one game's room hardcoded in the *mudlib*
+layer. Before this was generic, every game-layer setting needed a Rust edit
+first, and that pressure is what put `wizard_workshop.entrance` in a driver file.
+
+Keys with a driver default answer with it when unset — `game.autosave_seconds`
+is 300, `game.combat_round_seconds` is 3, and so on. Those defaults live in one
+table rather than at each call site, because a default repeated in two places is
+a default two places can disagree about.
 
 ---
 

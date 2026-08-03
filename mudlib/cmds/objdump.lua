@@ -5,18 +5,64 @@ M.category = 'admin'
 M.summary = 'Show detailed information dump for a player or room.'
 M.permission = 'admin'
 
+-- Sorted, not `pairs` order: a dump you cannot diff against the last one is
+-- most of the way to useless.
 local function format_dict(d)
     if not d or next(d) == nil then return "(none)" end
+    local keys = {}
+    for k in pairs(d) do keys[#keys + 1] = k end
+    table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+
     local parts = {}
-    for k, v in pairs(d) do
-        table.insert(parts, tostring(k) .. " = " .. tostring(v))
+    for _, k in ipairs(keys) do
+        parts[#parts + 1] = tostring(k) .. " = " .. tostring(d[k])
     end
     return table.concat(parts, ", ")
 end
 
 local function format_array(arr)
     if not arr or #arr == 0 then return "(none)" end
-    return table.concat(arr, ", ")
+    local parts = {}
+    for i, v in ipairs(arr) do parts[i] = tostring(v) end
+    return table.concat(parts, ", ")
+end
+
+--- Collapse an inventory into "id x2, other_id" in carry order.
+---
+--- Entries are `{ template = "id" }` tables (Mobile:add_item), with bare
+--- strings still reaching this from older saves. Counting the *entry* used a
+--- table as the key, so every count was 1 and the table itself went on to
+--- `table.concat` — which raised for any player carrying anything at all.
+--- Exposed for testing, as `_roll` and `_plan_flush` are.
+--- @param inventory table|nil
+--- @return string
+function M._format_inventory(inventory)
+    if type(inventory) ~= "table" then return "(empty)" end
+
+    local counts, order = {}, {}
+    for _, entry in ipairs(inventory) do
+        local id
+        if type(entry) == "string" then
+            id = entry
+        elseif type(entry) == "table" then
+            id = entry.template
+        end
+        if type(id) == "string" then
+            if not counts[id] then
+                counts[id] = 0
+                order[#order + 1] = id
+            end
+            counts[id] = counts[id] + 1
+        end
+    end
+
+    if #order == 0 then return "(empty)" end
+
+    local parts = {}
+    for _, id in ipairs(order) do
+        parts[#parts + 1] = counts[id] > 1 and (id .. " x" .. counts[id]) or id
+    end
+    return table.concat(parts, ", ")
 end
 
 function M.execute(session_id, args_str, args)
@@ -49,39 +95,36 @@ function M.execute(session_id, args_str, args)
         local room_id = DAEMON.world and DAEMON.world.get_character_room(p.char_id) or "Unknown"
         table.insert(lines, string.format("  Room: %s", room_id))
         
-        local stats = p.stats or {}
-        table.insert(lines, string.format("  HP: %s/%s | MP: %s/%s | Level: %s", tostring(stats.hp or 0), tostring(stats.max_hp or 0), tostring(stats.mp or 0), tostring(stats.max_mp or 0), tostring(stats.level or 1)))
-        table.insert(lines, string.format("  STR: %s | DEX: %s | INT: %s | CON: %s", tostring(stats.strength or 0), tostring(stats.dexterity or 0), tostring(stats.intelligence or 0), tostring(stats.constitution or 0)))
+        -- Through `:trait()` rather than `p.stats`. A derived trait stores
+        -- nothing at all, so reading `stats.max_hp` reported 0 for every
+        -- character; an effect-modified attribute reported the unbuffed number.
+        -- `traits <name>` is where base and effective are shown side by side.
+        local function tv(id) return tostring(p:trait(id)) end
+        table.insert(lines, string.format("  HP: %s/%s | MP: %s/%s | Level: %s",
+            tv("hp"), tv("max_hp"), tv("mp"), tv("max_mp"), tv("level")))
+        table.insert(lines, string.format("  STR: %s | DEX: %s | INT: %s | CON: %s",
+            tv("strength"), tv("dexterity"), tv("intelligence"), tv("constitution")))
         table.insert(lines, string.format("  XP: %s | Gold: %s", tostring(p.xp or 0), tostring(p.gold or 0)))
         table.insert(lines, string.format("  Title: %s | Race: %s | Gender: %s", p.title or "(none)", p.race or "(none)", p.gender or "(none)"))
         
+        local eq_slots = {}
+        if type(p.equipment) == "table" then
+            for slot in pairs(p.equipment) do eq_slots[#eq_slots + 1] = slot end
+            table.sort(eq_slots)
+        end
         local eq_parts = {}
-        if p.equipment and next(p.equipment) then
-            for slot, item in pairs(p.equipment) do
-                table.insert(eq_parts, slot .. " -> " .. item)
-            end
+        for _, slot in ipairs(eq_slots) do
+            eq_parts[#eq_parts + 1] = slot .. " -> " .. tostring(p.equipment[slot])
         end
         table.insert(lines, "  Equipment: " .. (#eq_parts > 0 and table.concat(eq_parts, ", ") or "(empty)"))
 
-        local inv_counts = {}
-        if p.inventory then
-            for _, item in ipairs(p.inventory) do
-                inv_counts[item] = (inv_counts[item] or 0) + 1
-            end
-        end
-        local inv_parts = {}
-        for item, count in pairs(inv_counts) do
-            if count > 1 then
-                table.insert(inv_parts, item .. " x" .. count)
-            else
-                table.insert(inv_parts, item)
-            end
-        end
-        table.insert(lines, "  Inventory: " .. (#inv_parts > 0 and table.concat(inv_parts, ", ") or "(empty)"))
+        table.insert(lines, "  Inventory: " .. M._format_inventory(p.inventory))
         
         table.insert(lines, "  Channels: " .. format_array(p.channels))
         table.insert(lines, "  Quest flags: " .. format_dict(p.quest_flags))
-        table.insert(lines, "  Skills: " .. format_dict(p.skills))
+        -- Skills used to have a line of their own. They are traits now, so
+        -- `traits <name>` shows them alongside everything else the character
+        -- holds — one place to look rather than two that can disagree.
         table.insert(lines, "  Tags: " .. format_array(p.tags))
         table.insert(lines, "  Custom: " .. format_dict(p.custom))
 

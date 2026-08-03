@@ -136,7 +136,7 @@ things a static modifier table cannot express become ordinary:
 ```lua
 hooks = { ["trait:strength"] = { phase = "add", fn = function(ev, ctx)
     -- a berserker bonus, which no declarative table could say
-    if ctx.entity:stat("hp") < ctx.entity:stat("max_hp") / 2 then
+    if ctx.entity:trait("hp") < ctx.entity:trait("max_hp") / 2 then
         ev.amount = ev.amount + 5
     end
 end } }
@@ -230,7 +230,7 @@ fall out of the same rule.
 { id = "regeneration", duration = 300, tick = 3,
   hooks = { heartbeat = { phase = "post", fn = function(ev, ctx)
       local e = ctx.entity
-      local missing = e:stat("max_hp") - e:stat("hp")
+      local missing = e:trait("max_hp") - e:trait("hp")
       if missing > 0 then
           e:heal(math.max(1, math.floor(missing * 0.02 * ev.ticks)))
       end

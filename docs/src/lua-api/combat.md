@@ -162,8 +162,17 @@ harness does, so a fight never resolves in the background of an unrelated test.
 
 - **No initiative or turn order.** Every engaged pair resolves once per round,
   in a stable order.
-- **No group combat, no assist, no tanking.** One attacker, one target.
+- **No group combat or tanking.** One attacker, one target. *Assist* is
+  possible but is not the driver's: `combat.started` is emitted, and a game
+  daemon that wants a guard's faction to join in listens to it.
 - **No fleeing to a direction, no pursuit.** `flee` ends the fight where you
   stand.
-- **No corpses.** Loot goes straight to the killer.
-- **No aggression.** `aggressive` is on the template and nothing reads it yet.
+- **No corpses.** Loot falls on the floor of the room the fight was in — see
+  [Items](./items.md). It used to go straight to the killer, and that was never
+  a design decision: nothing in the mudlib could put an item in a room.
+- **No aggression policy.** `aggressive` is read now, but by the *game* layer.
+  The driver ships the flag and the `room.entered` event; whether an aggressive
+  creature attacks, how long it waits, whether it cares about level or faction,
+  and whether it gives up when you flee are content decisions. See
+  `game/daemons/aggro_d.lua` for one game's answer — a different game writes a
+  different file rather than configuring that one into shapelessness.

@@ -1,3 +1,18 @@
+-- mudlib/lib/checks.lua — Predicates, for effect conditions and quest gates.
+--
+-- Each function *returns* a predicate rather than being one, so a condition
+-- reads as a sentence:
+--
+--   condition = checks.all(
+--       checks.has_level(5),
+--       checks.not_(checks.has_item("hooded_lantern")),
+--       checks.cooldown_ready("daily_herb"))
+--
+-- The convention every predicate follows is `-> boolean, reason?`. The reason
+-- is the whole point: a gate that refuses without saying why is a bug report,
+-- and `all` returns the *first* failure's reason so the refusal names one thing
+-- to fix rather than everything that is wrong at once.
+
 local M = {}
 
 function M.has_item(template_id)
@@ -12,7 +27,7 @@ end
 function M.has_level(min_level)
     return function(player)
         -- Effective level, so a level-boosting effect counts.
-        local level = player.stat and player:stat("level")
+        local level = player.trait and player:trait("level")
             or (player.stats and player.stats.level)
         if level and level >= min_level then
             return true
@@ -58,6 +73,28 @@ function M.state_equals(obj_id, key, value)
             return true
         end
         return false, "The required state is not met."
+    end
+end
+
+--- Invert a predicate.
+---
+--- A predicate library without negation is half a library: "only when you are
+--- *not* carrying a light" is as ordinary a condition as its opposite, and
+--- without this every author writes their own inline closure for it.
+---
+--- The reason cannot be inverted — "you don't have the required item" negates
+--- to nothing useful — so an optional one is taken instead. Without it the
+--- refusal is generic, which is honest rather than misleading.
+--- @param check function
+--- @param reason string|nil
+--- @return function
+function M.not_(check, reason)
+    return function(player)
+        local pass = check(player)
+        if pass then
+            return false, reason or "That condition must not be met."
+        end
+        return true
     end
 end
 

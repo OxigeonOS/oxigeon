@@ -20,8 +20,41 @@ function Room:new(data)
     obj.contents    = data.contents or {}
     obj.actions     = data.actions or {}   -- { verb = { func = fn, hint = "..." }, ... }
     obj.items       = data.items or {}     -- { keyword = description, ... }
+    -- Tags, as items and mobiles have. The forward question ("is this room
+    -- outdoors?") is a scan over this short list; the backward one ("which
+    -- rooms are outdoors?") goes through `tag_d`, which indexes it.
+    obj.tags        = data.tags or {}
 
     return obj
+end
+
+--- How light it actually is here, right now.
+---
+--- `light_level` is what the *room* is; this is what it *is like*, which a
+--- weather daemon, a spell or a burning building may have an opinion about.
+--- Every reader that cares whether you can see should use this, so a game can
+--- have weather without editing the mudlib.
+---
+--- The hook is a game daemon exposing `light_for(room)`. There is no such
+--- daemon in the mudlib and there should not be: whether it rains is content.
+--- @return number  0 (pitch dark) to 3 (bright)
+function Room:effective_light()
+    local base = self.light_level or 2
+    if DAEMON and DAEMON.weather and DAEMON.weather.light_for then
+        local ok, adjusted = pcall(DAEMON.weather.light_for, self)
+        if ok and type(adjusted) == "number" then return adjusted end
+    end
+    return base
+end
+
+--- Does this room carry a tag?
+--- @param tag string
+--- @return boolean
+function Room:has_tag(tag)
+    for _, t in ipairs(self.tags) do
+        if t == tag then return true end
+    end
+    return false
 end
 
 --- Render the full room appearance for a player.
@@ -82,6 +115,39 @@ function Room:get_appearance(session_id)
     end
     if #chars_here > 0 then
         parts[#parts + 1] = table.concat(chars_here, "\r\n")
+    end
+
+    -- Items on the floor. Before the creatures, because loot is scenery and a
+    -- creature is a decision — the last thing you read before the prompt should
+    -- be whatever might be about to bite you.
+    --
+    -- Grouped by template with a count, so a room where a fight happened reads
+    -- as "three rusted daggers" rather than as three consecutive lines.
+    if DAEMON and DAEMON.items and DAEMON.items.in_room then
+        local ok, ground = pcall(DAEMON.items.in_room, self.id)
+        if ok and #ground > 0 then
+            local counts, order = {}, {}
+            for _, entry in ipairs(ground) do
+                local item = DAEMON.items.resolve(entry)
+                local name = item and (resolve(item.short, item) or item.short)
+                if type(name) == "string" then
+                    if not counts[name] then
+                        counts[name] = 0
+                        order[#order + 1] = name
+                    end
+                    counts[name] = counts[name] + 1
+                end
+            end
+            local lines = {}
+            for _, name in ipairs(order) do
+                lines[#lines + 1] = counts[name] > 1
+                    and ("  " .. name .. " (x" .. counts[name] .. ")")
+                    or ("  " .. name)
+            end
+            if #lines > 0 then
+                parts[#parts + 1] = "Lying here:\r\n" .. table.concat(lines, "\r\n")
+            end
+        end
     end
 
     -- Creatures. After the players, so the last thing before the prompt is

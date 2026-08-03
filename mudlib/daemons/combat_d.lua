@@ -24,6 +24,8 @@
 --
 -- See docs/src/lua-api/combat.md.
 
+local weaponlib = require('lib.weapon')
+
 local M = {}
 
 local NS = "combat"
@@ -109,6 +111,18 @@ function M.engage(attacker, target)
         DAEMON.cache.set(NS, t_scope, "self", target)
         DAEMON.cache.set(NS, t_scope, "target", attacker)
     end
+
+    -- So a game layer can react — a guard assisting its faction, a quest
+    -- counting a fight picked. The driver takes no position on what should
+    -- happen; that is content, and this is how content finds out.
+    if DAEMON.event then
+        pcall(DAEMON.event.emit, "combat.started", {
+            attacker_char_id = attacker.char_id,
+            attacker_id      = attacker.id,
+            defender_char_id = target.char_id,
+            defender_id      = target.id,
+        })
+    end
     return true
 end
 
@@ -152,16 +166,28 @@ end
 local function weapon_damage(attacker)
     local weapon
     if attacker.equipment and DAEMON and DAEMON.items then
-        local id = attacker.equipment.weapon or attacker.equipment.main_hand
-        if id then
-            local ok, item = pcall(DAEMON.items.get, id)
+        -- The weapon slot holds an item *instance*, so it resolves against its
+        -- template like anything else. It held a bare template id when nothing
+        -- wrote the slot at all; an enchanted sword needs the instance, because
+        -- the enchantment is what makes it different from every other sword
+        -- built from the same template.
+        local entry = attacker.equipment.weapon or attacker.equipment.main_hand
+        if type(entry) == "table" then
+            local ok, item = pcall(DAEMON.items.resolve, entry)
+            if ok then weapon = item end
+        elseif type(entry) == "string" then
+            local ok, item = pcall(DAEMON.items.get, entry)
             if ok then weapon = item end
         end
     end
 
-    if weapon and weapon.roll_damage then
-        local ok, dmg = pcall(weapon.roll_damage, weapon)
-        if ok and type(dmg) == "number" then return dmg, weapon end
+    -- Rolled through M._roll, not math.random. The class version reached for
+    -- math.random itself, which made it a second source of randomness that
+    -- nothing overriding _roll could reach — so a test that pinned the fight
+    -- still got random weapon damage.
+    if weaponlib.is(weapon) then
+        local dmg = weaponlib.roll_damage(weapon, M._roll)
+        if type(dmg) == "number" then return dmg, weapon end
     end
 
     -- A template can state its own damage; otherwise it is bare hands, scaled
@@ -171,7 +197,7 @@ local function weapon_damage(attacker)
         return spread.min + M._roll(math.max(1, spread.max - spread.min + 1)) - 1, nil
     end
 
-    local str = attacker.stat and attacker:stat("strength") or 5
+    local str = attacker.trait and attacker:trait("strength") or 5
     return math.max(1, M._roll(math.max(1, math.floor(str / 2)))), nil
 end
 
@@ -184,23 +210,49 @@ function M.attack_once(attacker, target)
 
     -- To hit: even-ish, nudged by the difference in dexterity, and never a
     -- certainty in either direction.
-    local a_dex = attacker.stat and attacker:stat("dexterity") or 5
-    local d_dex = target.stat and target:stat("dexterity") or 5
+    local a_dex = attacker.trait and attacker:trait("dexterity") or 5
+    local d_dex = target.trait and target:trait("dexterity") or 5
     local chance = math.max(5, math.min(95, 60 + (a_dex - d_dex) * 3))
     if M._roll(100) > chance then
         return result
     end
 
     result.hit = true
-    local raw = weapon_damage(attacker)
+    local raw, weapon = weapon_damage(attacker)
     result.damage = raw
+    result.weapon = weapon
+
+    -- The damage type comes from the weapon, so a silver dagger's `magic`
+    -- reaches the defender's resist table and a warded cloak can blunt it.
+    -- A creature with no weapon may still declare one on its template — a wisp
+    -- deals magic with nothing in its hands — and defaulting to physical here
+    -- rather than at the read site means every attacker takes the same path.
+    local damage_type = (weaponlib.is(weapon) and weapon.weapon.damage_type)
+        or attacker.damage_type
+        or "physical"
+    result.damage_type = damage_type
 
     local _, dealt = target:take_damage(raw, {
-        damage_type = "physical",
+        damage_type = damage_type,
         attacker = attacker,
     })
     result.dealt = dealt or raw
     result.killed = not target:is_alive()
+
+    -- `on_combat` was declared on `Mobile` and never called. It is where a
+    -- creature's *own* trick goes — a lurker's bite poisoning you, a wisp
+    -- marking you — so combat does not grow a special case per monster.
+    --
+    -- After the damage, so a creature can react to having killed you, and
+    -- protected, so a broken hook does not end the fight.
+    if type(attacker.on_combat) == "function" then
+        local ok, err = pcall(attacker.on_combat, attacker, target)
+        if not ok then
+            log_error("COMBAT_D: on_combat for '" .. tostring(attacker.id)
+                .. "' raised: " .. tostring(err))
+        end
+    end
+
     return result
 end
 
@@ -209,7 +261,7 @@ end
 local function reward(killer, victim)
     if not killer or not killer.award_xp then return end
     local template = victim.template_id and DAEMON.mobs and DAEMON.mobs.get(victim.template_id)
-    local award = (template and template.xp_award) or (victim.stat and victim:stat("level") * 5) or 5
+    local award = (template and template.xp_award) or (victim.trait and victim:trait("level") * 5) or 5
 
     -- Through award_xp, so an experience buff applies here and nowhere else
     -- has to know about it.
@@ -218,11 +270,39 @@ local function reward(killer, victim)
         tell(killer, "You gain " .. gained .. " experience.")
     end
 
-    if template and template.loot_table and killer.add_item then
+    -- Loot goes on the floor, not into the killer's pack.
+    --
+    -- It used to go straight to the killer, and the reason was not a design
+    -- decision: there was nowhere else for it to go, because nothing in the
+    -- mudlib could put an item in a room. Now that ground items exist, dropping
+    -- it is what makes `get`, a corpse container, weight limits and someone
+    -- else walking in and taking it all mean something. The killer is told what
+    -- fell, so nothing is lost that they would have noticed.
+    if template and template.loot_table and DAEMON and DAEMON.items then
+        local room_id = victim.room_id
+            or (DAEMON.world and killer and killer.char_id
+                and DAEMON.world.get_character_room(killer.char_id))
+
         for _, entry in ipairs(template.loot_table) do
             if entry.item_id and (not entry.chance or (M._roll(100) / 100) <= entry.chance) then
-                pcall(killer.add_item, killer, entry.item_id)
-                tell(killer, "You take " .. tostring(entry.item_id) .. " from the corpse.")
+                local dropped = nil
+                if room_id then
+                    local location = DAEMON.items.location("room", room_id)
+                    local ok, instance = pcall(DAEMON.items.spawn, entry.item_id, location)
+                    if ok then dropped = instance end
+                end
+
+                if dropped then
+                    local item = DAEMON.items.resolve(dropped)
+                    local name = (item and item.short) or entry.item_id
+                    tell(killer, name .. " falls from the corpse.")
+                    tell_room(victim, name .. " falls from the corpse.", { victim })
+                elseif killer and killer.add_item then
+                    -- No room to drop it into — a fight in a room the world does
+                    -- not know about. Handing it over beats losing it.
+                    pcall(killer.add_item, killer, entry.item_id)
+                    tell(killer, "You take " .. tostring(entry.item_id) .. " from the corpse.")
+                end
             end
         end
     end

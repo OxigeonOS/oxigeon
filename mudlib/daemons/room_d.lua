@@ -40,6 +40,7 @@ local DEFAULTS = {
 --   data.exits       → room.exits        { direction = target_room_id }
 --   data.items       → room.items        { keyword = description }
 --   data.actions     → room.actions      { verb = { func = fn, hint = "..." } }
+--   data.tags        → room.tags         { "outdoor", "town", ... }
 -- @param data table  A plain room definition table
 -- @return Room       The constructed Room object
 function M.from_data(data)
@@ -71,6 +72,10 @@ function M.from_data(data)
         exits       = data.exits or {},
         items       = data.items or {},
         actions     = data.actions or {},
+        -- Rooms can be tagged like items and mobs can. A weather daemon asking
+        -- "which rooms are outdoors" wants a reverse index rather than a walk
+        -- over the whole world on every tick, which is what `tag_d` is for.
+        tags        = data.tags or {},
     }
 
     return Room:new(room_data)

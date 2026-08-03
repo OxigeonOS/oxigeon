@@ -4,10 +4,10 @@
 # ============================================================
 
 [database]
-# Backend: "sqlite" or "postgresql"
+# Backend: "sqlite". "postgresql" parses and has no runtime path —
+# see docs/src/configuration.md.
 backend = "sqlite"
-# SQLite: filename (relative to working directory)
-# PostgreSQL: "postgres://user:password@localhost/oxigeon"
+# SQLite filename, relative to the working directory.
 url = "oxigeon.db"
 # Connection pool size
 pool_size = 5

@@ -15,7 +15,6 @@ local Object = require('lib.object')
 --- @field tags table
 --- @field aggressive boolean
 --- @field dialogue table
---- @field skills table
 --- @field race string
 --- @field faction string
 local Mobile = setmetatable({}, { __index = Object })
@@ -92,8 +91,10 @@ function Mobile:new(data)
     -- Table of keyword → response (string or function)
     obj.dialogue = data.dialogue or {}
 
-    -- Skills
-    obj.skills = data.skills or {}            -- skill_name → level
+    -- Skills used to be a parallel `skill -> level` map here. They are traits
+    -- now — `category = "skill"` counters the entity happens to hold — so a
+    -- mob's skills arrive in `data.stats` with everything else, and gain
+    -- clamping, bounds and derived masteries for free. See traits.md.
 
     -- Tags for categorization
     obj.tags = data.tags or {}                -- e.g. {"boss", "quest", "merchant"}
@@ -102,27 +103,15 @@ function Mobile:new(data)
 end
 
 -- ─── Stats helpers ───────────────────────────────────────────────────────────
-
---- The effective value of a stat, after traits and effects have their say.
----
---- `self.stats[id]` is what is *stored*; this is what is *true*. A ring of
---- strength does not change the stored number — it is an effect, and only this
---- accessor knows about it. Falls back to the raw field when TRAIT_D is not
---- loaded, so a bare Mobile still works.
---- @param id string
---- @return number
-function Mobile:stat(id)
-    if DAEMON and DAEMON.trait and DAEMON.trait.get_def and DAEMON.trait.get_def(id) then
-        return DAEMON.trait.value(self, id)
-    end
-    local raw = self.stats and self.stats[id]
-    return type(raw) == "number" and raw or 0
-end
+--
+-- `Object:trait(id)` is the accessor. It used to be `Mobile:stat`, and moved up
+-- to Object when a trait stopped meaning "a character statistic" — see
+-- docs/src/lua-api/traits.md.
 
 --- Check if the mobile is alive.
 -- @return boolean
 function Mobile:is_alive()
-    return self:stat("hp") > 0
+    return self:trait("hp") > 0
 end
 
 --- Run a number past this entity's effects, if there are any.
@@ -155,7 +144,7 @@ end
 --- @return number remaining HP
 --- @return number the damage actually dealt
 function Mobile:take_damage(amount, opts)
-    local was_alive = self:stat("hp") > 0
+    local was_alive = self:trait("hp") > 0
     local dealt, reason = through_effects(self, "damage_taken", amount, opts)
 
     if reason and self.send then
@@ -168,15 +157,21 @@ function Mobile:take_damage(amount, opts)
         self.stats.hp = math.max(0, self.stats.hp - dealt)
     end
 
+    -- Who did it, for the death hook. `on_death` takes no arguments — it is
+    -- called from here and from `heal`'s neighbours and from anything that
+    -- moves hit points — so the attacker rides on the entity instead. Set
+    -- before the hook so the hook can read it, and only when there was one.
+    if opts and opts.attacker then self._killed_by = opts.attacker end
+
     -- Fire death hook when transitioning from alive to dead
-    if was_alive and self:stat("hp") <= 0 and self.on_death then
+    if was_alive and self:trait("hp") <= 0 and self.on_death then
         local ok, err = pcall(self.on_death, self)
         if not ok then
             log("error", "MOBILE: on_death hook failed: " .. tostring(err))
         end
     end
 
-    return self:stat("hp"), dealt
+    return self:trait("hp"), dealt
 end
 
 --- Restore health, after every effect has had its say. Clamps to the maximum.
@@ -192,13 +187,13 @@ function Mobile:heal(amount, opts)
     else
         self.stats.hp = math.min(self.stats.max_hp, self.stats.hp + healed)
     end
-    return self:stat("hp"), healed
+    return self:trait("hp"), healed
 end
 
 --- Get the mob's effective level.
 -- @return number
 function Mobile:get_level()
-    return self:stat("level")
+    return self:trait("level")
 end
 
 -- ─── Echo helpers ────────────────────────────────────────────────────────────
@@ -252,9 +247,28 @@ function Mobile:has_item(template_id)
 end
 
 --- Add a pristine item to the mobile's inventory by template ID.
--- @param template_id string
+---
+--- Through `item_d.spawn`, so the entry is a real *instance* with an id rather
+--- than a bare `{ template = ... }`. Without an id it cannot be put in a
+--- container, cannot hold contents if it is one, and cannot have per-instance
+--- object state — a backpack added this way silently swallowed everything put
+--- into it, because the contents were indexed under `item:nil`.
+--- @param template_id string
+--- @return table|nil  the instance entry
 function Mobile:add_item(template_id)
-    self.inventory[#self.inventory + 1] = { template = template_id }
+    if DAEMON and DAEMON.items and DAEMON.items.spawn then
+        -- No location: it is carried, and the inventory array is what says so.
+        local instance = DAEMON.items.spawn(template_id, nil)
+        if instance then
+            self.inventory[#self.inventory + 1] = instance
+            return instance
+        end
+    end
+    -- No registry (a bare Mobile in a unit test) — the old shape still works
+    -- for everything that does not need an identity.
+    local entry = { template = template_id }
+    self.inventory[#self.inventory + 1] = entry
+    return entry
 end
 
 --- Add an item instance table directly to inventory.
@@ -315,28 +329,29 @@ function Mobile:is_aggressive()
 end
 
 --- Get dialogue response for a keyword.
--- @param keyword string
--- @return string|nil  The response text, or nil
-function Mobile:get_dialogue(keyword)
+---
+--- An lfun answer is called as `f(mob, asker)`. The asker is the whole point of
+--- making it a function — "have you found it yet" and "that will do, just
+--- about" are answers about the person asking, and a dialogue lfun that could
+--- only see the speaker would be a slower way of writing a string.
+--- @param keyword string
+--- @param asker table|nil  the character asking
+--- @return string|nil  The response text, or nil
+function Mobile:get_dialogue(keyword, asker)
     local response = self.dialogue[keyword]
-    if response then
-        return Object.resolve(response, self)
+    if response == nil then return nil end
+
+    if type(response) == "function" then
+        local ok, text = pcall(response, self, asker)
+        if ok and type(text) == "string" then return text end
+        if not ok then
+            log("error", "MOBILE: dialogue lfun '" .. tostring(keyword) .. "' on '"
+                .. tostring(self.id) .. "' raised: " .. tostring(text))
+        end
+        return "<invalid lfun return>"
     end
-    return nil
-end
 
---- Get a skill level.
--- @param skill string  The skill name
--- @return number       Skill level (0 if not learned)
-function Mobile:get_skill(skill)
-    return self.skills[skill] or 0
-end
-
---- Set a skill level.
--- @param skill string  The skill name
--- @param level number  The new level
-function Mobile:set_skill(skill, level)
-    self.skills[skill] = level
+    return Object.resolve(response, self)
 end
 
 --- Get the full examination text.

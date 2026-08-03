@@ -44,8 +44,8 @@ end
 --- answer. This is the prompt, so it renders on every command — TRAIT_D's memo
 --- is what keeps that cheap.
 local function stat(player, id, fallback)
-    if player.stat then
-        local ok, v = pcall(player.stat, player, id)
+    if player.trait then
+        local ok, v = pcall(player.trait, player, id)
         if ok and type(v) == "number" then return tostring(v) end
     end
     local raw = player.stats and player.stats[id]

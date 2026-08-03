@@ -250,11 +250,60 @@ your configuration survives restarts.
 
 ```lua
 local info = server_info()
--- info.version      "0.1.0"
--- info.name         "My MUD"     (from server.toml [game].name)
--- info.started_at   "2026-07-15T18:00:00Z"
--- info.uptime_secs  1842.3       (float seconds since start)
+-- info.version         "0.1.0"
+-- info.name            "My MUD"     (from server.toml [game].name)
+-- info.started_at      "2026-07-15T18:00:00Z"
+-- info.uptime_secs     1842.3       (float seconds since start)
+-- info.dropped_output  0            (output lost to full session channels)
+-- info.lua             { ... }      (the Lua heap — see below)
+-- info.compute         { ... }      (absent when compute is off)
 ```
+
+### The Lua heap
+
+```lua
+info.lua.heap_bytes      -- what the allocator has handed out
+info.lua.heap_kb         -- the same number in the unit collectgarbage("count") uses
+info.lua.limit_bytes     -- limits.lua_memory_mb, in bytes
+info.lua.heap_fraction   -- heap / limit, absent when there is no limit
+info.lua.gc_full_count   -- explicit full collections since boot
+info.lua.gc_full_ms      -- what they cost, cumulatively
+info.lua.gc_freed_bytes  -- what they recovered, cumulatively
+```
+
+**Nothing measured any of this before.** There were zero `collectgarbage` calls
+anywhere and no Rust-side GC configuration, so LuaJIT ran at its default pause
+of 200 — the heap roughly doubles before a full cycle — against a
+`lua_memory_mb = 64` ceiling. A live set nearing ~32 MB grows into that ceiling,
+LuaJIT runs an emergency full collection before failing, and the signature under
+pressure is **latency spikes first, catchable allocation errors second**,
+surfacing in whatever code happened to allocate rather than in the code
+responsible.
+
+### `gc_collect()` and the heap drill
+
+```lua
+local result = gc_collect()
+-- result.freed_bytes, result.ms, result.heap_bytes
+```
+
+Runs a full collection and reports what it cost. Also reachable as
+`mudstatus gc`, which audits the call — a full cycle is a stop-the-world pause
+on the game thread, so it is behind a subcommand rather than run on every status
+read. A diagnostic that causes the hitch it is meant to measure is worse than
+none.
+
+The drill: record the heap at boot, then again after an hour of a mob respawn
+loop, a walk out into the virtual grid and back, and several `reload` cycles.
+The number should return close to its baseline each time. A monotonic climb
+across all three is the signature that object-state leaks, uncached virtual
+rooms and closure retention on hot reload produce, and it is the only way to
+tell those apart from an ordinary working set.
+
+> [!IMPORTANT]
+> **Do not tune GC parameters without one of these numbers.** Defaults are
+> usually right and tuning blind makes things worse. These counters exist so
+> that any later `setpause`/`setstepmul` change is justified by a measurement.
 
 ### `uptime` Command
 

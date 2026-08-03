@@ -183,6 +183,15 @@ impl ScriptEngine {
                 return;
             }
 
+            // Seed the PRNG before any mudlib code can roll anything. LuaJIT
+            // starts from a constant, so without this every boot replayed the
+            // same combat, the same loot and the same weighted echoes. Salt 0
+            // is the game VM; compute workers use their index.
+            if let Err(e) = super::sandbox::seed_prng(&lua, 0) {
+                tracing::error!("Failed to seed the Lua PRNG: {}", e);
+                return;
+            }
+
             // Set package.path so require() finds modules relative to the mudlib
             // and game directories. Game path comes first so game files shadow mudlib.
             // These are the exact strings LuaJIT will use as `@`-prefixed chunk

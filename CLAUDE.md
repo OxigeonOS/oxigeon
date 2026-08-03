@@ -157,8 +157,12 @@ See `docs/src/lua-api/state-cache.md`.
 - Timers go through `DAEMON.ticker` — never raw `schedule_timer` unless building a daemon
 - Commands are auto-loaded from paths in `game.command_paths` config
 - Character state goes through CHARACTER_D (in-memory cache), not raw efuns
-- Stats are read through `player:stat(id)` or `DAEMON.trait.value` — `player.stats[id]`
+- Traits are read through `entity:trait(id)` or `DAEMON.trait.value` — `entity.stats[id]`
   is the *stored* value, which for a buffed or derived trait is the wrong answer
+- A trait is any numeric datum on any entity, not a character statistic. Presence
+  is decided by storage, never declared: an entity has a stored-kind trait when
+  there is a number for it, a derived one when everything it reads is present.
+  Never add an `applies_to` list — that is the thing that rots
 - Effects never modify a gauge or a counter; they modify attributes and derived
   traits. To raise a gauge's ceiling, modify the trait that is its `max`
 - A value written to `DAEMON.cache` must survive `lua_to_json`: no functions, no
@@ -166,7 +170,7 @@ See `docs/src/lua-api/state-cache.md`.
 
 ## Testing
 
-Run `cargo test` before committing. All tests must pass. Current count: 548.
+Run `cargo test` before committing. All tests must pass. Current count: 687.
 
 ### Test the real VM, not a helper beside it
 

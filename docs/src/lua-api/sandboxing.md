@@ -33,7 +33,9 @@ The boundary is one function — `apply_sandbox` in `src/core/scripting/sandbox.
 | `require(module)` | ✅ Jailed | Lua sources on `package.path` — game and mudlib roots only |
 | `load(code)` | ✅ Text only | Binary bytecode rejected; returns `nil, err` |
 | `read_file`, `write_file`, `append_file` | ✅ Jailed | Only within mudlib |
-| `list_dir`, `file_exists`, `delete_file` | ✅ Jailed | Only within mudlib |
+| `list_dir`, `file_exists`, `delete_file` | ✅ Jailed | Only within mudlib (and, for `list_dir`, the game root — jailed against each separately) |
+| `uuid` | ✅ Available | v4; carries no host information |
+| `math.random` | ✅ Available | **Seeded per VM at construction**, in Rust — see below |
 | `os.time`, `os.date`, `os.clock`, `os.difftime` | ✅ Available | The clock functions have no side effects |
 | `os_time`, `os_clock`, `os_date` | ✅ Available | Efun equivalents of the above |
 
@@ -67,6 +69,26 @@ local evil = require("/etc/passwd")
 ```
 
 Dots in module names are converted to directory separators: `require("lib.strings")` → `mudlib/lib/strings.lua`.
+
+## The PRNG is seeded per VM
+
+LuaJIT starts every VM from a **constant** seed, and `math.randomseed` appeared
+nowhere in `mudlib/`, `game/`, `src/` or `tests/`. Two fresh VMs both returned
+`794206293` for the first `math.random(1, 1e9)`: identical combat to-hit and
+damage rolls, identical loot outcomes, identical weighted echo choices and
+identical virtual-room description variation on every restart. Not a subtle
+bias — the same game twice.
+
+Seeded in **Rust at VM construction**, immediately after `apply_sandbox` and
+before any mudlib code can roll anything, rather than in `mudlib/init.lua`. That
+way it covers every VM the engine builds: compute workers have their own, and
+they are the ones meant to run simulations. Each worker is salted with its index
+so two built in the same nanosecond still diverge.
+
+`DAEMON.combat._roll` stays overridable, so a test that wants pinned numbers is
+deterministic **by choice** rather than by accident. That distinction now
+matters: before the seed, a combat test that forgot to pin its dice passed
+anyway.
 
 ## Memory & CPU Limits
 

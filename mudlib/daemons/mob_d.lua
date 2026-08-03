@@ -134,17 +134,42 @@ function M.spawn(template_id, room_id)
     -- Mobile:new only knows about the fields it declares, and these two are
     -- combat's business rather than the class library's.
     mob.damage      = template.damage
+    -- What its unarmed attacks count as. A wisp deals magic with nothing in
+    -- its hands, and without this the only way to have a damage type is to be
+    -- holding something.
+    mob.damage_type = template.damage_type
     mob.xp_award    = template.xp_award
 
-    -- Traits fill in whatever the template did not say and clamp the gauges.
-    if DAEMON and DAEMON.trait then pcall(DAEMON.trait.attach, mob) end
+    -- The character set fills in whatever the template did not say, then the
+    -- gauges are clamped. A mob carries the same stat block a player does.
+    if DAEMON and DAEMON.trait then pcall(DAEMON.trait.seed, mob, "character") end
+
+    -- The template's own `on_death`, if it has one, then the event. It used to
+    -- be *replaced* here, which meant a template could declare the hook and
+    -- never see it called — a boss that drops a corpse would silently drop
+    -- nothing. Wrapped rather than ordered the other way round, so the hook
+    -- runs while the world still looks the way it did when the creature died.
+    local template_on_death = mob.on_death
 
     mob.on_death = function(self)
+        if type(template_on_death) == "function" then
+            local ok, err = pcall(template_on_death, self)
+            if not ok then
+                log_error("MOB_D: on_death for '" .. tostring(self.template_id)
+                    .. "' raised: " .. tostring(err))
+            end
+        end
+
         if DAEMON and DAEMON.event then
             DAEMON.event.emit("mob.died", {
                 instance_id = self.id,
                 template_id = self.template_id,
                 room_id     = self.room_id,
+                -- Who killed it, when there was a who. A quest counter, a
+                -- faction's grudge and a loot rule all want this, and none of
+                -- them should have to reach into combat to get it.
+                killer_char_id = self._killed_by and self._killed_by.char_id,
+                killer_id      = self._killed_by and self._killed_by.id,
             })
         end
     end
@@ -152,6 +177,13 @@ function M.spawn(template_id, room_id)
     r.instances[instance_id] = mob
     room_set(r, room_id)[instance_id] = true
     r.alive = r.alive + 1
+
+    -- Into the tag index, so "every guard in this faction" is a lookup rather
+    -- than a walk over every live mob in the world.
+    if DAEMON and DAEMON.tag then
+        pcall(DAEMON.tag.index, "mob", instance_id, mob.tags)
+    end
+
     return mob
 end
 
@@ -168,6 +200,26 @@ function M.despawn(mob, opts)
     if DAEMON and DAEMON.effect then pcall(DAEMON.effect.detach, mob) end
     if DAEMON and DAEMON.trait then pcall(DAEMON.trait.detach, mob) end
     if DAEMON and DAEMON.combat then pcall(DAEMON.combat.disengage, mob) end
+
+    -- Object state is keyed by object id in a plain table in `_G`, and mob
+    -- instance ids are `"mob:" .. seq` — monotonic and never reused. Everything
+    -- else here was detached and this was not, so every mob that ever had state
+    -- written left a permanently retained sub-table behind, and a respawn loop
+    -- churned ids forever. The only pruning anywhere is `world_d`'s on area
+    -- reset, which covers rooms in a registered area source: not mobs.
+    --
+    -- The cost is not the memory a few tables hold. It is that every mark phase
+    -- has to walk them, forever, and nothing measured that until `mudstatus`
+    -- grew a heap counter.
+    if type(clear_object_state) == "function" then
+        local ok, err = pcall(clear_object_state, mob.id)
+        if not ok then
+            log_error("MOB_D: could not clear object state for '" .. tostring(mob.id)
+                .. "': " .. tostring(err))
+        end
+    end
+
+    if DAEMON and DAEMON.tag then pcall(DAEMON.tag.forget, "mob", mob.id) end
 
     r.instances[mob.id] = nil
     if r.rooms[room_id] then r.rooms[room_id][mob.id] = nil end

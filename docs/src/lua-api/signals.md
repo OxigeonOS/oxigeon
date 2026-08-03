@@ -143,16 +143,30 @@ Use dotted names that describe **scope** and **action**:
 ```lua
 "mob.died"          -- { mob_id, room_id, killer }
 "mob.damaged"       -- { mob_id, room_id, amount, source }
-"combat.started"    -- { attacker, defender, room_id }
+"combat.started"    -- { attacker_char_id, attacker_id, defender_char_id, defender_id }
 "combat.ended"      -- { winner, loser, room_id }
 ```
 
 ### World & Movement
 
 ```lua
-"room.entered"      -- { char_id, room_id, from_direction }
-"room.left"         -- { char_id, room_id, direction }
+"room.entered"      -- { char_id, room_id, from_room_id }
+"room.left"         -- { char_id, room_id, to_room_id }
+"character.left"    -- { char_id, room_id }   -- left the *world*, not a room
 "area.reset"        -- { area_name }
+```
+
+These are emitted by `world_d` rather than by `movement.lua`, because every path
+into a room goes through `move_character`, `place_character` and
+`remove_character`: walking, teleporting, logging in and being moved by a room
+action. Emitting from the walk would have covered one of the four.
+
+> `room.entered` fires the moment the move lands, which is *before*
+> `movement.lua` sends the room description. A listener that writes to the
+> player prints above the room they are about to read — schedule it, or say it
+> as part of whatever it triggers. The aggro handler does the second.
+
+```lua
 ```
 
 ### Area-Scoped
@@ -173,9 +187,20 @@ Use dotted names that describe **scope** and **action**:
 ### Items
 
 ```lua
-"item.picked_up"    -- { item_id, char_id, room_id }
-"item.dropped"      -- { item_id, char_id, room_id }
-"item.used"         -- { item_id, char_id, target }
+"item.picked_up"    -- { char_id, instance_id, template_id }
+"item.dropped"      -- { char_id, instance_id, template_id, room_id }
+"item.stored"       -- { char_id, instance_id, template_id, container }
+"item.given"        -- { from_char_id, to_char_id, instance_id, template_id }
+"item.used"         -- { char_id, instance_id, template_id, target }
+"item.equipped"     -- { char_id, slot, instance_id, template_id }
+"item.unequipped"   -- { char_id, slot, instance_id, template_id }
+```
+
+`instance_id` says *which* one and `template_id` says *what* it is. A quest
+counting brass keys wants the second; a curse following one particular sword
+wants the first. See [Items](./items.md).
+
+```lua
 ```
 
 ---

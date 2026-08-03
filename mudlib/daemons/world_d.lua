@@ -64,6 +64,13 @@ function M.register_room(room)
         log("warn", "world_d: Overwriting existing room '" .. room.id .. "'")
     end
     M._rooms[room.id] = room
+
+    -- Feed the reverse index as rooms arrive. `index` replaces rather than
+    -- adds, so an area reload cannot leave a room's old tags behind — which is
+    -- the failure mode an index has and a linear scan does not.
+    if DAEMON and DAEMON.tag then
+        pcall(DAEMON.tag.index, "room", room.id, room.tags)
+    end
 end
 
 function M.register_area(rooms_array)
@@ -117,15 +124,199 @@ end
 
 --- Evict a cached virtual room (e.g. when no players are in it).
 -- Only removes from the room registry — does not affect static rooms.
+--
+-- The room *id* is the persistence, not the cached object: a virtual room is
+-- regenerated from its coordinates on the next visit, identical to the one
+-- thrown away. Its object state goes with it for the same reason a mob's does
+-- on despawn — the store is keyed by object id and nothing else prunes it, and
+-- an infinite grid over a registry nobody prunes is an unbounded leak rather
+-- than a large one.
 function M.evict_virtual(room_id)
     local prefix = room_id:match("^([^%.]+)")
     if prefix and M._virtuals[prefix] then
         M._rooms[room_id] = nil
+        if type(clear_object_state) == "function" then
+            pcall(clear_object_state, room_id)
+        end
         log("debug", "world_d: Evicted virtual room '" .. room_id .. "'")
     end
 end
 
+--- Is this a virtual room, and is there nobody left in it?
+---
+--- Called on every departure, so it has to be cheap: one pattern match against
+--- the prefix table, and the occupant count only when that says yes.
+local function virtual_and_empty(room_id)
+    if type(room_id) ~= "string" then return false end
+    local prefix = room_id:match("^([^%.]+)")
+    if not (prefix and M._virtuals[prefix]) then return false end
+
+    local room = M._rooms[room_id]
+    if not room then return false end
+    local occupants = room.get_characters and room:get_characters() or {}
+    return #occupants == 0
+end
+
+--- Drop a virtual room the moment its last occupant leaves.
+---
+--- `evict_virtual` had **zero callers** — not in `mudlib/`, `game/`, `tests/`
+--- or `src/`. `world-building.md` said a virtual room is "cached in the
+--- registry while occupied"; nothing un-cached it, so `_rooms` accumulated
+--- every virtual room ever generated, each holding its exits table, contents,
+--- actions and description closures. Bounded for a small ocean; unbounded for
+--- an infinite grid.
+---
+--- Deliberately eager rather than on a sweep timer: the condition is exact and
+--- known at exactly this moment, and a timer would need to re-derive it for
+--- every cached room on every tick to learn the same thing later.
+local function evict_if_abandoned(room_id)
+    if virtual_and_empty(room_id) then
+        M.evict_virtual(room_id)
+    end
+end
+
+-- ─── The exit graph ──────────────────────────────────────────────────────────
+
+--- Every room's exits, as plain data.
+---
+--- For [`compute()`](../../docs/src/lua-api/compute.md): a worker VM has no
+--- efuns and cannot see the world, so the world has to be copied to it. Plain
+--- strings only — no Room objects, no closures — because the marshaller refuses
+--- both and a graph that cannot cross the boundary is a graph nobody can plan
+--- a route over.
+---
+--- **Virtual rooms are included only if they are cached**, which is to say only
+--- if somebody is standing in one. An infinite grid cannot be enumerated, and
+--- pretending otherwise is how a pathfinder comes to hang. A caller that wants
+--- to plan a route *through* a virtual area passes `expand`, which asks the
+--- provider for the neighbours of what it already has, breadth-first, up to a
+--- bound.
+---
+--- @param opts table|nil  { expand = { provider = fn, from = room_id,
+---                                     radius = n } }
+--- @return table  room_id -> { direction = room_id }
+function M.exit_graph(opts)
+    local graph = {}
+
+    local function exits_of(room)
+        local out = {}
+        for dir, exit in pairs(room.exits or {}) do
+            local target = type(exit) == "table" and exit.target or exit
+            -- A hidden exit is still an exit — you can walk it if you know the
+            -- direction — so it belongs in a route. A `check` that refuses is
+            -- what `still_connected` is for, and it is checked when the route
+            -- is *used* rather than when it is planned, because a locked door
+            -- may be open by then.
+            if type(target) == "string" then out[dir] = target end
+        end
+        return out
+    end
+
+    for room_id, room in pairs(M._rooms) do
+        graph[room_id] = exits_of(room)
+    end
+
+    local expand = opts and opts.expand
+    if type(expand) == "table" and type(expand.provider) == "function"
+        and type(expand.from) == "string" then
+        -- Breadth-first from one room, asking the provider for neighbours it
+        -- has not been asked for yet. Bounded, because the whole point of a
+        -- virtual area is that it does not end.
+        -- `radius + 1` passes, so a radius of 3 means "every room within three
+        -- steps has an entry". Pass *i* fills the rooms at distance *i-1*, so
+        -- looping `radius` times would fill only to `radius - 1` — an
+        -- off-by-one that shows up as a pathfinder that cannot see the last
+        -- ring it was told to consider.
+        local radius = tonumber(expand.radius) or 20
+        local frontier, next_frontier = { expand.from }, {}
+        local seen = { [expand.from] = true }
+
+        for _ = 1, radius + 1 do
+            for _, room_id in ipairs(frontier) do
+                if not graph[room_id] then
+                    local ok, neighbours = pcall(expand.provider, room_id)
+                    graph[room_id] = (ok and type(neighbours) == "table") and neighbours or {}
+                end
+                for _, target in pairs(graph[room_id]) do
+                    if type(target) == "string" and not seen[target] then
+                        seen[target] = true
+                        next_frontier[#next_frontier + 1] = target
+                    end
+                end
+            end
+            if #next_frontier == 0 then break end
+            frontier, next_frontier = next_frontier, {}
+        end
+    end
+
+    return graph
+end
+
+--- Is this route still walkable *now*?
+---
+--- The most important function on this page, and the reason it exists is worth
+--- stating: **a compute result is a proposal about a world that has since
+--- changed**, never an authoritative fact. Nothing stopped the game while the
+--- job ran — that is the entire point of running it off-thread — so anything it
+--- computed may be stale by the time you have it.
+---
+--- Checks the exits still exist *and* that their `check` functions still pass,
+--- which is the half a graph cannot carry: a locked door is an exit that is
+--- there and refuses.
+--- @param rooms table   array of room ids, in order
+--- @param player table|nil  for exit checks that read the walker
+--- @return boolean ok, string|nil where it broke
+function M.still_connected(rooms, player)
+    if type(rooms) ~= "table" or #rooms < 2 then return true end
+
+    for i = 1, #rooms - 1 do
+        local room = M.get_room(rooms[i])
+        if not room then return false, rooms[i] end
+
+        local linked = false
+        for _, exit in pairs(room.exits or {}) do
+            local target = type(exit) == "table" and exit.target or exit
+            if target == rooms[i + 1] then
+                if type(exit) == "table" and type(exit.check) == "function" then
+                    local ok, passed = pcall(exit.check, player)
+                    linked = ok and passed == true
+                else
+                    linked = true
+                end
+                if linked then break end
+            end
+        end
+        if not linked then return false, rooms[i] end
+    end
+    return true
+end
+
 -- ─── Character location tracking ─────────────────────────────────────────────
+
+--- Announce an arrival or a departure.
+---
+--- `room.entered`, `room.left` and `character.left` are documented event names
+--- that nothing emitted — the naming convention existed and the events did not,
+--- so an aggro handler or a quest trigger had nothing to listen to. They are
+--- emitted from here rather than from `movement.lua` because every path into a
+--- room goes through these three functions: walking, teleporting, logging in
+--- and being moved by a room action. Emitting from the walk would have covered
+--- one of the four.
+---
+--- Protected, and after the state change: a listener that raises must not leave
+--- a character half-moved, and one that asks where somebody is must get the
+--- answer that is now true.
+local function announce(event, data)
+    if not (DAEMON and DAEMON.event) then return end
+    local ok, err = pcall(DAEMON.event.emit, event, data)
+    if not ok then
+        log("error", "world_d: emitting '" .. event .. "' failed: " .. tostring(err))
+        if DAEMON.journal then
+            pcall(DAEMON.journal.error, "WORLD_D: '" .. event .. "' listener raised: "
+                .. tostring(err))
+        end
+    end
+end
 
 function M.move_character(char_id, target_room_id)
     local old_room_id = M._locations[char_id]
@@ -140,6 +331,22 @@ function M.move_character(char_id, target_room_id)
     if new_room then
         new_room:add_character(char_id)
         M._locations[char_id] = target_room_id
+        -- After the arrival, not before: walking one step within the virtual
+        -- grid would otherwise evict the room you are about to re-enter, and
+        -- doing it in this order also means a move that failed leaves the room
+        -- you are still standing in alone.
+        if old_room_id and old_room_id ~= target_room_id then
+            evict_if_abandoned(old_room_id)
+        end
+
+        if old_room_id and old_room_id ~= target_room_id then
+            announce("room.left", {
+                char_id = char_id, room_id = old_room_id, to_room_id = target_room_id,
+            })
+        end
+        announce("room.entered", {
+            char_id = char_id, room_id = target_room_id, from_room_id = old_room_id,
+        })
         return true
     end
     log("warn", "world_d: move_character failed — room '"
@@ -166,6 +373,7 @@ function M.place_character(char_id, room_id)
         M._locations[char_id] = room_id
         log("debug", "world_d: Placed character " .. tostring(char_id)
             .. " in room '" .. room_id .. "'")
+        announce("room.entered", { char_id = char_id, room_id = room_id, from_room_id = nil })
     else
         log("error", "world_d: Cannot place character " .. tostring(char_id)
             .. " — room '" .. tostring(room_id) .. "' does not exist!")
@@ -182,6 +390,16 @@ function M.remove_character(char_id)
         M._locations[char_id] = nil
         log("debug", "world_d: Removed character " .. tostring(char_id)
             .. " from room '" .. room_id .. "'")
+        -- Disconnecting inside the virtual grid is the common case for the
+        -- last occupant leaving, so it has to evict too — otherwise every
+        -- player who ever logged out at sea leaves a room behind.
+        evict_if_abandoned(room_id)
+
+        announce("room.left", { char_id = char_id, room_id = room_id, to_room_id = nil })
+        -- Distinct from `room.left`: leaving a room and leaving the world are
+        -- different events, and a listener cleaning up per-character timers
+        -- wants the second one.
+        announce("character.left", { char_id = char_id, room_id = room_id })
     else
         log("debug", "world_d: remove_character called for character "
             .. tostring(char_id) .. " who had no location")

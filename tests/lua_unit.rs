@@ -425,15 +425,25 @@ fn test_mobile_inventory_ops() {
     assert!(!eval_bool(&lua, r#"return mob:remove_item("shield")"#));
 }
 
+/// A skill is a trait now, not a parallel map. Without TRAIT_D loaded,
+/// `:trait()` falls back to the stored number — which is what a bare Mobile
+/// outside the engine sees, and is exactly how a skill is stored.
 #[test]
-fn test_mobile_skills() {
+fn test_mobile_skills_are_traits() {
     let lua = make_test_lua();
     lua.load("Mobile = require('lib.mobile')").exec().unwrap();
     lua.load(r#"mob = Mobile:new({ id = "t" })"#).exec().unwrap();
 
-    assert_eq!(eval_int(&lua, r#"return mob:get_skill("swords")"#), 0);
-    lua.load(r#"mob:set_skill("swords", 5)"#).exec().unwrap();
-    assert_eq!(eval_int(&lua, r#"return mob:get_skill("swords")"#), 5);
+    // Never learned reads as zero, and stores nothing.
+    assert_eq!(eval_int(&lua, r#"return mob:trait("swords")"#), 0);
+    assert!(eval_bool(&lua, r#"return mob.stats.swords == nil"#));
+
+    lua.load(r#"mob.stats.swords = 5"#).exec().unwrap();
+    assert_eq!(eval_int(&lua, r#"return mob:trait("swords")"#), 5);
+
+    // The old parallel map is gone, not deprecated.
+    assert!(eval_bool(&lua, "return mob.get_skill == nil"));
+    assert!(eval_bool(&lua, "return mob.skills == nil"));
 }
 
 #[test]
@@ -531,8 +541,29 @@ fn test_player_from_save_with_data() {
     assert_eq!(eval_int(&lua, "return player.stats.level"), 5);
     assert_eq!(eval_int(&lua, "return player.gold"), 250);
     assert_eq!(eval_int(&lua, "return player.xp"), 1200);
-    assert_eq!(eval_int(&lua, r#"return player:get_skill("magic")"#), 10);
+    // A blob written before skills were traits migrates into `stats`, where
+    // storage decides presence. Nothing is lost; the home moved.
+    assert_eq!(eval_int(&lua, "return player.stats.magic"), 10);
+    assert_eq!(eval_int(&lua, "return player.stats.swords"), 3);
+    assert!(eval_bool(&lua, "return player.skills == nil"));
     assert!(eval_bool(&lua, r#"return player:has_quest_flag("dragon_slain")"#));
+}
+
+/// The migration must not walk a character backwards. Once a skill has been
+/// saved as a trait, a stale `skills` table left in the same blob loses.
+#[test]
+fn test_player_from_save_skill_migration_prefers_stats() {
+    let lua = make_test_lua();
+    lua.load("Player = require('lib.player')").exec().unwrap();
+    lua.load(r#"
+        player = Player:from_save(1, { id = 1, name = "X", account_id = 1 }, {
+            stats  = { archery = 12 },
+            skills = { archery = 7, tracking = 4 },
+        })
+    "#).exec().unwrap();
+
+    assert_eq!(eval_int(&lua, "return player.stats.archery"), 12);
+    assert_eq!(eval_int(&lua, "return player.stats.tracking"), 4);
 }
 
 #[test]
@@ -553,7 +584,10 @@ fn test_player_to_save_roundtrip() {
     assert_eq!(eval_int(&lua, "return exported.stats.hp"), 75);
     assert_eq!(eval_int(&lua, "return exported.gold"), 100);
     assert_eq!(eval_int(&lua, "return exported.xp"), 500);
-    assert_eq!(eval_int(&lua, "return exported.skills.archery"), 7);
+    // A skill round-trips through save/load after `Mobile.skills` was deleted:
+    // in under the old key, out under `stats`, and `skills` no longer written.
+    assert_eq!(eval_int(&lua, "return exported.stats.archery"), 7);
+    assert!(eval_bool(&lua, "return exported.skills == nil"));
 }
 
 #[test]
@@ -881,7 +915,6 @@ fn test_inheritance_chain_mobile_to_player() {
     assert!(eval_bool(&lua, "return player.take_damage ~= nil"));
     assert!(eval_bool(&lua, "return player.heal ~= nil"));
     assert!(eval_bool(&lua, "return player.is_alive ~= nil"));
-    assert!(eval_bool(&lua, "return player.get_skill ~= nil"));
     assert!(eval_bool(&lua, "return player.has_item ~= nil"));
 
     // Player has its own methods
@@ -889,40 +922,218 @@ fn test_inheritance_chain_mobile_to_player() {
     assert!(eval_bool(&lua, "return player.award_xp ~= nil"));
     assert!(eval_bool(&lua, "return player.spend_gold ~= nil"));
 
-    // Player inherits Object methods too
+    // Player inherits Object methods too — including `trait`, which moved up
+    // from Mobile when a trait stopped meaning "a character statistic".
     assert!(eval_bool(&lua, "return player.get_state ~= nil"));
+    assert!(eval_bool(&lua, "return player.trait ~= nil"));
+    assert!(eval_bool(&lua, "return player.has_trait ~= nil"));
+}
+
+/// `trait` is on Object, so a room and an item answer it too. That is the
+/// point of the move: durability and corruption are traits in the same sense
+/// strength is.
+#[test]
+fn test_trait_accessor_is_on_object_not_mobile() {
+    let lua = make_test_lua();
+    lua.load(r#"
+        Object = require('lib.object')
+        Item   = require('lib.item')
+        Room   = require('lib.room')
+        item   = Item:new({ id = "sword", stats = { durability = 40 } })
+        room   = Room:new({ id = "a.b" })
+    "#).exec().unwrap();
+
+    assert!(eval_bool(&lua, "return Object.trait ~= nil"));
+    assert_eq!(eval_int(&lua, r#"return item:trait("durability")"#), 40);
+    // Absent reads as zero and stays absent — arithmetic is safe either way.
+    assert_eq!(eval_int(&lua, r#"return item:trait("willpower")"#), 0);
+    assert_eq!(eval_int(&lua, r#"return room:trait("corruption")"#), 0);
+
+    // The old name is gone outright; a compatibility alias would be two
+    // boundaries where the codebase deliberately keeps one.
+    assert!(eval_bool(&lua, "return Object.stat == nil"));
+    assert!(eval_bool(&lua, "return require('lib.mobile').stat == nil"));
 }
 
 #[test]
-fn test_weapon_inherits_item() {
+fn test_objdump_formats_an_inventory_of_instance_tables() {
+    let lua = make_test_lua();
+    lua.load("objdump = require('cmds.objdump')").exec().unwrap();
+
+    // The regression: entries are `{ template = "id" }` tables. Counting the
+    // entry itself put a table in the output list, and table.concat raised —
+    // so objdump threw for any player carrying anything.
+    assert_eq!(
+        eval_str(
+            &lua,
+            r#"return objdump._format_inventory({
+                { template = "potion_red" },
+                { template = "potion_red" },
+                { template = "empty_vial" },
+            })"#,
+        ),
+        "potion_red x2, empty_vial",
+    );
+
+    // Bare strings still arrive from older saves.
+    assert_eq!(
+        eval_str(&lua, r#"return objdump._format_inventory({ "rope", "rope", "rope" })"#),
+        "rope x3",
+    );
+
+    // An instance with overrides still counts under its template.
+    assert_eq!(
+        eval_str(
+            &lua,
+            r#"return objdump._format_inventory({
+                { template = "sword", enchant = "fire" },
+                { template = "sword" },
+            })"#,
+        ),
+        "sword x2",
+    );
+
+    assert_eq!(eval_str(&lua, "return objdump._format_inventory({})"), "(empty)");
+    assert_eq!(eval_str(&lua, "return objdump._format_inventory(nil)"), "(empty)");
+    // Junk in the list is skipped rather than crashing the dump.
+    assert_eq!(
+        eval_str(&lua, "return objdump._format_inventory({ {}, 42, { template = 'ok' } })"),
+        "ok",
+    );
+}
+
+#[test]
+fn test_weapon_archetype_produces_an_item_with_a_component() {
     let lua = make_test_lua();
     lua.load(r#"
         Weapon = require('lib.weapon')
-        w = Weapon:new({ id = "t", short = "Sword", damage = 10, damage_type = "slash" })
+        w = Weapon{ id = "t", short = "Sword", damage = 10, damage_type = "slash" }
     "#).exec().unwrap();
 
-    // Has Item methods
+    // It is an Item — the archetype composes, it does not subclass.
     assert!(eval_bool(&lua, "return w.is_equippable ~= nil"));
     assert!(eval_bool(&lua, "return w.has_tag ~= nil"));
-    // damage is a {min,max} table when given a scalar
-    assert_eq!(eval_int(&lua, "return w.damage.min"), 10);
-    assert_eq!(eval_int(&lua, "return w.damage.max"), 10);
-    assert_eq!(eval_str(&lua, "return w.damage_type"), "slash");
-    // Weapon defaults to slot = "weapon"
+    assert!(eval_bool(&lua, "return w.get_state ~= nil"));
+
+    // The weapon data lives in its own namespace, and its presence IS the
+    // has-component test.
+    assert!(eval_bool(&lua, "return Weapon.is(w)"));
+    assert!(eval_bool(&lua, "return w.weapon ~= nil"));
+    // A scalar damage becomes a min == max spread.
+    assert_eq!(eval_int(&lua, "return w.weapon.min"), 10);
+    assert_eq!(eval_int(&lua, "return w.weapon.max"), 10);
+    assert_eq!(eval_str(&lua, "return w.weapon.damage_type"), "slash");
     assert_eq!(eval_str(&lua, "return w.slot"), "weapon");
+
+    // Behaviour is not on the instance; it is in the system module.
+    assert!(eval_bool(&lua, "return w.roll_damage == nil"));
+    assert_eq!(eval_int(&lua, "return Weapon.roll_damage(w)"), 10);
+
+    // The roll is injectable, which is what keeps combat deterministic.
+    assert_eq!(
+        eval_int(
+            &lua,
+            r#"
+            local hi = Weapon{ id = "u", damage = {2, 8} }
+            return Weapon.roll_damage(hi, function(n) return n end)
+            "#,
+        ),
+        8,
+    );
+
+    // A plain Item is not a weapon, and the system says so rather than erroring.
+    assert!(eval_bool(
+        &lua,
+        r#"
+        local Item = require('lib.item')
+        return Weapon.is(Item:new({ id = "rock" })) == false
+           and Weapon.roll_damage(Item:new({ id = "rock" })) == nil
+        "#
+    ));
 }
 
 #[test]
-fn test_armor_inherits_item() {
+fn test_armor_archetype_produces_an_item_with_a_component() {
     let lua = make_test_lua();
     lua.load(r#"
         Armor = require('lib.armor')
-        a = Armor:new({ id = "t", short = "Plate", defense = 15, slot = "chest" })
+        a = Armor{ id = "t", short = "Plate", defense = 15, slot = "chest",
+                   resist = { fire = 5, ice = -3 } }
     "#).exec().unwrap();
 
     assert!(eval_bool(&lua, "return a.is_equippable ~= nil"));
-    assert_eq!(eval_int(&lua, "return a.defense"), 15);
+    assert!(eval_bool(&lua, "return Armor.is(a)"));
+    assert_eq!(eval_int(&lua, "return a.armour.defense"), 15);
     assert_eq!(eval_str(&lua, "return a.slot"), "chest");
+    assert_eq!(eval_int(&lua, "return Armor.defense(a)"), 15);
+    assert_eq!(eval_int(&lua, "return Armor.resist(a, 'fire')"), 5);
+    assert_eq!(eval_int(&lua, "return Armor.resist(a, 'ice')"), -3);
+    // Unmentioned damage types are zero, so a caller can add unconditionally.
+    assert_eq!(eval_int(&lua, "return Armor.resist(a, 'acid')"), 0);
+    assert_eq!(eval_int(&lua, "return Armor.encumbrance(a)"), 2);
+
+    // `resist` reaches a player, so its order must not depend on `pairs`.
+    assert_eq!(
+        eval_str(
+            &lua,
+            r#"
+            local lines = Armor.describe(a)
+            for _, l in ipairs(lines) do
+                if l:sub(1, 7) == "Resist:" then return l end
+            end
+            return "missing"
+            "#,
+        ),
+        "Resist: fire +5, ice -3",
+    );
+}
+
+#[test]
+fn test_requires_is_shared_by_weapon_and_armor() {
+    let lua = make_test_lua();
+    lua.load(r#"
+        Weapon   = require('lib.weapon')
+        Armor    = require('lib.armor')
+        Requires = require('lib.requires')
+
+        greatsword = Weapon{ id = "gs", damage = {8, 14}, required_strength = 16 }
+        mail       = Armor{ id = "mail", slot = "chest", defense = 8,
+                            required_level = 5, required_dexterity = 12 }
+        dagger     = Weapon{ id = "dg", damage = {1, 4} }
+    "#).exec().unwrap();
+
+    // No requirements at all means the component is absent, not empty.
+    assert!(eval_bool(&lua, "return dagger.requires == nil"));
+    assert!(eval_bool(&lua, "return Requires.met(dagger, {})"));
+
+    // Armor now gets the same three checks a Weapon does, and vice versa.
+    assert!(eval_bool(&lua, "return greatsword.requires.strength == 16"));
+    assert!(eval_bool(&lua, "return mail.requires.dexterity == 12"));
+
+    assert!(eval_bool(&lua, "return Requires.met(greatsword, { strength = 16 })"));
+    assert!(eval_bool(&lua, "return Requires.met(greatsword, { strength = 20 })"));
+    assert!(eval_bool(&lua, "return Requires.met(greatsword, { strength = 15 }) == false"));
+    assert_eq!(
+        eval_str(&lua, "local _, why = Requires.met(greatsword, { strength = 15 }); return why"),
+        "Requires 16 strength",
+    );
+
+    // Short on two counts reports the same one every time.
+    assert_eq!(
+        eval_str(&lua, "local _, why = Requires.met(mail, { level = 1, dexterity = 1 }); return why"),
+        "Requires level 5",
+    );
+
+    // An entity answering :trait() is preferred over a stored stats table,
+    // because the stored value is wrong for a buffed or derived trait.
+    assert!(eval_bool(
+        &lua,
+        r#"
+        local buffed = { stats = { strength = 10 },
+                         trait = function(_, id) return id == "strength" and 18 or 0 end }
+        return Requires.met(greatsword, buffed)
+        "#
+    ));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2199,7 +2410,7 @@ fn trait_lua() -> Lua {
         })
         DAEMON.trait.seal()
         e = { char_id = 1, stats = {} }
-        DAEMON.trait.attach(e)
+        DAEMON.trait.seed(e, "character")
     "#).exec().expect("trait fixture");
     lua
 }

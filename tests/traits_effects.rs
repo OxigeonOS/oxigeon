@@ -340,3 +340,216 @@ fn everything_still_works_with_the_instruction_budget_armed() {
     let traits = vm.command("affect traits");
     assert!(traits.contains("max_hp"), "the trait dump ran out of budget:\n{traits}");
 }
+
+/// A recompute costs what the entity holds, not what the game has defined.
+///
+/// This is the whole point of the present set. It is asserted by counting
+/// formula evaluations rather than by timing: a timing assertion would be
+/// flaky, and a call count is exact.
+///
+/// Two entities, one registry with 200 derived traits in it. The sword holds
+/// nothing any of them read, so it pays for none of them. The character holds
+/// the one base they all read, so it pays for all of them. Nothing declared
+/// that — it falls out of what each one stores.
+#[test]
+fn a_recompute_costs_what_the_entity_holds_not_what_the_registry_defines() {
+    let mut vm = RealVm::boot_real_mudlib_with_probe();
+
+    vm.eval("_T = DAEMON.trait; _calls = 0").unwrap();
+    vm.eval("_T.define({ id = 'probe_base', kind = 'attribute', default = 1 })").unwrap();
+    vm.eval("_T.define({ id = 'probe_dura', kind = 'attribute', default = 0 })").unwrap();
+    vm.eval(
+        "for i = 1, 200 do _T.define({ id = 'probe_d' .. i, kind = 'derived', \
+         depends = { 'probe_base' }, \
+         formula = function(t) _calls = _calls + 1; return t.probe_base + i end }) end",
+    )
+    .unwrap();
+    vm.eval("_T.seal()").unwrap();
+
+    // A sword: one trait, and none of the 200 read it.
+    vm.eval("_sword = { stats = { probe_dura = 40 } }; _before = _calls").unwrap();
+    vm.eval("_T.value(_sword, 'probe_dura')").unwrap();
+    let sword_calls = vm.eval("return _calls - _before").unwrap();
+
+    // A character: holds the base every one of the 200 depends on.
+    vm.eval("_char = { stats = { probe_base = 5 } }; _before = _calls").unwrap();
+    vm.eval("_T.value(_char, 'probe_base')").unwrap();
+    let char_calls = vm.eval("return _calls - _before").unwrap();
+
+    assert_eq!(
+        sword_calls, "0",
+        "an entity holding none of the 200 derived traits still evaluated {sword_calls} of them"
+    );
+    assert_eq!(
+        char_calls, "200",
+        "an entity holding what all 200 derived traits read should evaluate all of them"
+    );
+
+    assert_eq!(
+        vm.eval("return #_T.present(_sword)").unwrap(),
+        "1",
+        "the sword should hold exactly the one trait it stores"
+    );
+    assert_eq!(
+        vm.eval("return _T.present(_sword)[1]").unwrap(),
+        "probe_dura",
+        "and it should be the one it stores"
+    );
+
+    // The memo and the present set are guarded by the same counters, so a
+    // second read costs nothing at all.
+    vm.eval("_before = _calls").unwrap();
+    vm.eval("_T.value(_char, 'probe_d7')").unwrap();
+    assert_eq!(
+        vm.eval("return _calls - _before").unwrap(),
+        "0",
+        "a repeat read re-evaluated formulas the memo should have covered"
+    );
+}
+
+/// Storage decides what an entity has, and derived traits follow what they read.
+#[test]
+fn presence_follows_what_the_entity_stores() {
+    let mut vm = RealVm::boot_real_mudlib_with_probe();
+
+    vm.eval("_T = DAEMON.trait").unwrap();
+    vm.eval("_T.define({ id = 'p_dura', kind = 'attribute', default = 0 })").unwrap();
+    vm.eval("_T.define({ id = 'p_speed', kind = 'attribute', default = 1 })").unwrap();
+    vm.eval("_T.define({ id = 'p_maxcharge', kind = 'attribute', default = 10 })").unwrap();
+    vm.eval("_T.define({ id = 'p_charge', kind = 'gauge', min = 0, max = 'p_maxcharge' })").unwrap();
+    vm.eval(
+        "_T.define({ id = 'p_dps', kind = 'derived', depends = { 'p_dura', 'p_speed' }, \
+         formula = function(t) return t.p_dura * t.p_speed end })",
+    )
+    .unwrap();
+    vm.eval("_T.seal()").unwrap();
+
+    // A sword stores two traits, so it also has the one derived from them.
+    vm.eval("_sword = { stats = { p_dura = 40, p_speed = 2 } }").unwrap();
+    assert_eq!(vm.eval("return _T.has(_sword, 'p_dura')").unwrap(), "true");
+    assert_eq!(
+        vm.eval("return _T.has(_sword, 'p_dps')").unwrap(),
+        "true",
+        "a derived trait is present when everything it reads is"
+    );
+    assert_eq!(
+        vm.eval("return _T.has(_sword, 'wisdom')").unwrap(),
+        "false",
+        "a sword should not have the character traits the game happens to define"
+    );
+    assert_eq!(vm.eval("return #_T.present(_sword)").unwrap(), "3");
+    assert_eq!(vm.eval("return _T.value(_sword, 'p_dps')").unwrap(), "80");
+
+    // A bound naming a trait the entity does not have takes the gauge with it:
+    // a gauge with no ceiling is not the trait that was defined.
+    vm.eval("_wand = { stats = { p_charge = 5 } }").unwrap();
+    assert_eq!(
+        vm.eval("return _T.has(_wand, 'p_charge')").unwrap(),
+        "false",
+        "a gauge whose max names an absent trait should be absent too"
+    );
+    vm.eval("_wand2 = { stats = { p_charge = 5, p_maxcharge = 10 } }").unwrap();
+    assert_eq!(vm.eval("return _T.has(_wand2, 'p_charge')").unwrap(), "true");
+
+    // And the derived trait does not leak onto something holding neither dep.
+    assert_eq!(vm.eval("return _T.has(_wand, 'p_dps')").unwrap(), "false");
+}
+
+/// Learning, forgetting, reading what is not there, and a value stored under a
+/// trait that does not exist yet.
+#[test]
+fn a_trait_can_be_learned_forgotten_and_defined_after_the_fact() {
+    let mut vm = RealVm::boot_real_mudlib_with_probe();
+
+    vm.eval("_T = DAEMON.trait").unwrap();
+    vm.eval("_T.define({ id = 'p_sword_skill', kind = 'counter', default = 0, min = 0 })").unwrap();
+    vm.eval("_T.seal()").unwrap();
+    vm.eval("_p = { stats = {} }").unwrap();
+
+    // Reading a trait you do not have answers with the default so arithmetic
+    // stays safe — and writes nothing, which is the part worth pinning.
+    assert_eq!(vm.eval("return _T.has(_p, 'p_sword_skill')").unwrap(), "false");
+    assert_eq!(vm.eval("return _T.value(_p, 'p_sword_skill')").unwrap(), "0");
+    assert_eq!(
+        vm.eval("return tostring(_p.stats.p_sword_skill)").unwrap(),
+        "nil",
+        "reading an absent trait materialised it"
+    );
+
+    // Setting a base is how a skill is learned.
+    vm.eval("_T.set_base(_p, 'p_sword_skill', 7)").unwrap();
+    assert_eq!(vm.eval("return _T.has(_p, 'p_sword_skill')").unwrap(), "true");
+    assert_eq!(vm.eval("return _T.value(_p, 'p_sword_skill')").unwrap(), "7");
+
+    // And forgetting reverses it.
+    assert_eq!(vm.eval("return _T.forget(_p, 'p_sword_skill')").unwrap(), "true");
+    assert_eq!(vm.eval("return _T.has(_p, 'p_sword_skill')").unwrap(), "false");
+    assert_eq!(vm.eval("return _T.forget(_p, 'p_sword_skill')").unwrap(), "false");
+
+    // A number stored under an id no trait has claimed is inert, not an error —
+    // and starts answering the moment the trait is defined, at runtime.
+    vm.eval("_e = { stats = { p_later = 3 } }").unwrap();
+    assert_eq!(
+        vm.eval("return _T.has(_e, 'p_later')").unwrap(),
+        "false",
+        "an undefined id should read as absent rather than raising"
+    );
+    vm.eval("_T.define({ id = 'p_later', kind = 'attribute', default = 0 })").unwrap();
+    vm.eval("_T.seal()").unwrap();
+    assert_eq!(vm.eval("return _T.has(_e, 'p_later')").unwrap(), "true");
+    assert_eq!(
+        vm.eval("return _T.value(_e, 'p_later')").unwrap(),
+        "3",
+        "the value that was already stored should be the one it answers with"
+    );
+}
+
+/// `attach` prepares an entity; `seed` decides what it starts with. Splitting
+/// them is what lets an item have the lifecycle without the stat block.
+#[test]
+fn attach_prepares_and_seed_populates() {
+    let mut vm = RealVm::boot_real_mudlib_with_probe();
+
+    vm.eval("_T = DAEMON.trait").unwrap();
+    vm.eval("_T.define({ id = 'p_grip', kind = 'attribute', default = 3, sets = 'item' })").unwrap();
+    vm.eval("_T.seal()").unwrap();
+
+    // Attaching gives an entity nothing. It is lifecycle, not creation.
+    vm.eval("_bare = { stats = {} }; _T.attach(_bare)").unwrap();
+    assert_eq!(
+        vm.eval("return #_T.present(_bare)").unwrap(),
+        "0",
+        "attach should not have decided what this entity is"
+    );
+
+    // Seeding the character set gives it the character stat block, and not the
+    // trait that belongs to items.
+    vm.eval("_c = { stats = {} }; _T.seed(_c, 'character')").unwrap();
+    assert!(
+        vm.eval("return _T.has(_c, 'strength')").unwrap() == "true",
+        "seeding the character set should give a character its attributes"
+    );
+    assert_eq!(
+        vm.eval("return _T.has(_c, 'p_grip')").unwrap(),
+        "false",
+        "a trait in the item set has no business on a freshly seeded character"
+    );
+
+    // And the item set gives the item exactly its own.
+    vm.eval("_i = { stats = {} }; _T.seed(_i, 'item')").unwrap();
+    assert_eq!(vm.eval("return _T.has(_i, 'p_grip')").unwrap(), "true");
+    assert_eq!(
+        vm.eval("return _T.has(_i, 'strength')").unwrap(),
+        "false",
+        "an item seeded from the item set should not carry character attributes"
+    );
+    assert_eq!(vm.eval("return _T.value(_i, 'p_grip')").unwrap(), "3");
+
+    // Seeding is idempotent — it never overwrites a value already stored.
+    vm.eval("_T.set_base(_i, 'p_grip', 9); _T.seed(_i, 'item')").unwrap();
+    assert_eq!(
+        vm.eval("return _T.value(_i, 'p_grip')").unwrap(),
+        "9",
+        "re-seeding overwrote a value the entity had already earned"
+    );
+}

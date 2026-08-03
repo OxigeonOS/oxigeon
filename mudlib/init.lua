@@ -82,6 +82,16 @@ if not ok then log("warn", "Failed to load olc_d daemon: " .. tostring(err)) end
 ok, err = pcall(function() DAEMON.items   = require("daemons.item_d") end)
 if not ok then log("warn", "Failed to load item_d daemon: " .. tostring(err)) end
 
+-- The tag index, before anything that registers tagged things: `room_d` and
+-- `mob_d` feed it as they load, and an index that starts existing halfway
+-- through the world load has a hole in it exactly where nobody will look.
+ok, err = pcall(function() DAEMON.tag     = require("daemons.tag_d") end)
+if not ok then log("warn", "Failed to load tag_d daemon: " .. tostring(err)) end
+
+-- Shops need items and tasks, both of which are already up.
+ok, err = pcall(function() DAEMON.shop    = require("daemons.shop_d") end)
+if not ok then log("warn", "Failed to load shop_d daemon: " .. tostring(err)) end
+
 -- Ensure the first account is always admin (covers pre-existing databases)
 if type(set_admin) == "function" then
     pcall(set_admin, 1, true)
@@ -169,7 +179,17 @@ function on_disconnect(session_id)
     -- Save and unload character data, then remove from world.
     -- Each step is individually protected so a failure in one doesn't
     -- prevent cleanup in subsequent steps.
-    local session = get_session(session_id)
+    --
+    -- Including this one. `get_session` *raises* on a malformed id rather than
+    -- returning nil, and an unprotected first line defeats the entire point of
+    -- protecting the rest: nothing after it would run.
+    local got, session = pcall(get_session, session_id)
+    if not got then
+        log("warn", "on_disconnect: could not look up session "
+            .. tostring(session_id) .. ": " .. tostring(session))
+        session = nil
+    end
+
     if session and session.character_id then
         local char_id = session.character_id
 
@@ -207,6 +227,24 @@ function on_disconnect(session_id)
             end
         end
 
+        -- Take their items out of the world index. **After** the save below,
+        -- not before: `to_save` folds a container's contents onto its entry by
+        -- reading them out of that index, so releasing first would write every
+        -- backpack empty. Ordering here is the whole correctness argument, and
+        -- it is why the release is a step of its own rather than part of
+        -- `unload`.
+        local function release_items()
+            if not (DAEMON and DAEMON.items and DAEMON.character) then return end
+            local ok, err = pcall(function()
+                local player = DAEMON.character.get(char_id)
+                if player then require('lib.carry').release(player) end
+            end)
+            if not ok then
+                log("error", "Failed to release items for "
+                    .. tostring(char_id) .. ": " .. tostring(err))
+            end
+        end
+
         -- Save persisted character data before cleanup
         if DAEMON and DAEMON.character then
             local ok, err = pcall(DAEMON.character.unload, char_id)
@@ -220,6 +258,9 @@ function on_disconnect(session_id)
             end
         end
 
+        -- Now that the save has read them, the instances can go.
+        release_items()
+
         -- Remove character from the world
         if DAEMON and DAEMON.world then
             local ok, err = pcall(DAEMON.world.remove_character, char_id)
@@ -227,6 +268,16 @@ function on_disconnect(session_id)
                 log("error", "Failed to remove character "
                     .. tostring(char_id) .. " from world: " .. tostring(err))
             end
+        end
+    end
+
+    -- Forget what the client said it supported. Session ids are not reused, so
+    -- a table keyed on them grows for the life of the process otherwise — the
+    -- same shape as every other per-session table cleaned up here.
+    if DAEMON and DAEMON.gmcp and DAEMON.gmcp.forget then
+        local ok, err = pcall(DAEMON.gmcp.forget, session_id)
+        if not ok then
+            log("error", "Failed to clear GMCP support list: " .. tostring(err))
         end
     end
 
@@ -258,8 +309,26 @@ function on_disconnect(session_id)
 end
 
 --- Called when a GMCP message is received
+--- A GMCP message arrived from a client.
+---
+--- This used to log the package name and return, so a client could negotiate
+--- GMCP, announce what it supports and send `Core.Hello`, and the game never
+--- read a word of it. Dispatched by `gmcp_d` now, which knows the standard
+--- packages and lets a game register its own.
 function on_gmcp(session_id, package, data)
-    log("debug", "GMCP from " .. session_id .. ": " .. package)
+    if not (DAEMON and DAEMON.gmcp) then
+        log("debug", "GMCP from " .. tostring(session_id) .. ": " .. tostring(package))
+        return
+    end
+    local ok, err = pcall(DAEMON.gmcp.receive, session_id, package, data)
+    if not ok then
+        log("error", "on_gmcp: dispatch failed for '" .. tostring(package)
+            .. "': " .. tostring(err))
+        if DAEMON.journal then
+            pcall(DAEMON.journal.error, "GMCP dispatch failed for '"
+                .. tostring(package) .. "': " .. tostring(err))
+        end
+    end
 end
 
 --- Called once by the driver before the Lua VM stops, on a clean shutdown.
@@ -311,6 +380,41 @@ function on_timer(id)
     if DAEMON and DAEMON.ticker then
         DAEMON.ticker.fire(id)
     end
+end
+
+--- Called when a `compute()` job finishes, whatever it finished with.
+---
+--- Exactly one of these fires for every job that `compute` returned an id for,
+--- and none for a job it refused — so this is the *only* place a job's result
+--- can arrive, and dispatch has to be complete.
+---
+--- Dispatched by handler list rather than by a `if tag matches` chain: whoever
+--- submitted the job knows what to do with the answer, and the mudlib does not
+--- and should not. `COMPUTE_HANDLERS` is an array of functions returning true
+--- when they have claimed a result.
+COMPUTE_HANDLERS = COMPUTE_HANDLERS or {}
+
+function on_compute_result(id, ok, value, err, meta)
+    meta = meta or {}
+
+    for _, handler in ipairs(COMPUTE_HANDLERS) do
+        local handled, claimed = pcall(handler, id, ok, value, err, meta)
+        if not handled then
+            log("error", "on_compute_result: a handler raised: " .. tostring(claimed))
+            if DAEMON and DAEMON.journal then
+                pcall(DAEMON.journal.error,
+                    "COMPUTE: handler for job " .. tostring(id) .. " raised: " .. tostring(claimed))
+            end
+        elseif claimed then
+            return
+        end
+    end
+
+    -- Nobody claimed it. Worth saying out loud: a result with no reader is a
+    -- job somebody submitted and then stopped caring about, which is either a
+    -- bug or a handler that was hot-reloaded out from under it.
+    log("warn", "on_compute_result: nothing claimed job " .. tostring(id)
+        .. " (" .. tostring(meta.kind) .. ")")
 end
 
 --- Called before a module is hot-reloaded

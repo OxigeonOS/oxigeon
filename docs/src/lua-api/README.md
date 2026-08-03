@@ -8,7 +8,7 @@ Efuns are Rust functions exposed to Lua — they form the bridge between your mu
 ## Categories
 
 - **[Daemons — Service Layer](./daemons.md)** — `DAEMON.journal`, `DAEMON.audit`, `DAEMON.ticker`, `DAEMON.event`, `DAEMON.prompt`, `DAEMON.world`, `DAEMON.room`, `DAEMON.character`, `DAEMON.codegen`, `DAEMON.olc`
-- **[Object Hierarchy](./object-hierarchy.md)** — `Object` → `Room`, `Item` (→ `Weapon`, `Armor`), `Mobile` (→ `Player`): fields, methods, inheritance
+- **[Object Hierarchy](./object-hierarchy.md)** — `Object` → `Room`, `Item`, `Mobile` (→ `Player`): fields, methods, inheritance — plus the archetype/component/system model that replaced the `Weapon` and `Armor` subclasses
 - **[World Building — Rooms & Areas](./world-building.md)** — Data-oriented rooms, virtual providers, area metadata, multi-file areas, object state, tickers
 - **[Signals & Events (EVENT_D)](./signals.md)** — Godot-style signals: subscribe, emit, priority, deferred events, bulk cleanup
 - **[Character Data & Persistence](./character-data.md)** — `CHARACTER_D`, `save_character_data()`, `load_character_data()`
@@ -16,11 +16,15 @@ Efuns are Rust functions exposed to Lua — they form the bridge between your mu
 - **[Efuns — Driver Functions](./efuns.md)** — `send()`, `send_prompt()`, `broadcast()`, `authenticate_session()`, `set_object_state()`, `schedule_timer()`, `reload()`, etc.
 - **[Event Hooks](./events.md)** — `on_connect`, `on_input`, `on_disconnect`, `on_gmcp`, `on_timer`, `on_shutdown`, `on_load`, `on_unload`
 - **[State Cache](./state-cache.md)** — memory / write-behind / write-through, and cooldowns
-- **[Traits](./traits.md)** — character attributes, derived values, regeneration
+- **[Items, Equipment & Containers](./items.md)** — templates and instances, `get`/`drop`/`put`, wearing things, and what that does to your numbers
+- **[Shops & the Economy](./shops.md)** — stock, prices, restocking, a ledger
+- **[Traits](./traits.md)** — any numeric datum on any entity; presence decided by storage
 - **[Effects](./effects.md)** — buffs, debuffs, and the event pipeline
 - **[Creatures & Combat](./combat.md)** — mobs, spawning, rounds
 - **[Debugging & Tracing](./debugging.md)** — the debug adapter and execution tracing
-- **[Observability & Logging](./observability.md)** — journal_d, audit_d, server info
+- **[Interface](./interface.md)** — prompt templates, colour, the pager, channels, snooping, NAWS
+- **[Observability & Logging](./observability.md)** — journal_d, audit_d, server info, the Lua heap
+- **[OLC — Building In-Game](./olc.md)** — `olc`, `dig`, `codegen_d`, and the build → file → reload round trip
 - **[Permissions & Roles](./permissions.md)** — RBAC system, role management, permission checks
 - **[File & System Access](./file-access.md)** — `read_file()`, `write_file()`, `list_dir()`, `os_time()`, `os_date()`, etc.
 - **[Sandboxing & Security](./sandboxing.md)** — What is and isn't available, and why.
@@ -60,8 +64,9 @@ All MUD objects inherit from a shared base class:
 Object (mudlib/lib/object.lua)
 ├── Room   (game/lib/room.lua)
 ├── Item   (mudlib/lib/item.lua)
-│   ├── Weapon (mudlib/lib/weapon.lua)
-│   └── Armor  (mudlib/lib/armor.lua)
+│       Roles are components, not subclasses: Weapon{} and Armor{}
+│       are archetypes that build an Item carrying item.weapon /
+│       item.armour. See object-hierarchy.md.
 └── Mobile (mudlib/lib/mobile.lua)
     └── Player (mudlib/lib/player.lua)
 ```

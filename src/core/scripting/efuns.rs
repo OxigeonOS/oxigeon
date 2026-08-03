@@ -324,10 +324,18 @@ fn register_io_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
         globals.set("stop_echo", echo_fn)?;
     }
 
-    // File I/O efuns (jailed to mudlib root)
+    // File I/O efuns (jailed to mudlib root; `list_dir` also reads the game
+    // root, jailed against that one separately)
+    let game_root = ctx
+        .server_config
+        .game
+        .game_path
+        .as_deref()
+        .map(std::path::PathBuf::from);
     super::efuns_io::register_io_file_efuns(
         lua,
         &ctx.mudlib_path,
+        game_root.as_deref(),
         ctx.permission_config.clone(),
         ctx.session_handler.clone(),
     )?;
@@ -686,107 +694,45 @@ fn register_utility_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
     globals.set("time", time_fn)?;
 
     // config(key) -> any
+    //
+    // A generic dotted-path reader over the whole `ServerConfig`, not a list of
+    // keys someone remembered to add. It was an eighteen-key `match`, which
+    // meant any setting the game layer wanted — a respawn room, a shop restock
+    // interval — needed a Rust edit before Lua could see it, and that pressure
+    // is why `death_d` had a game room hardcoded in the mudlib layer.
+    //
+    // `[game]` captures unknown keys into `GameConfig::extra`, so
+    // `config("game.respawn_room")` works from a `server.toml` edit alone.
+    // Defaults live in `CONFIG_DEFAULTS` rather than at each call site, because
+    // a default repeated in two places is a default two places can disagree
+    // about.
     {
-        let cfg = ctx.server_config.clone();
+        // Serialised once here, not per call: `config()` sits on the command
+        // dispatch path via `game.command_paths`, and this runs at VM
+        // construction where a few microseconds cost nothing.
+        let snapshot = ctx.server_config.as_lookup_json();
         let config_fn = lua.create_function(move |lua, key: String| {
-            match key.as_str() {
-                "game.name" => Ok(LuaValue::String(lua.create_string(&cfg.game.name)?)),
-                "game.mudlib_path" => Ok(LuaValue::String(lua.create_string(&cfg.game.mudlib_path)?)),
-                "game.game_path" => {
-                    let path = cfg.game.game_path.as_deref().unwrap_or("./game");
-                    Ok(LuaValue::String(lua.create_string(path)?))
+            let mut node = &snapshot;
+            for part in key.split('.') {
+                match node.get(part) {
+                    Some(next) => node = next,
+                    // An unknown key is `nil`, not an error. Lua reads config
+                    // with `or <fallback>` throughout, and a raise would turn
+                    // every typo into a dead daemon rather than a default.
+                    None => return Ok(LuaValue::Nil),
                 }
-                "game.command_paths" => {
-                    let default = vec!["cmds".to_string()];
-                    let paths = cfg.game.command_paths.as_ref().unwrap_or(&default);
-                    let t = lua.create_table()?;
-                    for (i, p) in paths.iter().enumerate() {
-                        t.set(i + 1, p.as_str())?;
-                    }
-                    Ok(LuaValue::Table(t))
-                }
-                "game.start_room" => {
-                    match &cfg.game.start_room {
-                        Some(room) => Ok(LuaValue::String(lua.create_string(room)?)),
-                        None => Ok(LuaValue::Nil),
-                    }
-                }
-                "accounts.max_characters_per_account" =>
-                    Ok(LuaValue::Integer(cfg.accounts.max_characters_per_account as i64)),
-                "accounts.allow_creation" =>
-                    Ok(LuaValue::Boolean(cfg.accounts.allow_creation)),
-                "sessions.multisession_mode" =>
-                    Ok(LuaValue::String(lua.create_string("single")?)),
-                "game.area_reset_seconds" => {
-                    let val = cfg.game.area_reset_seconds.unwrap_or(900);
-                    Ok(LuaValue::Integer(val as i64))
-                }
-                "game.autosave_seconds" => {
-                    let val = cfg.game.autosave_seconds.unwrap_or(300);
-                    Ok(LuaValue::Integer(val as i64))
-                }
-                // Tunables for the state cache, effects and combat. Each
-                // defaults here rather than in Lua so a test can set it to 0
-                // and keep the corresponding ticker from firing mid-test, the
-                // same way `autosave_seconds` already works.
-                "game.cache_flush_seconds" =>
-                    Ok(LuaValue::Integer(cfg.game.cache_flush_seconds.unwrap_or(5) as i64)),
-                "game.cache_flush_budget" =>
-                    Ok(LuaValue::Integer(cfg.game.cache_flush_budget.unwrap_or(32) as i64)),
-                "game.cache_evict_seconds" =>
-                    Ok(LuaValue::Integer(cfg.game.cache_evict_seconds.unwrap_or(900) as i64)),
-                "game.cooldown_durable_seconds" =>
-                    Ok(LuaValue::Integer(cfg.game.cooldown_durable_seconds.unwrap_or(60) as i64)),
-                "game.effect_sweep_seconds" =>
-                    Ok(LuaValue::Integer(cfg.game.effect_sweep_seconds.unwrap_or(5) as i64)),
-                "game.effect_heartbeat_seconds" =>
-                    Ok(LuaValue::Integer(cfg.game.effect_heartbeat_seconds.unwrap_or(3) as i64)),
-                "game.combat_round_seconds" =>
-                    Ok(LuaValue::Integer(cfg.game.combat_round_seconds.unwrap_or(3) as i64)),
-                "game.shutdown_timeout_seconds" =>
-                    Ok(LuaValue::Integer(cfg.game.shutdown_timeout_seconds.unwrap_or(30) as i64)),
-                _ => Ok(LuaValue::Nil),
             }
+            json_to_lua(lua, node)
         })?;
         globals.set("config", config_fn)?;
     }
-    // list_dir(relative_path) -> table of filenames (without .lua extension)
-    // Lists .lua files in a directory relative to mudlib/ and game/ paths.
-    // e.g. list_dir("cmds") returns {"north", "look", "say", ...}
-    {
-        let cfg = ctx.server_config.clone();
-        let list_dir_fn = lua.create_function(move |lua, rel_path: String| {
-            let t = lua.create_table()?;
-            let mut idx = 1;
-            let mut seen = std::collections::HashSet::new();
-
-            // Search both game/ and mudlib/ directories
-            let game_path = cfg.game.game_path.as_deref().unwrap_or("./game");
-            let mudlib_path = &cfg.game.mudlib_path;
-            let search_dirs = vec![game_path.to_string(), mudlib_path.clone()];
-
-            for base in &search_dirs {
-                let dir = std::path::PathBuf::from(base).join(&rel_path);
-                if let Ok(entries) = std::fs::read_dir(&dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.extension().and_then(|e| e.to_str()) == Some("lua") {
-                            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                                let name = stem.to_string();
-                                if seen.insert(name.clone()) {
-                                    t.set(idx, name)?;
-                                    idx += 1;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            Ok(LuaValue::Table(t))
-        })?;
-        globals.set("list_dir", list_dir_fn)?;
-    }
+    // `list_dir` deliberately does NOT live here. It used to — an unjailed
+    // second copy registered after `register_io_efuns`, which silently
+    // overwrote the permission-checked, path-jailed version in `efuns_io.rs`.
+    // `list_dir("../../..")` escaped for as long as that was true, while
+    // `file-access.md` and `sandboxing.md` both claimed traversal prevention
+    // "for all file efuns". There is one implementation now, in `efuns_io.rs`,
+    // and `tests/list_dir_jail.rs` reaches it the way game code does.
 
     Ok(())
 }
@@ -978,6 +924,58 @@ fn register_timer_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
     Ok(())
 }
 
+/// Recompute the permission cache for every playing session whose character is
+/// in `characters`, or for all of them when it is `None`.
+///
+/// `has_permission` reads a per-session cache seeded at `enter_game_session`,
+/// so anything that changes what a character may do has to say so or the change
+/// does not reach anyone who is already online. `assign_role` and `revoke_role`
+/// already did this; `grant_permission` and `revoke_permission` did not, which
+/// made the two halves of the RBAC surface disagree — an admin who watched a
+/// role assignment take effect immediately would reasonably expect editing the
+/// role itself to behave the same way, and it silently did not.
+///
+/// Changing a role's contents resyncs *everyone*, because working out who holds
+/// that role costs a query per session anyway and there is no reverse index.
+/// This is an admin action measured in times-per-week, against a session list
+/// measured in hundreds; `refresh_permissions` remains the explicit escape
+/// hatch for anything this cannot see.
+fn resync_permission_cache(
+    sh: &Arc<std::sync::RwLock<SessionHandler>>,
+    role_store: &Arc<DieselRoleStore>,
+    account_store: &Arc<DieselAccountStore>,
+    characters: Option<i64>,
+) {
+    let targets: Vec<(SessionId, i64, i64)> = {
+        let h = sh.read_recover();
+        h.all_ids()
+            .into_iter()
+            .filter_map(|sid| {
+                let s = h.get(&sid)?;
+                let cid = s.state.character_id()?;
+                let aid = s.state.account_id()?;
+                match characters {
+                    Some(want) if want != cid => None,
+                    _ => Some((sid, aid, cid)),
+                }
+            })
+            .collect()
+    };
+
+    for (sid, account_id, character_id) in targets {
+        let is_admin = account_store
+            .find_by_id(account_id)
+            .ok()
+            .flatten()
+            .map(|a| a.is_admin)
+            .unwrap_or(false);
+        let perms = role_store
+            .get_permissions_for_character(character_id)
+            .unwrap_or_default();
+        let _ = sh.write_recover().set_permissions(&sid, perms, is_admin);
+    }
+}
+
 fn register_permission_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
     let globals = lua.globals();
 
@@ -1083,20 +1081,7 @@ fn register_permission_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
             };
             let ok = store.assign_role(character_id, role.id).is_ok();
             if ok {
-                let sids: Vec<_> = {
-                    let h = sh_ref.read_recover();
-                    h.all_ids().into_iter().filter(|sid| {
-                        h.get(sid).and_then(|s| s.state.character_id()) == Some(character_id)
-                    }).collect()
-                };
-                for sid in sids {
-                    let account_id = sh_ref.read_recover().get(&sid).and_then(|s| s.state.account_id());
-                    if let Some(aid) = account_id {
-                        let is_admin = account_store.find_by_id(aid).ok().flatten().map(|a| a.is_admin).unwrap_or(false);
-                        let perms = store.get_permissions_for_character(character_id).unwrap_or_default();
-                        let _ = sh_ref.write_recover().set_permissions(&sid, perms, is_admin);
-                    }
-                }
+                resync_permission_cache(&sh_ref, &store, &account_store, Some(character_id));
             }
             Ok(ok)
         })?;
@@ -1115,20 +1100,7 @@ fn register_permission_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
             };
             let ok = store.revoke_role(character_id, role.id).is_ok();
             if ok {
-                let sids: Vec<_> = {
-                    let h = sh_ref.read_recover();
-                    h.all_ids().into_iter().filter(|sid| {
-                        h.get(sid).and_then(|s| s.state.character_id()) == Some(character_id)
-                    }).collect()
-                };
-                for sid in sids {
-                    let account_id = sh_ref.read_recover().get(&sid).and_then(|s| s.state.account_id());
-                    if let Some(aid) = account_id {
-                        let is_admin = account_store.find_by_id(aid).ok().flatten().map(|a| a.is_admin).unwrap_or(false);
-                        let perms = store.get_permissions_for_character(character_id).unwrap_or_default();
-                        let _ = sh_ref.write_recover().set_permissions(&sid, perms, is_admin);
-                    }
-                }
+                resync_permission_cache(&sh_ref, &store, &account_store, Some(character_id));
             }
             Ok(ok)
         })?;
@@ -1150,27 +1122,47 @@ fn register_permission_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
     }
 
     // grant_permission(role_name, perm_string) -> bool
+    //
+    // Resyncs every playing session, because editing a role changes what
+    // everyone holding it may do and there is no reverse index from role to
+    // character. Without this, `assign_role` took effect immediately and
+    // `grant_permission` did not — the same surface behaving two ways.
     {
         let store = ctx.role_store.clone();
+        let sh_ref = ctx.session_handler.clone();
+        let account_store = ctx.account_store.clone();
         let fn_ = lua.create_function(move |_, (role_name, perm): (String, String)| {
             let role = match store.find_role_by_name(&role_name) {
                 Ok(Some(r)) => r,
                 _ => return Ok(false),
             };
-            Ok(store.grant_permission(role.id, &perm).is_ok())
+            let ok = store.grant_permission(role.id, &perm).is_ok();
+            if ok {
+                resync_permission_cache(&sh_ref, &store, &account_store, None);
+            }
+            Ok(ok)
         })?;
         globals.set("grant_permission", fn_)?;
     }
 
     // revoke_permission(role_name, perm_string) -> bool
+    //
+    // The direction that matters: a permission that outlives its revocation is
+    // a security problem, not an inconvenience.
     {
         let store = ctx.role_store.clone();
+        let sh_ref = ctx.session_handler.clone();
+        let account_store = ctx.account_store.clone();
         let fn_ = lua.create_function(move |_, (role_name, perm): (String, String)| {
             let role = match store.find_role_by_name(&role_name) {
                 Ok(Some(r)) => r,
                 _ => return Ok(false),
             };
-            Ok(store.revoke_permission(role.id, &perm).is_ok())
+            let ok = store.revoke_permission(role.id, &perm).is_ok();
+            if ok {
+                resync_permission_cache(&sh_ref, &store, &account_store, None);
+            }
+            Ok(ok)
         })?;
         globals.set("revoke_permission", fn_)?;
     }
@@ -1202,6 +1194,64 @@ fn register_permission_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
 fn register_observability_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
     let globals = lua.globals();
 
+    // ─── Heap and GC visibility ──────────────────────────────────────────────
+    //
+    // Nothing measured any of this. There were zero `collectgarbage` calls
+    // anywhere and no Rust-side GC configuration, so LuaJIT ran at its default
+    // pause of 200 — the heap roughly doubles before a full cycle — against a
+    // `lua_memory_mb = 64` ceiling. A live set nearing ~32 MB grows into that
+    // ceiling, LuaJIT runs an emergency full collection before failing, and the
+    // signature under pressure is *latency spikes first, catchable allocation
+    // errors second*, surfacing in whatever code happened to allocate rather
+    // than in the code responsible.
+    //
+    // These counters exist so that any later `setpause`/`setstepmul` change is
+    // justified by a number rather than by intuition. **Do not tune GC
+    // parameters without one.** Defaults are usually right, and tuning blind
+    // makes things worse.
+    let gc_full_count = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let gc_full_micros = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let gc_freed_bytes = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+    // gc_collect() -> table  { freed_bytes, ms, heap_bytes }
+    //
+    // Runs a full collection and reports what it cost and what it recovered.
+    // This is the instrument the heap drill uses: record the heap at boot, run
+    // an hour of mob respawns / a walk into the virtual grid / several reloads,
+    // and collect. The number should come back close to its baseline each time.
+    // A monotonic climb across all three is the signature that object-state
+    // leaks, uncached virtual rooms and closure retention on hot reload produce,
+    // and it is the only way to tell those apart from an ordinary working set.
+    {
+        let count = gc_full_count.clone();
+        let micros = gc_full_micros.clone();
+        let freed = gc_freed_bytes.clone();
+        let fn_ = lua.create_function(move |lua, ()| {
+            use std::sync::atomic::Ordering;
+            let before = lua.used_memory() as u64;
+            let started = std::time::Instant::now();
+            lua.gc_collect()?;
+            // Twice: LuaJIT's incremental collector needs a second full cycle
+            // to sweep what the first one finalised, and a single call
+            // consistently under-reports what is actually reclaimable.
+            lua.gc_collect()?;
+            let elapsed = started.elapsed();
+            let after = lua.used_memory() as u64;
+
+            count.fetch_add(1, Ordering::Relaxed);
+            micros.fetch_add(elapsed.as_micros() as u64, Ordering::Relaxed);
+            let recovered = before.saturating_sub(after);
+            freed.fetch_add(recovered, Ordering::Relaxed);
+
+            let t = lua.create_table()?;
+            t.set("freed_bytes", recovered as f64)?;
+            t.set("ms", elapsed.as_secs_f64() * 1000.0)?;
+            t.set("heap_bytes", after as f64)?;
+            Ok(t)
+        })?;
+        globals.set("gc_collect", fn_)?;
+    }
+
     // server_info() -> table
     {
         let cfg = ctx.server_config.clone();
@@ -1209,7 +1259,12 @@ fn register_observability_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
         let started_at = ctx.started_at;
         let sh = ctx.session_handler.clone();
         let compute = ctx.compute.clone();
+        let mem_limit_mb = ctx.server_config.limits.lua_memory_mb;
+        let gc_full_count = gc_full_count.clone();
+        let gc_full_micros = gc_full_micros.clone();
+        let gc_freed_bytes = gc_freed_bytes.clone();
         let fn_ = lua.create_function(move |lua, ()| {
+            use std::sync::atomic::Ordering;
             let uptime_secs = started_at.elapsed().as_secs_f64();
             let t = lua.create_table()?;
             t.set("version",     env!("CARGO_PKG_VERSION"))?;
@@ -1221,6 +1276,25 @@ fn register_observability_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
             // trace at all.
             t.set("dropped_output",
                 sh.read_recover().dropped_output_total() as f64)?;
+
+            // The Lua heap, in its own sub-table. `used_memory` is what mlua's
+            // allocator has handed out, which is the same number
+            // `collectgarbage("count")` reports in kilobytes — read here so a
+            // caller does not have to remember the unit.
+            let heap = lua.create_table()?;
+            let used = lua.used_memory() as f64;
+            heap.set("heap_bytes", used)?;
+            heap.set("heap_kb", used / 1024.0)?;
+            heap.set("limit_bytes", (mem_limit_mb * 1024 * 1024) as f64)?;
+            if mem_limit_mb > 0 {
+                heap.set("heap_fraction", used / (mem_limit_mb * 1024 * 1024) as f64)?;
+            }
+            heap.set("gc_full_count", gc_full_count.load(Ordering::Relaxed) as f64)?;
+            heap.set("gc_full_ms",
+                gc_full_micros.load(Ordering::Relaxed) as f64 / 1000.0)?;
+            heap.set("gc_freed_bytes", gc_freed_bytes.load(Ordering::Relaxed) as f64)?;
+            t.set("lua", heap)?;
+
             // Absent rather than zeroed when compute is off, so a mudlib can
             // tell "not running" from "running and idle".
             if let Some(bridge) = &compute {

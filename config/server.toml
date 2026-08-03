@@ -12,6 +12,14 @@ game_path = "./game"
 command_paths = ["cmds"]
 # Room ID where characters spawn on login
 start_room = "wizard_workshop.entrance"
+# Room ID where characters reappear after dying. Falls back to start_room.
+#
+# The driver has no opinion about this — it is a game decision, and it lives
+# here rather than as a constant in death_d.lua so a second game can use the
+# same mudlib without editing it. Any other `[game]` key you add is readable
+# from Lua as config("game.<key>") with no Rust change; that is what the
+# generic reader is for.
+respawn_room = "wizard_workshop.entrance"
 
 # How often areas reset in seconds (re-evaluates area Lua, clears object state).
 # Set to 0 to disable periodic resets. Default: 900 (15 minutes).

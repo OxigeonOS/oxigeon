@@ -88,7 +88,7 @@ player.stats = {
 > [!WARNING]
 > **`stats[id]` is what is stored, not what is true.** For an attribute under a
 > buff the two differ, and for a derived trait there is nothing stored at all.
-> Read `player:stat(id)`.
+> Read `player:trait(id)`.
 
 Keys beginning with `_` are reserved. Everything else in `stats` is saved
 verbatim — `Mobile:new` used to filter it through a fixed list of nine names,

@@ -28,7 +28,7 @@ this table is the directory.
 | `audit_d` | `DAEMON.audit` | Security and compliance audit trail for player/admin actions. |
 | `ticker_d` | `DAEMON.ticker` | Timer scheduler — Lua callbacks for Tokio-backed async timers. |
 | `event_d` | `DAEMON.event` | Signal system — named channels with subscribe/emit. See [Signals](./signals.md). |
-| `task_d` | `DAEMON.task` | Higher-level scheduled tasks with pause, resume and run counts. |
+| `task_d` | `DAEMON.task` | Named periodic work — `schedule`, `pause`, `resume`, `run_now`, `cancel`, `list`. A raw ticker is anonymous and fire-and-forget; a task has an id an operator can act on. |
 | `cache_d` | `DAEMON.cache` | Tiered game state: memory, write-behind, write-through. See [State Cache](./state-cache.md). |
 
 ### World
@@ -37,7 +37,9 @@ this table is the directory.
 |--------|-----|---------|
 | `room_d` | `DAEMON.room` | Room creation — data-oriented (`from_data`, `load_area`, `merge`) and builder pattern. |
 | `world_d` | `DAEMON.world` | Room registry, character locations, movement, virtual providers, area metadata. |
-| `item_d` | `DAEMON.items` | Item template registry and instance resolution. |
+| `item_d` | `DAEMON.items` | Item templates **and instances**: spawn, move, destroy, and what is on a floor or in a container. See [Items](./items.md). |
+| `tag_d` | `DAEMON.tag` | The reverse index over tags — "which rooms are outdoors" without walking the world. |
+| `shop_d` | `DAEMON.shop` | Stock, prices, restocking and a ledger. See [Shops](./shops.md). |
 | `mob_d` | `DAEMON.mobs` | Creature templates, instances, room occupancy, respawn. See [Combat](./combat.md). |
 
 ### Characters
@@ -49,7 +51,7 @@ this table is the directory.
 | `effect_d` | `DAEMON.effect` | Buffs, debuffs and the event pipeline. See [Effects](./effects.md). |
 | `cooldown_d` | `DAEMON.cooldown` | "Not yet" gates, stored as expiry. See [State Cache](./state-cache.md). |
 | `combat_d` | `DAEMON.combat` | Engagement and rounds. See [Combat](./combat.md). |
-| `death_d` | `DAEMON.death` | Death handling, respawn, and what death costs. |
+| `death_d` | `DAEMON.death` | Death handling, respawn and what death costs. Where the dead reappear comes from `game.respawn_room`, not from a constant in this layer. |
 
 ### Interface
 
@@ -57,7 +59,7 @@ this table is the directory.
 |--------|-----|---------|
 | `prompt_d` | `DAEMON.prompt` | Per-player prompt templates with variable substitution. |
 | `channel_d` | `DAEMON.channel` | Chat channels and subscriptions. |
-| `gmcp_d` | `DAEMON.gmcp` | GMCP packages — `Char.Vitals`, `Char.Status`, `Char.Effects`, `Room.Info`. |
+| `gmcp_d` | `DAEMON.gmcp` | GMCP, both ways — pushes `Char.Vitals`, `Char.Status`, `Char.Effects` and `Room.Info`; dispatches `Core.Supports.Set`, `Core.Hello`, `Core.Ping` and whatever a game registers. |
 | `pager_d` | `DAEMON.pager` | Paged output for long text. |
 | `snoop_d` | `DAEMON.snoop` | Admin session snooping. |
 
@@ -66,7 +68,7 @@ this table is the directory.
 | Daemon | Key | Purpose |
 |--------|-----|---------|
 | `codegen_d` | `DAEMON.codegen` | Produces clean Lua data files for rooms and area metadata. |
-| `olc_d` | `DAEMON.olc` | Online Creation session state (area, room, mode). |
+| `olc_d` | `DAEMON.olc` | Online Creation session state (area, room, mode). See [OLC](./olc.md). |
 
 ### journal_d vs audit_d
 
@@ -124,4 +126,6 @@ if not ok then log("error", "Failed to load weather_d: " .. tostring(err)) end
 - Wrap every `require()` in `pcall` during init so a broken daemon doesn't crash the layer.
 - Log critical failures to both `log()` and `DAEMON.journal`.
 - Validate inputs — return clear failure values rather than crashing.
-- See [CLAUDE.md](../../CLAUDE.md) for the full error handling policy.
+- See `CLAUDE.md` in the repository root for the full error handling policy.
+  (Not linked: it is a contributor file rather than a page of this book, and a
+  link out of the rendered book would go nowhere.)

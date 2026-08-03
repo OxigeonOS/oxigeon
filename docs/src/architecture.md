@@ -80,15 +80,27 @@ The domain layer contains things creators will need to touch: database models, s
 | `ServerConfig` | `config/server_config.rs` | Game config |
 
 ### Mudlib Layer (Lua)
-Your game. It is divided into two parts:
-- **`mudlib/`**: The core system layer (login, command dispatch, base daemons).
-- **`game/`**: The game content layer (rooms, areas, mobs, trait and effect definitions).
+Your game, in two parts, and the line between them is the one to hold on to:
+
+- **`mudlib/`** — anything a *second* game would want unchanged. Login, command
+  dispatch, the daemons, the object model, items and equipment, shops, traits
+  and effects, the state cache.
+- **`game/`** — this game. Rooms, creatures, items, spells, quests, and the
+  *policy* decisions the driver deliberately has no view on: whether an
+  aggressive creature attacks, whether it rains, which roles exist, what a
+  quest is.
+
+The test of which side something goes on is not size or subject, it is: would
+another game want this one unchanged, or would it want a different file? A
+pathfinder is mudlib; the `navigate` command that decides what to do with a
+route is game. `Mobile.aggressive` is mudlib; `aggro_d`, which reads it, is not.
 
 The driver calls these global Lua functions (defined in `mudlib/init.lua`):
 - `on_connect(session_id)`
 - `on_input(session_id, text)`
-- `on_disconnect(session_id)`
-- `on_gmcp(session_id, package, data)`
+- `on_disconnect(session_id)` — a chain of independently protected cleanup steps
+- `on_gmcp(session_id, package, data)` — dispatched by package name
+- `on_compute_result(id, ok, value, err, meta)` — one per job that was accepted
 - `on_timer(id)` — fired by the Tokio timer system
 - `on_shutdown()` — last dispatch before the VM stops on a clean shutdown; the driver waits for it
 - `on_load(module_name)` / `on_unload(module_name)` — hot-reload hooks
@@ -103,13 +115,16 @@ The full inheritance tree:
 
 ```
 Object (mudlib/lib/object.lua)
-├── Room   (game/lib/room.lua)
+├── Room   (mudlib/lib/room.lua)
 ├── Item   (mudlib/lib/item.lua)
-│   ├── Weapon (mudlib/lib/weapon.lua)
-│   └── Armor  (mudlib/lib/armor.lua)
 └── Mobile (mudlib/lib/mobile.lua)
     └── Player (mudlib/lib/player.lua)
 ```
+
+Item *roles* are components rather than subclasses. `Weapon{...}` and
+`Armor{...}` are archetypes that build an `Item` carrying `item.weapon` /
+`item.armour`; behaviour lives in the matching system module. See
+[Object Hierarchy](./lua-api/object-hierarchy.md).
 
 #### Daemons
 Services and singletons are managed via a global `DAEMON` table for easy access across both `mudlib` and `game` layers (e.g., `DAEMON.world`, `DAEMON.journal`, `DAEMON.ticker`, `DAEMON.event`, `DAEMON.cache`, `DAEMON.trait`, `DAEMON.effect`, `DAEMON.combat`). See [Daemons](./lua-api/daemons.md) for the full list.

@@ -225,17 +225,60 @@ fn test_room_d_load_area_with_world_daemon() {
 
 ## What's Currently Tested
 
-| Module | Tests | What's Covered |
-|--------|------:|----------------|
-| Object | 7 | `resolve()` with all value types, `new()` defaults, state roundtrip |
-| Item | 6 | Defaults, slot→equippable, stackable display, tags, examine |
-| Mobile | 8 | Stats, damage/heal clamping, inventory, skills, tags, dialogue, examine, aggression |
-| Player | 7 | Hydration, serialization roundtrip, deep copy, gold ops, quest flags, display name, inheritance |
-| Room | 4 | Exits, character management, actions, items |
-| ROOM_D | 4 | `from_data`, validation, builder API, `load_area` |
-| Codegen | 2 | Room and meta generation + loadability |
-| Inheritance | 4 | Object→Item, Mobile→Player, Item→Weapon, Item→Armor |
-| Commands | 5 | Parse: basic, empty, verb-only, multi-arg, case-insensitive |
+**687 tests.** The table below is the *integration* suite — the files that boot
+a real `ScriptEngine` and ask what game code can actually do. `tests/lua_unit.rs`
+is a further 160-odd unit tests over the Lua libraries in isolation.
+
+### The security and boundary suites
+
+Anything touching a security or persistence boundary goes through
+`tests/common/mod.rs`'s real engine, per the rule at the top of this page.
+
+| File | Covers |
+|---|---|
+| `sandbox_reality_check.rs` | `io`, `os.execute`, `debug`, `jit`, bytecode and path traversal, refused **through the engine's own VM** |
+| `list_dir_jail.rs` | D1 — the second, unjailed `list_dir` that overwrote the jailed one |
+| `instruction_limit.rs` | the budget is armed and enforced, not merely parsed |
+| `permission_config.rs`, `permissions.rs` | RBAC storage and the session cache |
+| `permission_refresh.rs` | D4 — a role change reaching a player who is already online |
+| `state_retention.rs` | L1/L2 — object state on despawn, virtual rooms on eviction, and the heap counters |
+
+### The game systems
+
+| File | Covers |
+|---|---|
+| `traits_effects.rs` | traits and effects as a player meets them; presence, seeding, learning |
+| `trait_sparsity.rs` | `all()` filtering, `category` as a lens, and the O(entity) recompute counted rather than timed |
+| `traits_breadth.rs` | derived-of-derived, every `round` mode, `hidden`, offline regeneration, the broken-trait fixture, and spells |
+| `items_ground.rs` | instances, `get`/`drop`/`put`/`give`, containment cycles, hooks and events |
+| `equipment.rs` | slots, requirements, two-handed displacement, `equip:` sources applied and removed |
+| `combat_mitigation.rs` | phase ordering with real armour; damage type meeting a resist table |
+| `shop.rs` | prices, the gold sink, restocking, the ledger over `db_*` |
+| `board.rs` | every document-store filter operator, `db_incr`, `db_update` as a merge, `db_unset` |
+| `quests.rs` | all three persistence tiers, and a daily gate surviving an area reset |
+| `thornhollow.rs` | the multi-file area, dialogue, factions, echoes, tags, room-action precedence |
+| `marsh.rs` | weather-driven lfun descriptions, poison on the heartbeat, conditions, `survives_death` |
+| `mine.rs` | dark rooms and light sources, a locked door, the lever puzzle, the boss's corpse |
+| `virtual_rooms.rs` | generation, the exit graph, `still_connected`, and `compute()` pathfinding end to end |
+| `staff.rs` | roles declared in a file, granted in-game, and `/areas` actually gated |
+| `gmcp_inbound.rs` | `Core.Supports.Set` read and gating what is pushed; a custom package |
+| `lifecycle.rs` | container contents through save and load, and the disconnect ordering |
+
+### The driver
+
+| File | Covers |
+|---|---|
+| `account_store.rs`, `character_store.rs` | persistence |
+| `auth_off_thread.rs` | Argon2 off the game thread, and the lockout |
+| `clean_shutdown.rs` | `on_shutdown` runs and is waited for |
+| `compute_bridge.rs`, `compute_wedge.rs` | job delivery, marshalling refusals, a wedged worker |
+| `document_store.rs`, `document_efuns.rs` | the store and its twelve efuns |
+| `hot_reload.rs` | `reload`, `on_load`/`on_unload`, DAEMON rebinding |
+| `state_cache.rs` | tiers, dirty marking, flush planning, quarantine |
+| `observability.rs`, `game_logger.rs` | the journal and the audit trail |
+| `output_backpressure.rs` | what happens when a client stops reading |
+| `dap_attach.rs`, `debug_*.rs` | the debug adapter |
+| `real_mudlib_harness.rs` | the harness itself |
 
 ---
 

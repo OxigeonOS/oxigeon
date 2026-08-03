@@ -45,8 +45,28 @@ end
 ```
 
 ### `list_dir(path) → table|nil`
-List the contents of a directory. Returns an array of entry tables, or `nil` if the
-directory doesn't exist or the path is invalid.
+List the contents of a directory. Returns an array of entry tables, or `nil` if
+the directory doesn't exist, the path escapes the jail, or reading it is refused
+by `permissions.toml`. An **empty table** means a directory that exists and holds
+nothing — so a caller can tell a misconfigured command path from an empty one.
+
+Both roots are searched, game layer first, deduplicated by name: command and
+area discovery spans the two layers, and the order matches `package.path` so the
+layer that would be `require`d is the layer that is reported.
+
+> [!WARNING]
+> **This efun was registered twice, and the unsafe one won.** `register_io_efuns`
+> installed the permission-checked, path-jailed version; `register_utility_efuns`
+> ran later and overwrote it with one that joined the caller's path straight onto
+> the two roots — no jail, no permission check. `list_dir("../../..")` escaped for
+> as long as that was true, while this page and `sandboxing.md` both claimed
+> traversal prevention "for all file efuns".
+>
+> The jailed implementation existed the whole time and production never reached
+> it — the same failure shape as the sandbox and instruction-limit bugs
+> `CLAUDE.md`'s testing section was written about. `tests/list_dir_jail.rs` asks
+> the question through the engine's own VM, so a helper-level test cannot pass
+> while the reachable version is broken.
 
 **Entry table fields:**
 | Field | Type | Description |
@@ -65,6 +85,23 @@ if entries then
     end
 end
 ```
+
+### `uuid() → string`
+A v4 UUID as a string. For anything that needs addressing and has no natural
+key.
+
+```lua
+local id = "item:" .. uuid()   --> "item:6f9619ff-8b86-d011-b42d-00cf4fc964ff"
+```
+
+Item instances are the first user. A monotonic counter is enough for mobs, which
+are never saved; a container in a player's inventory **is** saved, and a counter
+restarting at zero on the next boot would hand out an id that already means
+something else in somebody's save file — a data-corruption bug that only shows
+up after a restart.
+
+v4 rather than v1, so the id carries no timestamp and no MAC address. An id that
+leaks when the server was started leaks more than an id needs to.
 
 ### `delete_file(path) → bool`
 Delete a file. Returns `true` on success, `false` on failure.

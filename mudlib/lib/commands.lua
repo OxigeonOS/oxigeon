@@ -45,16 +45,33 @@ local function load_all_commands()
         -- Convert dot prefix back to slash path for list_dir
         local dir_path = prefix:gsub("%.", "/")
         if type(list_dir) == "function" then
-            local ok, files = pcall(list_dir, dir_path)
-            if ok and type(files) == "table" then
-                for _, name in ipairs(files) do
-                    if not _registry[name] then
+            local ok, entries = pcall(list_dir, dir_path)
+            if ok and type(entries) == "table" then
+                -- `list_dir` returns { name, is_dir, size } entries and has
+                -- done for as long as the docs have described it. It used to
+                -- return bare module stems here, because a second, unjailed
+                -- copy of the efun was overwriting the real one — so this loop
+                -- was written against a contract that only existed by accident.
+                for _, entry in ipairs(entries) do
+                    local file = type(entry) == "table" and entry.name
+                    local name = (not (type(entry) == "table" and entry.is_dir))
+                        and file and file:match("^(.+)%.lua$")
+                    if name and not _registry[name] then
                         local rok, mod = pcall(require, prefix .. "." .. name)
                         if rok and type(mod) == "table" and type(mod.execute) == "function" then
                             register(mod)
+                        elseif not rok then
+                            log("error", "COMMANDS: failed to load '" .. prefix .. "." .. name
+                                .. "': " .. tostring(mod))
+                            if DAEMON and DAEMON.journal then
+                                pcall(DAEMON.journal.error, "COMMANDS: failed to load '"
+                                    .. prefix .. "." .. name .. "': " .. tostring(mod))
+                            end
                         end
                     end
                 end
+            elseif not ok then
+                log("error", "COMMANDS: list_dir('" .. dir_path .. "') failed: " .. tostring(entries))
             end
         end
     end
@@ -88,7 +105,21 @@ end
 -- args     : whitespace-split tokens from args_str
 -- Returns nil, "", {} for empty input.
 function M.parse(text)
-    local verb, rest = text:match("^(%S+)%s*(.*)")
+    local verb, rest
+
+    -- A punctuation alias attaches to what follows it. `'hello` is `say hello`
+    -- and `:grins` is `emote grins` — which is how everyone types them, and
+    -- neither worked: splitting on whitespace made the verb `'hello`, which
+    -- resolves to nothing. So a leading punctuation character is split off
+    -- **when it is a registered verb**, and only then: `:-)` should not become
+    -- an emote of `-)` on a mudlib that has no `:` command.
+    local punct, tail = text:match("^([^%w%s])(.*)$")
+    if punct and M.resolve(punct) then
+        verb, rest = punct, tail:gsub("^%s+", "")
+    else
+        verb, rest = text:match("^(%S+)%s*(.*)")
+    end
+
     if not verb then return nil, "", {} end
     local args = {}
     for tok in rest:gmatch("%S+") do
@@ -97,10 +128,25 @@ function M.parse(text)
     return verb:lower(), rest, args
 end
 
---- Return a copy of the command registry (for help/introspection).
+--- Return the command registry (for help/introspection).
 -- Keys are canonical command names, values are module tables.
+--
+-- Loads every command first. Without that this answered with whatever had
+-- happened to be dispatched so far, which for `help` meant a list that grew as
+-- you used the game — the one case where a lazy registry is exactly wrong.
 function M.registry()
+    if not _loaded_all then load_all_commands() end
     return _registry
+end
+
+--- The canonical name a verb or alias resolves to, or nil.
+--- @param verb string
+--- @return string|nil
+function M.resolve(verb)
+    if type(verb) ~= "string" then return nil end
+    if not _loaded_all then load_all_commands() end
+    if _registry[verb] then return verb end
+    return _aliases[verb]
 end
 
 --- Flush the command cache so reloaded modules are picked up.

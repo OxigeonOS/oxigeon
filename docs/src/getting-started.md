@@ -77,44 +77,54 @@ input_buffer_bytes = 4096
 The starter mudlib already includes a full command system. The key files are:
 
 ```text
-mudlib/
-├── init.lua           ← event hooks, daemons setup
-├── login.lua          ← login/registration flow
+mudlib/                  ← the driver's Lua half: reusable across games
+├── init.lua             ← event hooks, daemon loading, the disconnect chain
+├── login.lua            ← login and registration
 ├── lib/
-│   ├── commands.lua   ← dispatcher and lazy-loader
-│   ├── object.lua     ← base class for all MUD objects
-│   ├── item.lua       ← items (→ Weapon, Armor)
-│   ├── weapon.lua     ← weapon subclass
-│   ├── armor.lua      ← armor subclass
-│   ├── mobile.lua     ← NPCs, monsters (→ Player)
-│   └── player.lua     ← player object (persistence via CHARACTER_D)
-├── daemons/
-│   ├── journal_d.lua  ← structured logging
-│   ├── audit_d.lua    ← audit trail
-│   ├── ticker_d.lua   ← timer scheduler
-│   ├── event_d.lua    ← signal/event system
-│   └── prompt_d.lua   ← prompt template engine
-└── cmds/
-    ├── help.lua
-    └── quit.lua
+│   ├── commands.lua     ← dispatcher and lazy-loader
+│   ├── object.lua       ← base class; `trait()` lives here
+│   ├── item.lua         ← items (Weapon/Armor/Container are archetypes over it)
+│   ├── weapon.lua  armor.lua  container.lua  requires.lua
+│   ├── carry.lua        ← moving an item between floor, character and container
+│   ├── equipment.lua    ← slots, requirements, `equip:` effect sources
+│   ├── light.lua        ← whether you can see
+│   ├── mobile.lua       ← NPCs and monsters (→ Player)
+│   ├── player.lua       ← persistence via CHARACTER_D
+│   ├── room.lua  movement.lua  messaging.lua  checks.lua  color.lua
+│   └── traits.lua  effects.lua  persist.lua  jsonsafe.lua  strings.lua  tables.lua
+├── daemons/             ← 25 singleton services on the DAEMON table
+│   ├── journal_d.lua  audit_d.lua       ← logging and the audit trail
+│   ├── ticker_d.lua   task_d.lua        ← timers, and named periodic work
+│   ├── event_d.lua                      ← signals
+│   ├── cache_d.lua    cooldown_d.lua    ← tiered state
+│   ├── trait_d.lua    effect_d.lua      ← numbers, and what modifies them
+│   ├── room_d.lua     world_d.lua       ← rooms, the registry, virtual providers
+│   ├── item_d.lua     shop_d.lua        ← templates, instances, economy
+│   ├── mob_d.lua      combat_d.lua      ← creatures and fights
+│   ├── character_d.lua death_d.lua
+│   ├── tag_d.lua                        ← the reverse index over tags
+│   ├── prompt_d.lua   channel_d.lua  pager_d.lua  snoop_d.lua  gmcp_d.lua
+│   └── codegen_d.lua  olc_d.lua         ← online creation
+├── compute/
+│   └── pathfind.lua     ← runs on a worker thread; no efuns
+├── cmds/                ← ~60 commands, auto-discovered
+└── tasks/
 
-game/
-├── init.lua           ← game daemons and areas loading
+game/                    ← this game: content, and policy the driver has no view on
+├── init.lua             ← registers everything below
+├── setup_roles.lua      ← which roles exist and what they may do
 ├── daemons/
-│   ├── room_d.lua     ← room creation
-│   ├── character_d.lua← character state cache
-│   ├── world_d.lua    ← room registry, movement
-│   ├── codegen_d.lua  ← OLC code generation
-│   └── olc_d.lua      ← OLC session manager
-├── lib/
-│   └── room.lua       ← room class
+│   ├── aggro_d.lua      ← whether an aggressive creature attacks
+│   ├── weather_d.lua    ← and what the sky is doing
+│   ├── quest_d.lua      board_d.lua  spell_d.lua  reach_d.lua
+│   └── gmcp_game_d.lua  ← this game's own GMCP packages
+├── traits/  effects/  spells/  quests/
 ├── areas/
-│   └── wizard_workshop/ ← example area
-└── cmds/
-    ├── look.lua       ← game commands
-    ├── prompt.lua     ← prompt customization
-    ├── olc.lua        ← online creation entry
-    └── dig.lua        ← room creation (OLC)
+│   ├── thornhollow/     ← a town, in three room files merged into one area
+│   ├── greywater_marsh/ ← weather-driven descriptions, aggressive creatures
+│   ├── collapsed_mine/  ← dark rooms, a locked door, a puzzle, a boss
+│   └── wizard_workshop/ ← the original example, kept as a regression fixture
+└── cmds/                ← board, quest, cast, navigate
 ```
 
 ### Adding a New Command

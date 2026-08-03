@@ -431,8 +431,43 @@ impl RealVm {
         // first prompt arrive after the "Welcome" line — then throw it all
         // away, so the first `command` starts against an empty channel rather
         // than reading login's prompt as its own completion.
-        self.drain_for(Duration::from_secs(2));
+        //
+        // Waiting for a *quiet period* here was a race. Under load the session
+        // is briefly quiet before that output is produced, so `drain_for`
+        // returned early, `discard_pending` found nothing, and the first
+        // `command` collected the tail of the login and stopped at login's
+        // prompt — reporting the login banner as that command's output. It
+        // showed up as a different real-mudlib test failing on each run, all of
+        // which passed in isolation.
+        //
+        // `send_prompt` is the only thing that produces a `Raw`, so the prompt
+        // is an exact marker rather than a guess. Fall back to the old
+        // heuristic if one never comes, so a mudlib that does not prompt after
+        // login still boots.
+        if !self.drain_to_prompt(Duration::from_secs(10)) {
+            self.drain_for(Duration::from_secs(2));
+        }
         self.discard_pending();
+    }
+
+    /// Consume output up to and including the prompt that ends a dispatch.
+    /// @return whether one arrived before the deadline
+    fn drain_to_prompt(&mut self, timeout: Duration) -> bool {
+        let started = Instant::now();
+        let deadline = started + timeout;
+        loop {
+            match self.output.try_recv() {
+                Ok(SessionOutput::Raw(_)) => return true,
+                Ok(_) => continue,
+                Err(mpsc::error::TryRecvError::Empty) => {
+                    if Instant::now() >= deadline {
+                        return false;
+                    }
+                    Self::wait_step(started);
+                }
+                Err(mpsc::error::TryRecvError::Disconnected) => return false,
+            }
+        }
     }
 
     /// Send one line as a playing character and wait for the game to finish
@@ -865,6 +900,8 @@ pub struct TestCtx {
     pub documents: oxigeon::domain::models::document::DocumentLimits,
     pub max_connections: usize,
     pub max_characters_per_account: usize,
+    /// Extra `[game]` keys, flattened into `GameConfig::extra`.
+    pub game_extra: std::collections::HashMap<String, toml::Value>,
 }
 
 impl Default for TestCtx {
@@ -884,6 +921,7 @@ impl Default for TestCtx {
             documents: Default::default(),
             max_connections: 256,
             max_characters_per_account: 5,
+            game_extra: Default::default(),
         }
     }
 }
@@ -928,6 +966,10 @@ pub fn efun_context(
             effect_sweep_seconds: opts.effect_sweep_seconds,
             effect_heartbeat_seconds: opts.effect_heartbeat_seconds,
             combat_round_seconds: opts.combat_round_seconds,
+            // Game-layer settings the driver has no opinion about, reachable
+            // from Lua as `config("game.<key>")`. A test that drives one — the
+            // respawn room, a restock interval — sets it here.
+            extra: opts.game_extra.clone(),
         },
         sessions: SessionsConfig {
             multisession_mode: MultisessionMode::Single,

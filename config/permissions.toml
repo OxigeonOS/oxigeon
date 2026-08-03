@@ -61,5 +61,13 @@ db_clear = "efun.db.clear"
 # Command files — builders can read; only senior staff can modify
 "/cmds"  = { write = "dir.write.cmds" }
 
-# Area content — builders can write; everyone can read
-# "/areas" = { write = "dir.write.areas" }
+# Area content — builders can write; everyone can read.
+#
+# Commented out, this rule was a no-op: `/areas` was world-writable, so the
+# builder role was a label rather than a boundary and any test over it proved
+# nothing. Grant `dir.write.areas` to the builder role — see
+# `game/setup_roles.lua` — and note that account 1 bypasses this like everything
+# else. The engine's own dispatch (a daemon writing on a tick, the mudlib load)
+# also bypasses it, because it has no session and acts with the driver's own
+# authority; see `efuns::enter_system_dispatch`.
+"/areas" = { write = "dir.write.areas" }

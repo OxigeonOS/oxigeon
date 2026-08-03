@@ -38,6 +38,14 @@ function Item:new(data)
     obj.on_equip  = data.on_equip          -- function(item, user_id) — equipped
     obj.on_remove = data.on_remove         -- function(item, user_id) — unequipped
 
+    -- ─── Light ───────────────────────────────────────────────────────────────
+    -- How brightly this burns when lit, on the same 0–3 scale a room uses.
+    -- `always_lit` is for something that cannot be put out — a glowing sword.
+    -- Whether an ordinary lantern is *currently* lit is per-instance object
+    -- state, not a field here: two lanterns must be able to disagree.
+    obj.light      = data.light
+    obj.always_lit = data.always_lit or false
+
     -- Tags for filtering and categorization
     obj.tags = data.tags or {}             -- e.g. {"quest", "fragile", "magical"}
 
