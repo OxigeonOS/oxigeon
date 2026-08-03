@@ -11,16 +11,20 @@ Oxigeon is structured in three layers. Each layer has a specific responsibility 
 │  mudlib/                → Core system layer                 │
 │  ├── init.lua           → setup daemons, event hooks        │
 │  ├── daemons/           → journal_d, audit_d, ticker_d,     │
-│  │                        event_d, prompt_d                 │
-│  └── lib/               → object, item, weapon, armor,      │
-│                           mobile, player, commands, utils    │
+│  │                        event_d, prompt_d, cache_d,       │
+│  │                        trait_d, effect_d, cooldown_d,    │
+│  │                        world_d, room_d, character_d,     │
+│  │                        item_d, mob_d, combat_d, ...      │
+│  ├── lib/               → object, item, weapon, armor,      │
+│  │                        mobile, player, room, traits,     │
+│  │                        effects, jsonsafe, persist        │
+│  └── cmds/              → the command set                   │
 │                                                             │
-│  game/                  → Game content layer                │
-│  ├── init.lua           → load game daemons and areas       │
-│  ├── daemons/           → world_d, room_d, character_d,     │
-│  │                        codegen_d, olc_d                  │
-│  ├── lib/               → room                             │
-│  └── areas/             → game world definitions (data)     │
+│  game/                  → Game content layer (data only)    │
+│  ├── init.lua           → register traits, effects, areas   │
+│  ├── traits/            → attribute definitions             │
+│  ├── effects/           → buff and debuff definitions       │
+│  └── areas/             → rooms, items, mobs (data)         │
 └─────────────────────────────────────────────────────────────┘
          │ require(), efuns calls
 ┌─────────────────────────────────────────────────────────────┐
@@ -78,7 +82,7 @@ The domain layer contains things creators will need to touch: database models, s
 ### Mudlib Layer (Lua)
 Your game. It is divided into two parts:
 - **`mudlib/`**: The core system layer (login, command dispatch, base daemons).
-- **`game/`**: The game content layer (rooms, areas, game-specific daemons like `ROOM_D` and `CHARACTER_D`).
+- **`game/`**: The game content layer (rooms, areas, mobs, trait and effect definitions).
 
 The driver calls these global Lua functions (defined in `mudlib/init.lua`):
 - `on_connect(session_id)`
@@ -86,6 +90,7 @@ The driver calls these global Lua functions (defined in `mudlib/init.lua`):
 - `on_disconnect(session_id)`
 - `on_gmcp(session_id, package, data)`
 - `on_timer(id)` — fired by the Tokio timer system
+- `on_shutdown()` — last dispatch before the VM stops on a clean shutdown; the driver waits for it
 - `on_load(module_name)` / `on_unload(module_name)` — hot-reload hooks
 
 #### Object Hierarchy
@@ -107,7 +112,7 @@ Object (mudlib/lib/object.lua)
 ```
 
 #### Daemons
-Services and singletons are managed via a global `DAEMON` table for easy access across both `mudlib` and `game` layers (e.g., `DAEMON.world`, `DAEMON.journal`, `DAEMON.ticker`, `DAEMON.event`, `DAEMON.prompt`, `DAEMON.codegen`, `DAEMON.olc`).
+Services and singletons are managed via a global `DAEMON` table for easy access across both `mudlib` and `game` layers (e.g., `DAEMON.world`, `DAEMON.journal`, `DAEMON.ticker`, `DAEMON.event`, `DAEMON.cache`, `DAEMON.trait`, `DAEMON.effect`, `DAEMON.combat`). See [Daemons](./lua-api/daemons.md) for the full list.
 
 ## Data Flow
 

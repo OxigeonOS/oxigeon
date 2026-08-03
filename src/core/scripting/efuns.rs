@@ -5,13 +5,14 @@ use std::time::Instant;
 use mlua::prelude::*;
 use serde_json::Value as JsonValue;
 use tokio::sync::mpsc::UnboundedSender;
+use crate::core::lock::RwLockExt;
 
 use crate::config::server_config::ServerConfig;
 use crate::config::permissions_config::PermissionConfig;
 use crate::core::session::{SessionHandler, SessionOutput, SessionId};
 use crate::core::scripting::engine::LuaCommand;
 use crate::core::logging::{GameLogger, AuditEntry, JournalEntry};
-use crate::domain::models::{DieselAccountStore, DieselCharacterStore};
+use crate::domain::models::{DieselAccountStore, DieselCharacterStore, DieselDocumentStore};
 use crate::domain::models::role::DieselRoleStore;
 
 /// Context passed to Lua efun closures — shared handles to driver subsystems
@@ -31,6 +32,15 @@ pub struct EfunContext {
     pub started_at_utc:     String,  // ISO 8601 captured at startup
     /// Shared control block for tracing and the debug adapter
     pub debug_state:        crate::core::scripting::debugger::SharedDebugState,
+    /// Pool that runs Argon2 off the Lua thread. `None` disables the
+    /// `authenticate` and `create_account` efuns entirely — see
+    /// `register_auth_efuns`.
+    pub auth_worker:        Option<crate::core::auth::AuthWorker>,
+    /// Pool that runs Lua on worker threads. `None` disables the `compute`
+    /// efun entirely — see `efuns_compute::register_compute_efuns`.
+    pub compute:            Option<crate::core::compute::ComputeBridge>,
+    /// The generic JSON document store behind the `db_*` efuns.
+    pub document_store:     Arc<DieselDocumentStore>,
 }
 
 // The currently-active session ID for the Lua thread.
@@ -39,6 +49,16 @@ pub struct EfunContext {
 thread_local! {
     static CURRENT_SESSION: std::cell::RefCell<Option<String>> =
         std::cell::RefCell::new(None);
+
+    /// Whether the engine is currently dispatching on its own behalf.
+    ///
+    /// Timer ticks, hot reloads and the initial mudlib load have no player
+    /// behind them, so `CURRENT_SESSION` is `None` for all of them. That used
+    /// to mean `check_efun_permission` failed closed: any gated efun called
+    /// from a daemon tick was denied, silently, because nothing was there to
+    /// see the error. This flag makes the alternative an explicit decision
+    /// rather than something that falls out of an unset thread-local.
+    static SYSTEM_DISPATCH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 pub fn set_current_session(id: Option<String>) {
@@ -49,6 +69,48 @@ pub fn get_current_session() -> Option<String> {
     CURRENT_SESSION.with(|s| s.borrow().clone())
 }
 
+/// The label used for the engine itself in audit and journal entries.
+pub const SYSTEM_ACTOR: &str = "system";
+
+/// Whether the current dispatch is the engine acting on its own behalf.
+pub fn is_system_dispatch() -> bool {
+    SYSTEM_DISPATCH.with(std::cell::Cell::get)
+}
+
+/// Restores the previous dispatch identity when dropped, so a Lua error
+/// unwinding out of a dispatch cannot leave the flag stuck on.
+pub struct SystemDispatchGuard(bool);
+
+impl Drop for SystemDispatchGuard {
+    fn drop(&mut self) {
+        SYSTEM_DISPATCH.with(|c| c.set(self.0));
+    }
+}
+
+/// Mark everything until the returned guard drops as engine-internal.
+///
+/// Gated efuns are permitted for the duration. That is a real widening: any
+/// code reachable from a timer tick, a reload, or mudlib load runs with the
+/// driver's own authority. It is confined to code paths that only *authored*
+/// Lua can reach — a player cannot register a ticker callback — which is the
+/// same trust boundary as being able to write a room file at all.
+#[must_use = "the identity is restored when the guard drops"]
+pub fn enter_system_dispatch() -> SystemDispatchGuard {
+    let previous = SYSTEM_DISPATCH.with(|c| c.replace(true));
+    SystemDispatchGuard(previous)
+}
+
+/// Who to record as the actor for a log or audit entry.
+pub fn current_actor() -> String {
+    if let Some(sid) = get_current_session() {
+        return sid;
+    }
+    if is_system_dispatch() {
+        return SYSTEM_ACTOR.to_string();
+    }
+    "unknown".to_string()
+}
+
 /// Resolve (session_id_str, character_name) for audit entries.
 /// Returns ("unknown", "") if the session isn't found.
 fn resolve_session_char(
@@ -56,13 +118,15 @@ fn resolve_session_char(
     sh: &Arc<RwLock<SessionHandler>>,
 ) -> (String, String) {
     let Some(sid_str) = sid else {
-        return ("unknown".to_string(), "".to_string());
+        // No session: either the engine acting for itself, or nothing at all.
+        // Saying which is the whole point of the distinction.
+        return (current_actor(), "".to_string());
     };
     let id: SessionId = match sid_str.parse() {
         Ok(id) => id,
         Err(_) => return (sid_str.to_string(), "".to_string()),
     };
-    let handler = sh.read().unwrap();
+    let handler = sh.read_recover();
     let char_id = handler.get(&id).and_then(|s| s.state.character_id());
     drop(handler);
     // We don't have direct access to character_store here, so just return the raw id as name
@@ -79,11 +143,20 @@ pub(crate) fn check_efun_permission(
     game_logger: &Arc<GameLogger>,
 ) -> LuaResult<()> {
     if let Some(required) = perm_config.efuns.get(efun_name) {
+        // Engine-internal dispatch acts with the driver's own authority. There
+        // is no session to check, and failing closed here is what made a
+        // daemon's `write_file` on a tick fail silently — with no player
+        // connected, nothing surfaced the error.
+        if is_system_dispatch() {
+            tracing::debug!("efun '{}' permitted for engine-internal dispatch", efun_name);
+            return Ok(());
+        }
+
         let current_sid = get_current_session();
         let allowed = current_sid
             .as_deref()
             .and_then(|s| s.parse::<SessionId>().ok())
-            .map(|sid| sh.read().unwrap().has_permission(&sid, required))
+            .map(|sid| sh.read_recover().has_permission(&sid, required))
             .unwrap_or(false);
         if !allowed {
             let (sid_str, char_name) = resolve_session_char(current_sid.as_deref(), sh);
@@ -116,6 +189,8 @@ pub fn register_all(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
     register_permission_efuns(lua, ctx)?;
     register_observability_efuns(lua, ctx)?;
     super::debugger::efuns::register_debug_efuns(lua, ctx)?;
+    super::efuns_compute::register_compute_efuns(lua, ctx)?;
+    super::efuns_document::register_document_efuns(lua, ctx)?;
     Ok(())
 }
 
@@ -128,10 +203,10 @@ fn register_io_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
         let send_fn = lua.create_function(move |_, (session_id, text): (String, String)| {
             let id: SessionId = session_id.parse()
                 .map_err(|e| LuaError::RuntimeError(format!("Invalid session id: {}", e)))?;
-            let handler = sh.read().unwrap();
+            let handler = sh.read_recover();
             let session = handler.get(&id)
                 .ok_or_else(|| LuaError::RuntimeError(format!("Session not found: {}", session_id)))?;
-            let _ = session.output_tx.try_send(SessionOutput::Text(text));
+            session.try_send(SessionOutput::Text(text));
             Ok(())
         })?;
         globals.set("send", send_fn)?;
@@ -143,10 +218,10 @@ fn register_io_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
         let prompt_fn = lua.create_function(move |_, (session_id, text): (String, String)| {
             let id: SessionId = session_id.parse()
                 .map_err(|e| LuaError::RuntimeError(format!("Invalid session id: {}", e)))?;
-            let handler = sh.read().unwrap();
+            let handler = sh.read_recover();
             if let Some(session) = handler.get(&id) {
                 // Prompt text sent as raw — no trailing CRLF added by send_text
-                let _ = session.output_tx.try_send(SessionOutput::Raw(text.into_bytes()));
+                session.try_send(SessionOutput::Raw(text.into_bytes()));
             }
             Ok(())
         })?;
@@ -159,7 +234,19 @@ fn register_io_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
         let gl = ctx.game_logger.clone();
         let broadcast_fn = lua.create_function(move |_, text: String| {
             check_efun_permission("broadcast", &perm_config, &sh, &gl)?;
-            sh.read().unwrap().broadcast(&text);
+            let dropped = sh.read_recover().broadcast(&text);
+            if dropped > 0 {
+                // Each of those sessions gets a truncation marker of its own;
+                // this is for the operator, who would otherwise have no idea a
+                // broadcast did not reach everyone.
+                tracing::warn!("broadcast did not reach {} session(s) — output channels full", dropped);
+                gl.journal(JournalEntry {
+                    level:   "warn",
+                    source:  "broadcast",
+                    message: "broadcast dropped for one or more sessions",
+                    meta:    Some(serde_json::json!({"dropped": dropped})),
+                });
+            }
             Ok(())
         })?;
         globals.set("broadcast", broadcast_fn)?;
@@ -179,9 +266,9 @@ fn register_io_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
             if !is_self {
                 check_efun_permission("disconnect", &perm_config, &sh, &gl)?;
             }
-            let handler = sh.read().unwrap();
+            let handler = sh.read_recover();
             if let Some(session) = handler.get(&id) {
-                let _ = session.output_tx.try_send(SessionOutput::Disconnect);
+                session.try_send(SessionOutput::Disconnect);
             }
             Ok(())
         })?;
@@ -195,9 +282,9 @@ fn register_io_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
             let id: SessionId = session_id.parse()
                 .map_err(|e| LuaError::RuntimeError(format!("Invalid session id: {}", e)))?;
             let json: JsonValue = lua_to_json(lua, &data)?;
-            let handler = sh.read().unwrap();
+            let handler = sh.read_recover();
             if let Some(session) = handler.get(&id) {
-                let _ = session.output_tx.try_send(SessionOutput::Gmcp {
+                session.try_send(SessionOutput::Gmcp {
                     package,
                     data: json,
                 });
@@ -213,9 +300,9 @@ fn register_io_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
         let echo_fn = lua.create_function(move |_, session_id: String| {
             let id: SessionId = session_id.parse()
                 .map_err(|e| LuaError::RuntimeError(format!("Invalid session id: {}", e)))?;
-            let handler = sh.read().unwrap();
+            let handler = sh.read_recover();
             if let Some(session) = handler.get(&id) {
-                let _ = session.output_tx.try_send(SessionOutput::StartEcho);
+                session.try_send(SessionOutput::StartEcho);
             }
             Ok(())
         })?;
@@ -228,9 +315,9 @@ fn register_io_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
         let echo_fn = lua.create_function(move |_, session_id: String| {
             let id: SessionId = session_id.parse()
                 .map_err(|e| LuaError::RuntimeError(format!("Invalid session id: {}", e)))?;
-            let handler = sh.read().unwrap();
+            let handler = sh.read_recover();
             if let Some(session) = handler.get(&id) {
-                let _ = session.output_tx.try_send(SessionOutput::StopEcho);
+                session.try_send(SessionOutput::StopEcho);
             }
             Ok(())
         })?;
@@ -263,7 +350,7 @@ fn register_session_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
         let get_session_fn = lua.create_function(move |lua, session_id: String| {
             let id: SessionId = session_id.parse()
                 .map_err(|e| LuaError::RuntimeError(format!("Invalid session id: {}", e)))?;
-            let handler = sh.read().unwrap();
+            let handler = sh.read_recover();
             match handler.get(&id) {
                 None => Ok(LuaValue::Nil),
                 Some(s) => {
@@ -288,6 +375,7 @@ fn register_session_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
                         t.set("terminal_type", ttype.clone())?;
                     }
                     t.set("gmcp_supported", s.capabilities.gmcp_supported)?;
+                    t.set("dropped_output", s.dropped_output() as f64)?;
                     if !s.capabilities.gmcp_packages.is_empty() {
                         let pkgs = lua.create_table()?;
                         for (i, pkg) in s.capabilities.gmcp_packages.iter().enumerate() {
@@ -306,7 +394,7 @@ fn register_session_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
     {
         let sh = ctx.session_handler.clone();
         let all_fn = lua.create_function(move |lua, ()| {
-            let handler = sh.read().unwrap();
+            let handler = sh.read_recover();
             let t = lua.create_table()?;
             for (i, id) in handler.all_ids().iter().enumerate() {
                 t.set(i + 1, id.to_string())?;
@@ -322,7 +410,7 @@ fn register_session_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
         let set_state_fn = lua.create_function(move |_, (session_id, state): (String, String)| {
             let id: SessionId = session_id.parse()
                 .map_err(|e| LuaError::RuntimeError(format!("Invalid session id: {}", e)))?;
-            sh.write().unwrap()
+            sh.write_recover()
                 .set_state_by_name(&id, &state)
                 .map_err(|e| LuaError::RuntimeError(e.to_string()))
         })?;
@@ -335,7 +423,7 @@ fn register_session_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
         let auth_fn = lua.create_function(move |_, (session_id, account_id): (String, i64)| {
             let id: SessionId = session_id.parse()
                 .map_err(|e| LuaError::RuntimeError(format!("Invalid session id: {}", e)))?;
-            let kicked = sh.write().unwrap()
+            let kicked = sh.write_recover()
                 .authenticate(&id, account_id)
                 .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
             Ok(kicked.map(|k| k.to_string()))
@@ -358,7 +446,7 @@ fn register_session_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
                 .unwrap_or(false);
             let perms = role_store.get_permissions_for_character(character_id)
                 .unwrap_or_default();
-            sh.write().unwrap()
+            sh.write_recover()
                 .enter_game(&id, account_id, character_id, perms, is_admin)
                 .map_err(|e| LuaError::RuntimeError(e.to_string()))
         })?;
@@ -371,38 +459,14 @@ fn register_session_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
 fn register_account_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
     let globals = lua.globals();
 
-    // authenticate(username, password) -> table|nil
-    {
-        let store = ctx.account_store.clone();
-        let auth_fn = lua.create_function(move |lua, (username, password): (String, String)| {
-            match store.authenticate(&username, &password) {
-                Ok(account) => {
-                    let json = account.to_lua_table();
-                    Ok(json_to_lua(lua, &json)?)
-                }
-                Err(_) => Ok(LuaValue::Nil),
-            }
-        })?;
-        globals.set("authenticate", auth_fn)?;
-    }
-
-    // create_account(username, password) -> table|nil
-    {
-        let store = ctx.account_store.clone();
-        let create_fn = lua.create_function(move |lua, (username, password): (String, String)| {
-            match store.create(&username, &password) {
-                Ok(account) => {
-                    let json = account.to_lua_table();
-                    Ok(json_to_lua(lua, &json)?)
-                }
-                Err(e) => {
-                    tracing::warn!("create_account failed: {}", e);
-                    Ok(LuaValue::Nil)
-                }
-            }
-        })?;
-        globals.set("create_account", create_fn)?;
-    }
+    // authenticate(session_id, username, password)
+    // create_account(session_id, username, password)
+    //
+    // Both are non-blocking and return nothing. Argon2 costs a few hundred
+    // milliseconds, and running it here would stop the whole game for that
+    // long — before authentication, so anyone with a socket could do it on
+    // demand. The result arrives later as `on_auth_result`.
+    register_auth_efuns(lua, ctx)?;
 
     // get_account(id) -> table|nil
     {
@@ -431,6 +495,71 @@ fn register_account_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
             }
         })?;
         globals.set("set_admin", set_admin_fn)?;
+    }
+
+    Ok(())
+}
+
+/// The two efuns that hash a password, both dispatched to [`crate::core::auth`].
+///
+/// They are registered together because they share the whole shape: take a
+/// session, hand the work to the pool, and say nothing on success — the answer
+/// comes back through `on_auth_result`. A refusal (queue full, address locked
+/// out) is reported through the *same* hook rather than as a return value, so
+/// the mudlib has exactly one place that finishes a login.
+fn register_auth_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
+    let globals = lua.globals();
+
+    let Some(worker) = ctx.auth_worker.clone() else {
+        // No worker means no cmd_tx to answer on, which only happens in tests
+        // that never log in. Registering nothing is better than registering a
+        // version that blocks: a missing efun fails loudly at the call site.
+        tracing::debug!("No auth worker configured — authenticate/create_account not registered");
+        return Ok(());
+    };
+
+    for (name, kind) in [
+        ("authenticate", crate::core::auth::AuthKind::Authenticate),
+        ("create_account", crate::core::auth::AuthKind::CreateAccount),
+    ] {
+        let worker = worker.clone();
+        let sh = ctx.session_handler.clone();
+        let cmd_tx = ctx.cmd_tx.clone();
+        let f = lua.create_function(
+            move |_, (session_id, username, password): (String, String, String)| {
+                let peer = session_id
+                    .parse::<SessionId>()
+                    .ok()
+                    .and_then(|id| {
+                        sh.read_recover()
+                            .get(&id)
+                            .map(|s| s.address.ip())
+                    });
+
+                if let Err(refused) = worker.submit(
+                    session_id.clone(),
+                    kind,
+                    username,
+                    password,
+                    peer,
+                ) {
+                    tracing::info!("auth refused for session {}: {:?}", session_id, refused);
+                    // Answer on the same path a worker would, so the mudlib
+                    // never has to handle "the efun told me" and "the hook told
+                    // me" as two different cases.
+                    if let Some(tx) = &cmd_tx {
+                        let _ = tx.send(LuaCommand::AuthResult {
+                            session_id,
+                            kind: kind.as_str(),
+                            account: None,
+                            error: Some(refused.message()),
+                        });
+                    }
+                }
+                Ok(())
+            },
+        )?;
+        globals.set(name, f)?;
     }
 
     Ok(())
@@ -596,6 +725,26 @@ fn register_utility_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
                     let val = cfg.game.autosave_seconds.unwrap_or(300);
                     Ok(LuaValue::Integer(val as i64))
                 }
+                // Tunables for the state cache, effects and combat. Each
+                // defaults here rather than in Lua so a test can set it to 0
+                // and keep the corresponding ticker from firing mid-test, the
+                // same way `autosave_seconds` already works.
+                "game.cache_flush_seconds" =>
+                    Ok(LuaValue::Integer(cfg.game.cache_flush_seconds.unwrap_or(5) as i64)),
+                "game.cache_flush_budget" =>
+                    Ok(LuaValue::Integer(cfg.game.cache_flush_budget.unwrap_or(32) as i64)),
+                "game.cache_evict_seconds" =>
+                    Ok(LuaValue::Integer(cfg.game.cache_evict_seconds.unwrap_or(900) as i64)),
+                "game.cooldown_durable_seconds" =>
+                    Ok(LuaValue::Integer(cfg.game.cooldown_durable_seconds.unwrap_or(60) as i64)),
+                "game.effect_sweep_seconds" =>
+                    Ok(LuaValue::Integer(cfg.game.effect_sweep_seconds.unwrap_or(5) as i64)),
+                "game.effect_heartbeat_seconds" =>
+                    Ok(LuaValue::Integer(cfg.game.effect_heartbeat_seconds.unwrap_or(3) as i64)),
+                "game.combat_round_seconds" =>
+                    Ok(LuaValue::Integer(cfg.game.combat_round_seconds.unwrap_or(3) as i64)),
+                "game.shutdown_timeout_seconds" =>
+                    Ok(LuaValue::Integer(cfg.game.shutdown_timeout_seconds.unwrap_or(30) as i64)),
                 _ => Ok(LuaValue::Nil),
             }
         })?;
@@ -840,7 +989,7 @@ fn register_permission_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
                 Ok(id) => id,
                 Err(_) => return Ok(false),
             };
-            Ok(sh.read().unwrap().has_permission(&id, &perm))
+            Ok(sh.read_recover().has_permission(&id, &perm))
         })?;
         globals.set("has_permission", fn_)?;
     }
@@ -856,11 +1005,11 @@ fn register_permission_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
                 Err(_) => return Ok(false),
             };
             let character_id = {
-                let h = sh.read().unwrap();
+                let h = sh.read_recover();
                 h.get(&id).and_then(|s| s.state.character_id())
             };
             let account_id = {
-                let h = sh.read().unwrap();
+                let h = sh.read_recover();
                 h.get(&id).and_then(|s| s.state.account_id())
             };
             let (Some(character_id), Some(account_id)) = (character_id, account_id) else {
@@ -870,7 +1019,7 @@ fn register_permission_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
                 .ok().flatten().map(|a| a.is_admin).unwrap_or(false);
             let perms = role_store.get_permissions_for_character(character_id)
                 .unwrap_or_default();
-            sh.write().unwrap().set_permissions(&id, perms, is_admin)
+            sh.write_recover().set_permissions(&id, perms, is_admin)
                 .map(|_| true)
                 .map_err(|e| LuaError::RuntimeError(e.to_string()))
         })?;
@@ -935,17 +1084,17 @@ fn register_permission_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
             let ok = store.assign_role(character_id, role.id).is_ok();
             if ok {
                 let sids: Vec<_> = {
-                    let h = sh_ref.read().unwrap();
+                    let h = sh_ref.read_recover();
                     h.all_ids().into_iter().filter(|sid| {
                         h.get(sid).and_then(|s| s.state.character_id()) == Some(character_id)
                     }).collect()
                 };
                 for sid in sids {
-                    let account_id = sh_ref.read().unwrap().get(&sid).and_then(|s| s.state.account_id());
+                    let account_id = sh_ref.read_recover().get(&sid).and_then(|s| s.state.account_id());
                     if let Some(aid) = account_id {
                         let is_admin = account_store.find_by_id(aid).ok().flatten().map(|a| a.is_admin).unwrap_or(false);
                         let perms = store.get_permissions_for_character(character_id).unwrap_or_default();
-                        let _ = sh_ref.write().unwrap().set_permissions(&sid, perms, is_admin);
+                        let _ = sh_ref.write_recover().set_permissions(&sid, perms, is_admin);
                     }
                 }
             }
@@ -967,17 +1116,17 @@ fn register_permission_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
             let ok = store.revoke_role(character_id, role.id).is_ok();
             if ok {
                 let sids: Vec<_> = {
-                    let h = sh_ref.read().unwrap();
+                    let h = sh_ref.read_recover();
                     h.all_ids().into_iter().filter(|sid| {
                         h.get(sid).and_then(|s| s.state.character_id()) == Some(character_id)
                     }).collect()
                 };
                 for sid in sids {
-                    let account_id = sh_ref.read().unwrap().get(&sid).and_then(|s| s.state.account_id());
+                    let account_id = sh_ref.read_recover().get(&sid).and_then(|s| s.state.account_id());
                     if let Some(aid) = account_id {
                         let is_admin = account_store.find_by_id(aid).ok().flatten().map(|a| a.is_admin).unwrap_or(false);
                         let perms = store.get_permissions_for_character(character_id).unwrap_or_default();
-                        let _ = sh_ref.write().unwrap().set_permissions(&sid, perms, is_admin);
+                        let _ = sh_ref.write_recover().set_permissions(&sid, perms, is_admin);
                     }
                 }
             }
@@ -1058,6 +1207,8 @@ fn register_observability_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
         let cfg = ctx.server_config.clone();
         let started_at_utc = ctx.started_at_utc.clone();
         let started_at = ctx.started_at;
+        let sh = ctx.session_handler.clone();
+        let compute = ctx.compute.clone();
         let fn_ = lua.create_function(move |lua, ()| {
             let uptime_secs = started_at.elapsed().as_secs_f64();
             let t = lua.create_table()?;
@@ -1065,6 +1216,16 @@ fn register_observability_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
             t.set("name",        cfg.game.name.clone())?;
             t.set("started_at",  started_at_utc.clone())?;
             t.set("uptime_secs", uptime_secs)?;
+            // Output lost to full session channels. A non-zero value here is
+            // the answer to "the MUD ate my text", which used to leave no
+            // trace at all.
+            t.set("dropped_output",
+                sh.read_recover().dropped_output_total() as f64)?;
+            // Absent rather than zeroed when compute is off, so a mudlib can
+            // tell "not running" from "running and idle".
+            if let Some(bridge) = &compute {
+                t.set("compute", super::efuns_compute::snapshot_table(lua, bridge)?)?;
+            }
             Ok(t)
         })?;
         globals.set("server_info", fn_)?;
@@ -1156,20 +1317,31 @@ fn register_observability_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
         let gl = ctx.game_logger.clone();
         let fn_ = lua.create_function(move |_, (perm, msg): (String, String)| {
             check_efun_permission("broadcast_to_perm", &perm_config, &sh, &gl)?;
-            // Collect session IDs and senders first, then release lock, then send
-            let targets: Vec<_> = {
-                let handler = sh.read().unwrap();
-                handler.all_ids().into_iter().filter_map(|sid| {
-                    if handler.has_permission(&sid, &perm) {
-                        handler.get(&sid).map(|s| (sid, s.output_tx.clone()))
-                    } else {
-                        None
+            // Send under the read lock rather than collecting senders first:
+            // `Session::try_send` is what counts drops and emits the player's
+            // truncation marker, and a bare `output_tx` clone skips both.
+            // Sending is a `try_send` either way, so the lock is not held
+            // across anything that can block.
+            let handler = sh.read_recover();
+            let mut count = 0usize;
+            let mut dropped = 0usize;
+            for sid in handler.all_ids() {
+                if !handler.has_permission(&sid, &perm) {
+                    continue;
+                }
+                if let Some(session) = handler.get(&sid) {
+                    count += 1;
+                    if !session.try_send(SessionOutput::Text(msg.clone())) {
+                        dropped += 1;
                     }
-                }).collect()
-            };
-            let count = targets.len();
-            for (_sid, tx) in targets {
-                let _ = tx.try_send(SessionOutput::Text(msg.clone()));
+                }
+            }
+            drop(handler);
+            if dropped > 0 {
+                tracing::warn!(
+                    "broadcast_to_perm('{}') did not reach {} of {} session(s)",
+                    perm, dropped, count
+                );
             }
             Ok(count)
         })?;
@@ -1206,43 +1378,213 @@ fn register_observability_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
 }
 
 
-/// Convert a Lua value to serde_json::Value
+/// How deep a Lua table may nest before conversion refuses it.
+///
+/// Doubles as cycle detection: a self-referential table has no bottom, so it
+/// trips this instead of recursing until the Rust stack is gone. It used to do
+/// exactly that — `local t = {} t.t = t` handed to `save_character_data` took
+/// the process down with no Lua error and nothing in the log.
+const MAX_JSON_DEPTH: usize = 64;
+
+/// How many values one conversion may visit. Bounds a table that is shallow
+/// but enormous, a shared subtree copied once per reference, and a list so
+/// sparse that filling its holes with nulls would allocate wildly.
+const MAX_JSON_NODES: usize = 100_000;
+
+/// What a Lua table can faithfully become in JSON.
+///
+/// JSON has one composite type; Lua has one that is a sequence and a map at
+/// the same time. A table that is genuinely both has no faithful JSON form, so
+/// it is refused rather than silently half-converted — which is what used to
+/// happen, dropping every string key of `{"sword", "shield", gold = 100}` on
+/// its way into the character save.
+enum TableShape {
+    /// No entries at all. Rendered as `{}` — neither JSON nor Lua can tell an
+    /// empty list from an empty map.
+    Empty,
+    /// A list of this length. Holes become `null`, which round-trips back to a
+    /// hole because `json_to_lua` skips nulls.
+    Array(usize),
+    /// Has keys, none of which form an array part.
+    Object,
+}
+
+/// One step of the breadcrumb carried into conversion errors, so a failure
+/// says *which* field is at fault rather than just that one is.
+enum Step {
+    Key(String),
+    Index(usize),
+}
+
+fn render_path(path: &[Step]) -> String {
+    if path.is_empty() {
+        return "the value".to_string();
+    }
+    let mut rendered = String::new();
+    for step in path {
+        match step {
+            Step::Key(k) if rendered.is_empty() => rendered.push_str(k),
+            Step::Key(k) => {
+                rendered.push('.');
+                rendered.push_str(k);
+            }
+            Step::Index(i) => rendered.push_str(&format!("[{i}]")),
+        }
+    }
+    format!("field `{rendered}`")
+}
+
+/// Decide how a table should be rendered, or explain why it cannot be.
+fn classify_table(t: &LuaTable, path: &[Step]) -> LuaResult<TableShape> {
+    let mut indices = 0usize;
+    let mut max_index = 0i64;
+    let mut named: Vec<String> = Vec::new();
+
+    for pair in t.clone().pairs::<LuaValue, LuaValue>() {
+        let (key, _) = pair?;
+        match &key {
+            // On LuaJIT every integral number arrives as `Integer`, so this is
+            // the array-index case as well as the integer-key one.
+            LuaValue::Integer(i) if *i >= 1 => {
+                indices += 1;
+                max_index = max_index.max(*i);
+            }
+            LuaValue::Integer(i) => named.push(i.to_string()),
+            LuaValue::String(s) => named.push(s.to_string_lossy()),
+            other => {
+                return Err(LuaError::RuntimeError(format!(
+                    "cannot convert {} to JSON: it has a key of type '{}', and JSON keys \
+                     can only be strings or integers",
+                    render_path(path),
+                    other.type_name()
+                )))
+            }
+        }
+    }
+
+    match (indices, named.is_empty()) {
+        (0, true) => Ok(TableShape::Empty),
+        (0, false) => Ok(TableShape::Object),
+        (_, true) => Ok(TableShape::Array(max_index as usize)),
+        (_, false) => {
+            named.sort();
+            let shown = named
+                .iter()
+                .take(4)
+                .map(|k| format!("'{k}'"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let more = if named.len() > 4 {
+                format!(" and {} more", named.len() - 4)
+            } else {
+                String::new()
+            };
+            Err(LuaError::RuntimeError(format!(
+                "cannot convert {} to JSON: it has {} list entr{} and also the key(s) \
+                 {}{} — JSON has no type that is both a list and a map, so use one or \
+                 the other",
+                render_path(path),
+                indices,
+                if indices == 1 { "y" } else { "ies" },
+                shown,
+                more
+            )))
+        }
+    }
+}
+
+/// Convert a Lua value to `serde_json::Value`.
+///
+/// Refuses anything JSON cannot hold rather than converting it approximately.
+/// The previous version silently dropped the string keys of a mixed table,
+/// turned NaN and infinity into `0`, turned functions into `null`, discarded
+/// keys that were neither strings nor integers, and died on the Rust stack
+/// when given a cycle — all of it on the `save_character_data` path, where
+/// silence means a player's data is quietly wrong.
+///
+/// Callers are `pcall`-wrapped (`character_d.save`, `gmcp_d`), so raising here
+/// surfaces in the journal instead of corrupting a save.
 pub fn lua_to_json(lua: &Lua, val: &LuaValue) -> LuaResult<JsonValue> {
+    let mut budget = MAX_JSON_NODES;
+    let mut path = Vec::new();
+    lua_to_json_inner(lua, val, 0, &mut budget, &mut path)
+}
+
+fn lua_to_json_inner(
+    lua: &Lua,
+    val: &LuaValue,
+    depth: usize,
+    budget: &mut usize,
+    path: &mut Vec<Step>,
+) -> LuaResult<JsonValue> {
+    if *budget == 0 {
+        return Err(LuaError::RuntimeError(format!(
+            "cannot convert to JSON: more than {MAX_JSON_NODES} values, giving up at {}",
+            render_path(path)
+        )));
+    }
+    *budget -= 1;
+
     match val {
         LuaValue::Nil => Ok(JsonValue::Null),
         LuaValue::Boolean(b) => Ok(JsonValue::Bool(*b)),
         LuaValue::Integer(i) => Ok(JsonValue::Number((*i).into())),
-        LuaValue::Number(n) => {
-            let num = serde_json::Number::from_f64(*n)
-                .unwrap_or_else(|| 0.into());
-            Ok(JsonValue::Number(num))
-        }
+        LuaValue::Number(n) => serde_json::Number::from_f64(*n)
+            .map(JsonValue::Number)
+            .ok_or_else(|| {
+                LuaError::RuntimeError(format!(
+                    "cannot convert {} to JSON: {n} has no JSON representation \
+                     (NaN and infinity do not)",
+                    render_path(path)
+                ))
+            }),
         LuaValue::String(s) => Ok(JsonValue::String(s.to_str()?.to_string())),
         LuaValue::Table(t) => {
-            // Check if it's array-like
-            let len = t.len()? as usize;
-            if len > 0 {
-                let mut arr = Vec::new();
-                for i in 1..=len {
-                    let v: LuaValue = t.get(i)?;
-                    arr.push(lua_to_json(lua, &v)?);
+            if depth >= MAX_JSON_DEPTH {
+                return Err(LuaError::RuntimeError(format!(
+                    "cannot convert to JSON: nesting is deeper than {MAX_JSON_DEPTH} at {} \
+                     — a table that refers to itself will always hit this",
+                    render_path(path)
+                )));
+            }
+
+            match classify_table(t, path)? {
+                TableShape::Empty => Ok(JsonValue::Object(serde_json::Map::new())),
+                TableShape::Array(len) => {
+                    let mut arr = Vec::with_capacity(len.min(*budget));
+                    for i in 1..=len {
+                        path.push(Step::Index(i));
+                        let v: LuaValue = t.get(i)?;
+                        let converted = lua_to_json_inner(lua, &v, depth + 1, budget, path);
+                        path.pop();
+                        arr.push(converted?);
+                    }
+                    Ok(JsonValue::Array(arr))
                 }
-                Ok(JsonValue::Array(arr))
-            } else {
-                let mut map = serde_json::Map::new();
-                for pair in t.clone().pairs::<LuaValue, LuaValue>() {
-                    let (k, v) = pair?;
-                    let key = match &k {
-                        LuaValue::String(s) => s.to_str()?.to_string(),
-                        LuaValue::Integer(i) => i.to_string(),
-                        _ => continue,
-                    };
-                    map.insert(key, lua_to_json(lua, &v)?);
+                TableShape::Object => {
+                    let mut map = serde_json::Map::new();
+                    for pair in t.clone().pairs::<LuaValue, LuaValue>() {
+                        let (k, v) = pair?;
+                        // classify_table already rejected every other key type.
+                        let key = match &k {
+                            LuaValue::String(s) => s.to_str()?.to_string(),
+                            LuaValue::Integer(i) => i.to_string(),
+                            _ => continue,
+                        };
+                        path.push(Step::Key(key.clone()));
+                        let converted = lua_to_json_inner(lua, &v, depth + 1, budget, path);
+                        path.pop();
+                        map.insert(key, converted?);
+                    }
+                    Ok(JsonValue::Object(map))
                 }
-                Ok(JsonValue::Object(map))
             }
         }
-        _ => Ok(JsonValue::Null),
+        other => Err(LuaError::RuntimeError(format!(
+            "cannot convert {} to JSON: a value of type '{}' has no JSON representation",
+            render_path(path),
+            other.type_name()
+        ))),
     }
 }
 
@@ -1277,3 +1619,4 @@ pub fn json_to_lua(lua: &Lua, val: &JsonValue) -> LuaResult<LuaValue> {
         }
     }
 }
+

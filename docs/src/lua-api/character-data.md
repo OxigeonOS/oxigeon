@@ -58,7 +58,42 @@ CHARACTER_D.set(char_id, "quest_flags", flags)
 The interaction between `CHARACTER_D` and the SQLite database is powered by two specialized engine functions (efuns). While `CHARACTER_D` wraps these for convenience, they are available globally if needed for custom implementations.
 
 ### `save_character_data(char_id, data_table) → boolean`
-Serializes a Lua table to JSON and saves it to the character's `data` column in the database. Returns `true` on success, `false` on failure.
+Takes a Lua **table** — not a JSON string — and serializes it to the character's `data` column. Returns `true` on success.
+
+Raises if the table cannot be represented as JSON: one that is both a list and
+a map (`{"a", "b", n = 1}`), a cycle, NaN or infinity, or a function value.
+Those used to be silently mangled — the mixed-table case dropped every string
+key on every save — so they now fail loudly and name the offending field.
+`CHARACTER_D.save` already wraps this in `pcall` and journals the error.
 
 ### `load_character_data(char_id) → table|nil`
 Loads the character's persistent data from the database, deserializing the JSON into a Lua table. Returns `nil` if the character doesn't exist or has no data.
+
+
+## What lives in `stats`
+
+[TRAIT_D](./traits.md) owns the contents of `player.stats`. It holds bases for
+attributes and counters, current values for gauges, and regeneration anchors
+under the reserved key `_at`:
+
+```lua
+player.stats = {
+    strength = 12, wisdom = 14, level = 3,   -- attribute bases
+    hp = 74, mp = 50,                        -- gauge currents
+    _at = { hp = 1754151000 },               -- regeneration anchors
+    -- max_hp, willpower: absent. Derived, and never stored.
+}
+```
+
+> [!WARNING]
+> **`stats[id]` is what is stored, not what is true.** For an attribute under a
+> buff the two differ, and for a derived trait there is nothing stored at all.
+> Read `player:stat(id)`.
+
+Keys beginning with `_` are reserved. Everything else in `stats` is saved
+verbatim — `Mobile:new` used to filter it through a fixed list of nine names,
+which silently dropped any stat that was not on it.
+
+Effects and cooldowns are *not* here. They have their own lifetimes and live in
+the [state cache](./state-cache.md); the rule for deciding which home a piece of
+state gets is on that page.

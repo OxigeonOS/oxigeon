@@ -112,6 +112,40 @@ function M.remove(id)
     return true
 end
 
+--- Cancel every timer whose ID starts with `prefix`.
+---
+--- The cleanup half of the per-player convention: a timer scheduled for one
+--- character is named `player.<char_id>.<what>`, and this is what disposes of
+--- the lot when they log out. `character_d.unload` has called this since it was
+--- written — the function simply did not exist, so the call raised into a pcall
+--- that logged at debug level and every per-player timer leaked.
+--- @param prefix string
+--- @return number  how many were cancelled
+function M.remove_by_prefix(prefix)
+    if type(prefix) ~= "string" or #prefix == 0 then
+        log("warn", "TICKER_D.remove_by_prefix: prefix must be a non-empty string")
+        return 0
+    end
+
+    -- Collect first: removing while iterating `_callbacks` would be modifying
+    -- a table mid-traversal.
+    local doomed = {}
+    for id in pairs(M._callbacks) do
+        if id:sub(1, #prefix) == prefix then
+            doomed[#doomed + 1] = id
+        end
+    end
+
+    local n = 0
+    for _, id in ipairs(doomed) do
+        if M.remove(id) then n = n + 1 end
+    end
+    if n > 0 then
+        log("debug", "TICKER_D: cancelled " .. n .. " timer(s) matching '" .. prefix .. "'")
+    end
+    return n
+end
+
 --- Called by the engine (via on_timer) when a timer fires.
 -- Looks up the registered callback and executes it.
 -- @param id string  The timer ID that fired

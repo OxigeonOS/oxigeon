@@ -1,6 +1,6 @@
 # File & System Access
 
-Oxigeon provides controlled file and time efuns that replace the blocked `io` and `os` modules.
+Oxigeon provides controlled file and time efuns that replace the blocked `io` module. `os` is reduced to its clock functions — `os.time`, `os.date`, `os.clock` and `os.difftime` remain available; everything else is removed. See [Sandboxing & Security](./sandboxing.md).
 
 All file operations are **jailed to the mudlib directory** — you cannot access files outside it.
 

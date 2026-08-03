@@ -92,18 +92,28 @@ function enter_game_session(session_id, account_id, character_id) end
 -- Accounts & Characters — Database operations
 -- ═══════════════════════════════════════════════════════════════════════════════
 
---- Authenticate username/password. Returns account_id or nil.
+--- Verify a username and password. Asynchronous: returns nothing immediately.
+--- Argon2 runs on a worker pool, and the result arrives at the global
+--- `on_auth_result(session_id, "authenticate", account, err)`.
+---@param session_id string
 ---@param username string
 ---@param password string
----@return integer|nil account_id
-function authenticate(username, password) end
+function authenticate(session_id, username, password) end
 
---- Create a new account. Returns account_id or nil + error message.
+--- Create a new account. Asynchronous, like `authenticate`; the result arrives
+--- at `on_auth_result(session_id, "create_account", account, err)`.
+---@param session_id string
 ---@param username string
 ---@param password string
----@return integer|nil account_id
----@return string|nil error
-function create_account(username, password) end
+function create_account(session_id, username, password) end
+
+--- Called by the driver when an asynchronous `authenticate` or
+--- `create_account` finishes. Exactly one of `account` and `err` is set.
+---@param session_id string
+---@param kind "authenticate"|"create_account"
+---@param account AccountInfo|nil
+---@param err string|nil  a message safe to show the player
+function on_auth_result(session_id, kind, account, err) end
 
 --- Get account info by account_id.
 ---@param account_id integer
@@ -142,15 +152,19 @@ function get_characters(account_id) end
 ---@return CharacterInfo|nil
 function get_character(character_id) end
 
---- Save character data (JSON blob) to the database.
+--- Save character data to the database.
+--- Takes a Lua **table**, not a string — the driver serializes it. Raises if
+--- the table cannot be represented as JSON: a table that is both a list and a
+--- map, a cycle, NaN/infinity, or a function value. Callers should pcall.
 ---@param character_id integer
----@param data string  JSON-encoded string
+---@param data table  serialized by the driver
 ---@return boolean success
 function save_character_data(character_id, data) end
 
 --- Load character data from the database.
+--- Returns a Lua **table**, not a string.
 ---@param character_id integer
----@return string|nil  JSON-encoded string, or nil if none saved
+---@return table|nil  the saved data, or nil if none saved
 function load_character_data(character_id) end
 
 -- ═══════════════════════════════════════════════════════════════════════════════
@@ -178,10 +192,27 @@ function server_info() end
 ---@class ServerInfo
 ---@field name string
 ---@field version string
----@field started_at string
----@field uptime_seconds number
----@field connected_sessions integer
----@field lua_memory_kb number
+---@field started_at string           ISO 8601, captured at startup
+---@field uptime_secs number          NOT `uptime_seconds` — that name was in
+---                                   this stub for a while and `mudstatus.lua`
+---                                   trusted it, so it printed "0s" uptime for
+---                                   as long as the typo lived here.
+---@field dropped_output number       output lost to full session channels
+---@field compute ComputeInfo|nil     absent when [compute] is disabled
+
+---@class ComputeInfo
+---@field workers integer
+---@field queue_depth integer
+---@field instruction_limit integer
+---@field in_flight integer
+---@field running integer
+---@field submitted integer
+---@field completed integer
+---@field failed integer
+---@field timed_out integer
+---@field refused integer
+---@field cancelled integer
+---@field wedged integer              non-zero means a worker is gone for good
 
 --- Write a structured journal entry.
 ---@param level string    "error"|"warn"|"info"|"debug"
@@ -295,18 +326,179 @@ function get_all_object_state(object_id) end
 function clear_object_state(object_id) end
 
 -- ═══════════════════════════════════════════════════════════════════════════════
--- Persistent Store — Key/value persistence across server restarts
+-- Reload-Surviving Store — Key/value state that outlives a hot reload
+--
+-- NOT persisted to disk. This is a table living in the Lua VM, so it survives
+-- `reload()` (which is its job — daemons use it to keep state across a reload)
+-- but is gone on restart. For real persistence use save_character_data for
+-- per-character data.
 -- ═══════════════════════════════════════════════════════════════════════════════
 
---- Set a persistent key/value pair.
+--- Set a key/value pair that survives hot reload. Lost on restart.
 ---@param key string
 ---@param value any
 function set_persistent(key, value) end
 
---- Get a persistent value by key.
+--- Get a value set by set_persistent. Lost on restart.
 ---@param key string
 ---@return any
 function get_persistent(key) end
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- Document Store — persisting anything, with no Rust
+--
+-- One generic table serves every collection. Reads return a DocumentRecord
+-- envelope, so it is rec.data.field, not rec.field.
+-- See docs/src/lua-api/document-store.md.
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+---@class DocumentRecord
+---@field collection string
+---@field id string
+---@field data table        what you stored
+---@field created_at string RFC 3339, set on first write
+---@field updated_at string RFC 3339, moves on every write
+
+---@class DocumentQueryOpts
+---@field limit integer?
+---@field offset integer?
+---@field sort string?   "id"|"created_at"|"updated_at" or a dotted JSON path
+---@field order string?  "asc"|"desc"
+
+--- Insert or replace a document. `created_at` survives an overwrite.
+---@param collection string  lowercase letters, digits, underscores
+---@param id string
+---@param doc table
+---@return string id
+function db_put(collection, id, doc) end
+
+--- Insert under a generated id.
+---@param collection string
+---@param doc table
+---@return string id
+function db_insert(collection, doc) end
+
+---@param collection string
+---@param id string
+---@return DocumentRecord|nil
+function db_get(collection, id) end
+
+---@param collection string
+---@param id string
+---@return boolean
+function db_exists(collection, id) end
+
+---@param collection string
+---@param id string
+---@return boolean removed
+function db_delete(collection, id) end
+
+--- Query a collection. Always returns an array, never nil.
+--- A query with no `limit` that matches more than [documents] max_results
+--- RAISES rather than silently truncating.
+---@param collection string
+---@param filter table?  { field = value } or { field = { [op] = value } }
+---@param opts DocumentQueryOpts?
+---@return DocumentRecord[]
+function db_find(collection, filter, opts) end
+
+---@param collection string
+---@param filter table?
+---@return integer
+function db_count(collection, filter) end
+
+--- Recursive merge (RFC 7396). Objects merge key by key; arrays are replaced
+--- wholesale. Atomic.
+---@param collection string
+---@param id string
+---@param patch table
+---@return boolean existed
+function db_update(collection, id, patch) end
+
+--- Remove one field, including a nested one ("target.area").
+---@param collection string
+---@param id string
+---@param field string
+---@return boolean
+function db_unset(collection, id, field) end
+
+--- Atomic increment. Creates the document if missing, so a counter needs no
+--- bootstrap. Raises if the field holds something that is not a number.
+---@param collection string
+---@param id string
+---@param field string
+---@param delta number?  defaults to 1
+---@return number new_value
+function db_incr(collection, id, field, delta) end
+
+---@return { name: string, count: integer }[]
+function db_collections() end
+
+--- Delete a whole collection. Gated by efun.db.clear.
+---@param collection string
+---@return integer deleted
+function db_clear(collection) end
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- Compute — running long Lua on a worker thread
+--
+-- Worker VMs have NO efuns. A job receives arguments and returns a value; it
+-- cannot see sessions, the world, the database or object state.
+-- See docs/src/lua-api/compute.md.
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+---@class ComputeOpts
+---@field tag any?           echoed back untouched in meta.tag
+---@field deadline_ms integer?  overrides [compute] default_deadline_ms
+
+---@class ComputeMeta
+---@field kind "ok"|"error"|"load_error"|"timeout"|"cancelled"|"budget"|"refused"
+---@field tag any
+---@field module string
+---@field fn string
+---@field queued_ms number
+---@field run_ms number
+
+--- Queue `module.fn_name(args)` on a compute worker. Returns immediately.
+--- If an id comes back, exactly one on_compute_result fires for it; if nil
+--- comes back, none does.
+---@param module string     under a [compute] root, e.g. "compute.pathfind"
+---@param fn_name string
+---@param args any          copied, not shared; functions are refused
+---@param opts ComputeOpts?
+---@return string|nil id
+---@return string|nil err
+function compute(module, fn_name, args, opts) end
+
+--- Ask a job to stop. A running job only stops if [compute] instruction_limit
+--- is set, or if it polls compute_cancelled() itself.
+---@param id string
+---@return boolean was_live
+function compute_cancel(id) end
+
+--- Called when a compute job finishes, whatever the outcome.
+---@param id string
+---@param ok boolean
+---@param value any
+---@param err string|nil
+---@param meta ComputeMeta
+function on_compute_result(id, ok, value, err, meta) end
+
+-- ─── Available only inside a compute job ─────────────────────────────────────
+
+--- Buffered and written to the journal when the job finishes. The only way to
+--- see inside a job — a debug adapter cannot attach to a worker VM.
+---@param level string
+---@param message string
+function compute_log(level, message) end
+
+--- Milliseconds left before the deadline, so a job can return a partial answer.
+---@return number
+function compute_deadline_ms() end
+
+--- Whether compute_cancel() has been called for this job.
+---@return boolean
+function compute_cancelled() end
 
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- RBAC — Role-Based Access Control
@@ -453,6 +645,12 @@ function trace_clear() end
 --- Global daemon registry. All daemons attach themselves here on load.
 ---@type table<string, table>
 DAEMON = {}
+
+--- Called once by the driver before the Lua VM stops, on a clean shutdown.
+--- Runs with the engine's own identity (gated efuns are permitted), and the
+--- driver waits for it to return — bounded by `game.shutdown_timeout_seconds`,
+--- after which the server exits regardless. Flush anything held in memory here.
+function on_shutdown() end
 
 --- Get the Player object for a session.
 --- Wraps the session → character → Player lookup.

@@ -2,6 +2,7 @@
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use crate::core::lock::MutexExt;
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -26,7 +27,7 @@ pub fn detach(st: &SharedDebugState) {
     st.clients.store(0, Ordering::Relaxed);
     st.pause_req.store(false, Ordering::Relaxed);
     st.clear_breakpoints();
-    *st.evt_tx.lock().unwrap() = None;
+    *st.evt_tx.lock_recover() = None;
     // If the VM is parked in the pause loop it must not stay there.
     let _ = st.send_vm(VmRequest::Detach);
 }
@@ -36,7 +37,7 @@ pub async fn run(stream: TcpStream, st: SharedDebugState) -> std::io::Result<()>
     let mut framed = Framed::new(stream, DapCodec::default());
 
     let (evt_tx, mut evt_rx) = tokio::sync::mpsc::unbounded_channel::<DebugEventMsg>();
-    *st.evt_tx.lock().unwrap() = Some(evt_tx);
+    *st.evt_tx.lock_recover() = Some(evt_tx);
 
     let mut seq: i64 = 0;
     let mut next_seq = move || {

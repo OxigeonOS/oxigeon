@@ -178,6 +178,24 @@ function Player:from_save(char_id, char_info, saved)
         end
     end
 
+    -- Fill in any trait this character has never had, drop anything stored for
+    -- a trait that is derived now, and clamp gauges into their current range.
+    -- Also brings their effects back into memory.
+    if DAEMON and DAEMON.trait then
+        local ok, err = pcall(DAEMON.trait.attach, obj)
+        if not ok then
+            log("error", "PLAYER: could not attach traits for char "
+                .. tostring(char_id) .. ": " .. tostring(err))
+        end
+    end
+    if DAEMON and DAEMON.effect then
+        local ok, err = pcall(DAEMON.effect.attach, obj)
+        if not ok then
+            log("error", "PLAYER: could not attach effects for char "
+                .. tostring(char_id) .. ": " .. tostring(err))
+        end
+    end
+
     return obj
 end
 
@@ -215,18 +233,41 @@ end
 -- ─── XP & Leveling ──────────────────────────────────────────────────────────
 
 --- Award XP to the player. Emits "player.xp_gained" event.
--- @param amount number  XP to award
-function Player:award_xp(amount)
-    if amount <= 0 then return end
+---
+--- The amount runs through the `xp_gained` pipeline first, so "20% more
+--- experience" is an ordinary effect and needs nothing here.
+--- @param amount number  XP to award, before any effect scales it
+--- @param opts table|nil  { source = "kill" }
+--- @return number  the XP actually awarded
+function Player:award_xp(amount, opts)
+    if amount <= 0 then return 0 end
+    local base = amount
+
+    if DAEMON and DAEMON.effect and DAEMON.effect.run then
+        local ev = { amount = amount, scale = 0, min = 0 }
+        if opts then
+            for k, v in pairs(opts) do if ev[k] == nil then ev[k] = v end end
+        end
+        local ok, result = pcall(DAEMON.effect.run, self, "xp_gained", ev)
+        if ok and not result.cancelled and type(result.amount) == "number" then
+            amount = math.max(0, math.floor(result.amount))
+        elseif ok and result.cancelled then
+            amount = 0
+        end
+    end
+
+    if amount <= 0 then return 0 end
     self.xp = (self.xp or 0) + amount
 
     if DAEMON and DAEMON.event then
         DAEMON.event.emit("player.xp_gained", {
-            char_id = self.char_id,
-            amount  = amount,
-            total   = self.xp,
+            char_id     = self.char_id,
+            amount      = amount,
+            base_amount = base,
+            total       = self.xp,
         })
     end
+    return amount
 end
 
 --- Award gold to the player.
@@ -378,7 +419,15 @@ end
 function Player:send_lines(...)
     if not self.session_id then return end
     local width = self:get_width()
-    for _, text in ipairs({...}) do
+    local args = { ... }
+
+    -- Both spellings are already in use across the mudlib —
+    -- `send_lines("a", "b")` and `send_lines({ "a", "b" })` — and the second
+    -- one printed `table: 0x...` to the player. `death_d` has been announcing
+    -- deaths that way since it was written. Accept either.
+    local lines = (#args == 1 and type(args[1]) == "table") and args[1] or args
+
+    for _, text in ipairs(lines) do
         self:_process_output(strings.wrap(text, width))
     end
 end

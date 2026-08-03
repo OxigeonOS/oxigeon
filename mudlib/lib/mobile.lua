@@ -29,18 +29,24 @@ function Mobile:new(data)
     local obj = Object.new(self, data)
 
     -- ─── Stats ───────────────────────────────────────────────────────────────
+    -- Defaults first, then everything the caller actually gave us.
+    --
+    -- This used to be a fixed list of nine keys, which meant any other stat was
+    -- silently dropped here on load even though `to_save` had faithfully
+    -- written it — a trait named `wisdom` would vanish on every login. TRAIT_D
+    -- owns the set of stats now, so the whitelist has to go.
     local stats = data.stats or {}
     obj.stats = {
-        hp         = stats.hp or 10,
-        max_hp     = stats.max_hp or stats.hp or 10,
-        mp         = stats.mp or 0,
-        max_mp     = stats.max_mp or stats.mp or 0,
-        strength   = stats.strength or 5,
-        dexterity  = stats.dexterity or 5,
-        intelligence = stats.intelligence or 5,
-        constitution = stats.constitution or 5,
-        level      = stats.level or 1,
+        hp = 10, max_hp = 10, mp = 0, max_mp = 0,
+        strength = 5, dexterity = 5, intelligence = 5, constitution = 5,
+        level = 1,
     }
+    for key, value in pairs(stats) do
+        obj.stats[key] = value
+    end
+    -- The two that used to derive from each other when only one was given.
+    if stats.hp and not stats.max_hp then obj.stats.max_hp = stats.hp end
+    if stats.mp and not stats.max_mp then obj.stats.max_mp = stats.mp end
 
     -- ─── Identity ────────────────────────────────────────────────────────────
     obj.faction    = data.faction             -- For ally/enemy detection
@@ -97,43 +103,102 @@ end
 
 -- ─── Stats helpers ───────────────────────────────────────────────────────────
 
+--- The effective value of a stat, after traits and effects have their say.
+---
+--- `self.stats[id]` is what is *stored*; this is what is *true*. A ring of
+--- strength does not change the stored number — it is an effect, and only this
+--- accessor knows about it. Falls back to the raw field when TRAIT_D is not
+--- loaded, so a bare Mobile still works.
+--- @param id string
+--- @return number
+function Mobile:stat(id)
+    if DAEMON and DAEMON.trait and DAEMON.trait.get_def and DAEMON.trait.get_def(id) then
+        return DAEMON.trait.value(self, id)
+    end
+    local raw = self.stats and self.stats[id]
+    return type(raw) == "number" and raw or 0
+end
+
 --- Check if the mobile is alive.
 -- @return boolean
 function Mobile:is_alive()
-    return self.stats.hp > 0
+    return self:stat("hp") > 0
 end
 
---- Apply damage to the mobile. Clamps HP to 0.
--- If HP reaches 0, fires the on_death hook (if set).
--- @param amount number  Damage to apply
--- @return number        Remaining HP
-function Mobile:take_damage(amount)
-    local was_alive = self.stats.hp > 0
-    self.stats.hp = math.max(0, self.stats.hp - amount)
+--- Run a number past this entity's effects, if there are any.
+local function through_effects(entity, hook, amount, opts)
+    if not (DAEMON and DAEMON.effect and DAEMON.effect.run) then
+        return amount, nil
+    end
+    local ev = { amount = amount, scale = 0, min = 0 }
+    if opts then
+        for k, v in pairs(opts) do
+            if ev[k] == nil then ev[k] = v end
+        end
+    end
+    local ok, result = pcall(DAEMON.effect.run, entity, hook, ev)
+    if not ok then
+        log("error", "MOBILE: the '" .. hook .. "' pipeline failed: " .. tostring(result))
+        return amount, nil
+    end
+    if result.cancelled then return 0, result.reason end
+    return math.max(0, math.floor(result.amount or amount)), nil
+end
+
+--- Apply damage, after every effect on this entity has had its say.
+---
+--- This is where "take 15% less damage" and "negate 5 per hit" actually happen.
+--- The order they apply in is decided by their phases, not by which landed
+--- first — see mudlib/lib/effects.lua.
+--- @param amount number  Damage before mitigation
+--- @param opts table|nil { damage_type = "fire", attacker = <entity> }
+--- @return number remaining HP
+--- @return number the damage actually dealt
+function Mobile:take_damage(amount, opts)
+    local was_alive = self:stat("hp") > 0
+    local dealt, reason = through_effects(self, "damage_taken", amount, opts)
+
+    if reason and self.send then
+        pcall(self.send, self, reason .. "\r\n")
+    end
+
+    if DAEMON and DAEMON.trait and DAEMON.trait.get_def and DAEMON.trait.get_def("hp") then
+        DAEMON.trait.adjust(self, "hp", -dealt)
+    else
+        self.stats.hp = math.max(0, self.stats.hp - dealt)
+    end
 
     -- Fire death hook when transitioning from alive to dead
-    if was_alive and self.stats.hp == 0 and self.on_death then
+    if was_alive and self:stat("hp") <= 0 and self.on_death then
         local ok, err = pcall(self.on_death, self)
         if not ok then
             log("error", "MOBILE: on_death hook failed: " .. tostring(err))
         end
     end
 
-    return self.stats.hp
+    return self:stat("hp"), dealt
 end
 
---- Heal the mobile. Clamps to max_hp.
--- @param amount number  HP to restore
--- @return number        New HP
-function Mobile:heal(amount)
-    self.stats.hp = math.min(self.stats.max_hp, self.stats.hp + amount)
-    return self.stats.hp
+--- Restore health, after every effect has had its say. Clamps to the maximum.
+--- @param amount number
+--- @param opts table|nil { source = "effect:regeneration" }
+--- @return number new HP
+--- @return number the healing actually applied
+function Mobile:heal(amount, opts)
+    local healed = through_effects(self, "heal_received", amount, opts)
+
+    if DAEMON and DAEMON.trait and DAEMON.trait.get_def and DAEMON.trait.get_def("hp") then
+        DAEMON.trait.adjust(self, "hp", healed)
+    else
+        self.stats.hp = math.min(self.stats.max_hp, self.stats.hp + healed)
+    end
+    return self:stat("hp"), healed
 end
 
 --- Get the mob's effective level.
 -- @return number
 function Mobile:get_level()
-    return self.stats.level
+    return self:stat("level")
 end
 
 -- ─── Echo helpers ────────────────────────────────────────────────────────────

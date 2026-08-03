@@ -1,7 +1,9 @@
-[test]
-# Integration tests with argon2 hashing run sequentially to avoid
-# connection pool exhaustion in debug builds (argon2 is slow without opt).
-threads = 1
+# There used to be a `[test] threads = 1` here, meaning to run integration
+# tests sequentially. Cargo has no `[test]` table — the key was silently
+# ignored, so the suite has always run in parallel and passes that way. It is
+# gone rather than "fixed" because serialising 300+ tests to protect a handful
+# of timing assertions is the wrong trade; if one of those turns flaky, fix it
+# in the test. To serialise ad hoc: `cargo test -- --test-threads=1`.
 
 [build]
 # Suppress LNK4098: benign MSVC CRT conflict warning from LuaJIT's vendored C build.

@@ -99,12 +99,40 @@ Game-level concerns — name, account policy, session behavior, Lua limits.
 |-----|------|-------------|
 | `name` | string | Game name (shown in login banner) |
 | `mudlib_path` | string | Path to mudlib directory (relative to working dir) |
+| `game_path` | string | Path to the game content layer. Default: `./game` |
+| `command_paths` | string[] | Subdirectories searched for commands. Default: `["cmds"]` |
+| `start_room` | string | Room ID new characters spawn in |
+| `area_reset_seconds` | integer | How often areas reset. 0 disables. Default: 900 |
+| `autosave_seconds` | integer | How often loaded player data is saved. 0 disables. Default: 300 |
+| `shutdown_timeout_seconds` | integer | How long a clean shutdown waits for `on_shutdown`. Default: 30 |
+| `cache_flush_seconds` | integer | How often dirty state-cache scopes are considered for writing. 0 disables. Default: 5 |
+| `cache_flush_budget` | integer | Scopes one flush tick may write before deferring the rest. Default: 32 |
+| `cache_evict_seconds` | integer | Idle eviction for unowned cache scopes. 0 disables. Default: 900 |
+| `cooldown_durable_seconds` | integer | Cooldowns at least this long are stored durably. Default: 60 |
+| `effect_sweep_seconds` | integer | How often expired effects are swept. 0 disables. Default: 5 |
+| `effect_heartbeat_seconds` | integer | Drives effects that tick. 0 disables. Default: 3 |
+| `combat_round_seconds` | integer | Seconds per combat round. 0 disables. Default: 3 |
 
 ```toml
 [game]
 name = "My MUD"
 mudlib_path = "./mudlib"
+autosave_seconds = 300
+shutdown_timeout_seconds = 30
 ```
+
+`autosave_seconds` bounds how much progress a *crash* can cost — a kill or a
+power cut reaches no Lua at all. A clean Ctrl+C loses nothing, because the
+driver dispatches [`on_shutdown`](./lua-api/events.md) and waits for the mudlib
+to flush. `shutdown_timeout_seconds` bounds that wait: when it expires the
+server logs an error and exits anyway, so a mudlib that wedges in `on_shutdown`
+cannot hang the process.
+
+The seven keys below it tune the periodic subsystems, and every one of them
+accepts 0 to turn the corresponding ticker off entirely — which is what the test
+harness does, so a timer never fires in the background of an unrelated test. See
+[State Cache](./lua-api/state-cache.md), [Effects](./lua-api/effects.md) and
+[Combat](./lua-api/combat.md).
 
 ### `[sessions]`
 
@@ -134,9 +162,17 @@ mudlib_path = "./mudlib"
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `lua_memory_mb` | integer | Max Lua VM memory in megabytes |
-| `lua_instruction_limit` | integer | Max Lua instructions per call (prevents infinite loops) |
+| `lua_memory_mb` | integer | Max Lua VM memory in megabytes. Enforced; `0` = no ceiling |
+| `lua_instruction_limit` | integer | Max Lua instructions per dispatch. `0` disables it. **Enforcing this disables the LuaJIT compiler** — see below |
 | `input_buffer_bytes` | integer | Max bytes in a single input line |
+
+> [!IMPORTANT]
+> `lua_instruction_limit` and the LuaJIT compiler are mutually exclusive:
+> LuaJIT dispatches no debug hooks from inside a compiled trace, so a runaway
+> loop is invisible to any hook while the JIT is on. Measured through the real
+> mudlib, enforcing costs 2-7% on commands and the compiler is worth ~1.00x on
+> them, so it ships **on**. See
+> [Performance & the JIT Trade-off](./lua-api/performance.md).
 
 ---
 

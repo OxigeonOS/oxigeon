@@ -28,7 +28,7 @@ function M.execute(session_id, args_str, args)
     if not player then return end
 
     local info = server_info() or {}
-    local uptime_str = format_uptime(info.uptime_seconds)
+    local uptime_str = format_uptime(info.uptime_secs)
 
     local playing = 0
     local total_sessions = 0

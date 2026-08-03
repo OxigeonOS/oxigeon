@@ -47,3 +47,15 @@ anyhow = "1"
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
 tempfile = "3"
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+# Measures LuaJIT on vs off through the real mudlib. See docs/src/lua-api/performance.md.
+[[bench]]
+name = "dispatch"
+harness = false
+
+# The write-cost numbers behind daemons/cache_d.lua, and what write-behind
+# actually buys. See benches/writes.rs.
+[[bench]]
+name = "writes"
+harness = false

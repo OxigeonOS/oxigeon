@@ -14,6 +14,7 @@ use std::rc::Rc;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
+use crate::core::lock::MutexExt;
 
 use mlua::prelude::*;
 use mlua::{Debug as LuaDebug, DebugEvent, VmState};
@@ -67,6 +68,14 @@ pub struct HookLocal {
     step: StepState,
     /// The request channel, claimed from `DebugState` at startup.
     vm_rx: Option<std::sync::mpsc::Receiver<VmRequest>>,
+
+    /// Instructions charged against the budget in the current dispatch,
+    /// accumulated in whole `DebugState::instruction_step` units.
+    ///
+    /// Reset per dispatch by [`begin_budget`] and *never* mid-dispatch. Zeroing
+    /// it when the limit trips would hand `while true do pcall(f) end` a fresh
+    /// budget on every iteration, which is no limit at all.
+    instr_used: u64,
 }
 
 /// What a pending step is waiting for. Depths are measured from the real VM
@@ -101,6 +110,7 @@ impl HookLocal {
             last_src: None,
             step: StepState::None,
             vm_rx: None,
+            instr_used: 0,
         }
     }
 
@@ -127,7 +137,7 @@ impl HookLocal {
         self.gen_seen = gen;
         self.mode = st.trace_config().mode;
         self.wants = st.want.load(Ordering::Relaxed);
-        self.bps = st.breakpoints.lock().unwrap().by_file.clone();
+        self.bps = st.breakpoints.lock_recover().by_file.clone();
         // Editing breakpoints restarts hit counts; a stale count would make a
         // `hitCondition` fire at a surprising moment.
         self.hits.clear();
@@ -366,6 +376,51 @@ pub fn on_event(
         return Ok(VmState::Continue);
     }
 
+    let event = dbg.event();
+
+    // ── the instruction budget ───────────────────────────────────────────
+    // Checked before everything else and independent of whether anyone is
+    // tracing or debugging this dispatch. The whole game runs on one thread
+    // with no preemption, so this error is the only thing standing between
+    // `while true do end` in a room file and a server that needs SIGKILL.
+    //
+    // A debug client being attached suspends it: stepping through a breakpoint
+    // is meant to take as long as it takes, and killing the dispatch out from
+    // under the editor would look like a crash.
+    if wants & want::BUDGET != 0 && st.clients.load(Ordering::Relaxed) == 0 {
+        if let Ok(mut hl) = hl.try_borrow_mut() {
+            if event == DebugEvent::Count {
+                hl.instr_used = hl.instr_used.saturating_add(st.instruction_step as u64);
+            }
+            if hl.instr_used > st.instruction_limit {
+                // Raise on any delivered event once the budget is gone, not
+                // only the count that spent it — while tracing is on, a line
+                // event may come first.
+                //
+                // KNOWN GAP. `pcall` catches this error, and Lua 5.1 has no
+                // uncatchable one, so
+                //
+                //     while true do pcall(function() while true do end end) end
+                //
+                // survives: every raise lands inside the inner loop, the
+                // counter restarts there, and the next count event is a full
+                // step later — inside the inner loop again. The position is
+                // fixed rather than random, so the outer loop is never reached.
+                // Widening the mask does not help; see `HookShape::for_state`.
+                // Deliberately written code can still hang the game thread.
+                // `docs/src/lua-api/sandboxing.md` says so.
+                return Err(LuaError::RuntimeError(format!(
+                    "instruction limit exceeded ({} instructions in one dispatch)",
+                    st.instruction_limit
+                )));
+            }
+        }
+    }
+    // Count events carry no source position, so nothing below applies to them.
+    if event == DebugEvent::Count {
+        return Ok(VmState::Continue);
+    }
+
     // Tracing is scoped to opted-in sessions; debugging deliberately is not.
     // A breakpoint that only fired for sessions you had separately opted in
     // would look exactly like a broken debugger.
@@ -381,7 +436,6 @@ pub fn on_event(
     };
     hl.refresh(st);
 
-    let event = dbg.event();
     let kind = match event {
         DebugEvent::Call => {
             hl.calls = hl.calls.saturating_add(1);
@@ -449,6 +503,18 @@ pub fn on_event(
     trace::push_record(TraceRecord { kind, depth, src, line, name, micros });
 
     Ok(VmState::Continue)
+}
+
+/// Hand the next dispatch a full instruction budget.
+///
+/// Called by the engine before *every* command, so the limit is per dispatch
+/// rather than per process. Separate from [`begin_dispatch`], which only wraps
+/// player input: a timer tick or a GMCP message needs the budget just as much,
+/// but has no timing record to reset.
+pub fn begin_budget(hl: &Rc<RefCell<HookLocal>>) {
+    if let Ok(mut hl) = hl.try_borrow_mut() {
+        hl.instr_used = 0;
+    }
 }
 
 /// Start timing an input dispatch.

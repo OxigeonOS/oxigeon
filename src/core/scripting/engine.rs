@@ -3,9 +3,12 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use tokio::sync::mpsc;
 use mlua::prelude::*;
+use crate::core::lock::RwLockExt;
 
 use crate::error::Result;
-use super::efuns::{EfunContext, set_current_session, get_current_session};
+use super::efuns::{
+    current_actor, enter_system_dispatch as set_system_identity, set_current_session, EfunContext,
+};
 use super::debugger::{self, paths};
 
 /// Commands sent from the async driver to the Lua thread
@@ -22,12 +25,42 @@ pub enum LuaCommand {
     Reload { module_name: String },
     /// A scheduled timer has fired
     TimerFired { id: String },
+    /// An off-thread compute job finished. See [`crate::core::compute`].
+    ///
+    /// Exactly one of these is delivered for every id `compute` handed out,
+    /// whatever the outcome — success, failure, timeout, cancel, or a queue
+    /// that was full — so the mudlib has one place where a job ends.
+    ComputeResult {
+        id: u64,
+        /// `"ok"`, `"error"`, `"load_error"`, `"timeout"`, `"cancelled"`,
+        /// `"budget"` or `"refused"`.
+        kind: &'static str,
+        value: crate::core::compute::LuaData,
+        error: Option<String>,
+        /// Whatever the caller attached at submit time, echoed back.
+        tag: crate::core::compute::LuaData,
+        module: String,
+        func: String,
+        queued_ms: f64,
+        run_ms: f64,
+        logs: Vec<(String, String)>,
+    },
+    /// An off-thread password hash finished. See [`crate::core::auth`].
+    AuthResult {
+        session_id: String,
+        /// `"authenticate"` or `"create_account"`.
+        kind: &'static str,
+        /// The account table on success.
+        account: Option<serde_json::Value>,
+        /// A player-facing message on failure. Exactly one of these is `Some`.
+        error: Option<String>,
+    },
     /// Wake the Lua thread so it re-evaluates the debug hook.
     ///
     /// The thread otherwise parks in `blocking_recv` and would not notice a
     /// debug client attaching or detaching until some other event arrived.
     DebugSync,
-    /// Shut down the Lua VM
+    /// Dispatch `on_shutdown` and then shut down the Lua VM.
     Shutdown,
 }
 
@@ -37,6 +70,13 @@ pub struct ScriptEngine {
     pub cmd_tx: mpsc::UnboundedSender<LuaCommand>,
     /// Handle to the Lua thread
     thread_handle: Option<JoinHandle<()>>,
+    /// Signalled by the Lua thread once its event loop has ended — that is,
+    /// after `on_shutdown` has returned.
+    ///
+    /// A `JoinHandle` cannot be joined with a deadline, and a mudlib that
+    /// wedges in `on_shutdown` must not hang the process forever. Waiting on
+    /// this instead makes the wait bounded. See [`ScriptEngine::shutdown_within`].
+    finished: std::sync::mpsc::Receiver<()>,
 }
 
 impl ScriptEngine {
@@ -55,6 +95,10 @@ impl ScriptEngine {
         let game_logger = ctx.game_logger.clone();
         let session_handler_for_log = ctx.session_handler.clone();
         let debug_state = ctx.debug_state.clone();
+
+        // Sent once the event loop below has ended, so a caller can wait for
+        // the mudlib's `on_shutdown` to finish without joining unconditionally.
+        let (finished_tx, finished) = std::sync::mpsc::channel::<()>();
 
         let thread_handle = std::thread::spawn(move || {
             // Create LuaJIT VM. The `debug` stdlib is only loaded when the debug
@@ -84,9 +128,58 @@ impl ScriptEngine {
                 Lua::new()
             };
 
+            // Memory ceiling, before anything can allocate against it.
+            //
+            // mlua returns `MemoryControlNotAvailable` on builds where the
+            // allocator is not under its control, which is why this reports
+            // rather than assumes. This one enforces it: an allocation past the
+            // ceiling raises a catchable Lua error and the VM stays usable
+            // afterwards, so one greedy command cannot take the game down.
+            let mem_limit_mb = ctx.server_config.limits.lua_memory_mb;
+            if mem_limit_mb > 0 {
+                match lua.set_memory_limit(mem_limit_mb * 1024 * 1024) {
+                    Ok(_) => tracing::info!("Lua memory limit: {} MB", mem_limit_mb),
+                    Err(e) => tracing::warn!(
+                        "limits.lua_memory_mb is not enforceable on this build: {}",
+                        e
+                    ),
+                }
+            }
+
             // Register all efuns
             if let Err(e) = super::efuns::register_all(&lua, &ctx) {
                 tracing::error!("Failed to register efuns: {}", e);
+                return;
+            }
+
+            // An instruction budget only works in the interpreter, so arming
+            // one means giving up the JIT. See `disable_jit_for_budget`.
+            //
+            // `OXIGEON_JIT=off` turns the compiler off *without* arming a
+            // budget. That combination exists only for `benches/dispatch.rs`:
+            // the config key alone cannot separate "lost the JIT" from "gained
+            // a hook", because setting it does both, and a benchmark that
+            // moves two variables at once measures neither. It is read once,
+            // at startup, and there is deliberately no Lua-side equivalent —
+            // `apply_sandbox` removes the `jit` table entirely.
+            let jit_off_requested = std::env::var("OXIGEON_JIT").as_deref() == Ok("off");
+            if (debug_state.instruction_limit > 0 || jit_off_requested)
+                && !disable_jit_for_budget(&lua, jit_off_requested)
+            {
+                tracing::error!(
+                    "could not disable the LuaJIT compiler — limits.lua_instruction_limit \
+                     cannot be enforced and a runaway loop would wedge the game thread"
+                );
+                return;
+            }
+
+            // Close the sandbox. This runs after `register_all` (so the jailed
+            // efuns are already in place as the replacement for what it strips)
+            // and before any mudlib code loads. Refusing to serve is the right
+            // outcome if it fails — the alternative is a game that silently
+            // hands `io.popen` to anyone who can write a room file.
+            if let Err(e) = super::sandbox::apply_sandbox(&lua) {
+                tracing::error!("Failed to apply the Lua sandbox: {}", e);
                 return;
             }
 
@@ -111,6 +204,11 @@ impl ScriptEngine {
                 tracing::error!("Failed to set package.path: {}", e);
                 return;
             }
+
+            // Loading the two layers is engine-internal: no player exists yet,
+            // and an init file that calls a gated efun (registering a daemon's
+            // storage, say) would otherwise be refused with nobody to see it.
+            let startup_identity = set_system_identity();
 
             // Load the mudlib entry point
             let init_path = mudlib_path.join("init.lua");
@@ -152,6 +250,10 @@ impl ScriptEngine {
                 }
             }
 
+            // Startup is over; from here every dispatch declares its own
+            // identity, and anything that does not have one has none.
+            drop(startup_identity);
+
             // Hook state for tracing / debugging. Lives outside the hook closure
             // (which is `Fn`, not `FnMut`) so counters and the intern table
             // survive a disarm/re-arm cycle.
@@ -172,6 +274,11 @@ impl ScriptEngine {
                         // only place `set_hook` may be called — never from inside
                         // the hook itself.
                         debugger::sync_hook(&lua, &debug_state, &mut installed_hook, &hook_local);
+                        // Every dispatch starts with a full instruction budget.
+                        // Loading the mudlib above deliberately runs unbudgeted:
+                        // it is trusted startup code, and the whole game easily
+                        // costs more instructions than any one command may.
+                        debugger::hook::begin_budget(&hook_local);
                         match cmd {
                             LuaCommand::OnConnect { session_id } => {
                                 set_current_session(Some(session_id.clone()));
@@ -208,14 +315,63 @@ impl ScriptEngine {
                                 set_current_session(None);
                             }
                             LuaCommand::Reload { module_name } => {
+                                // A reload runs a whole module's top level. It
+                                // is engine-internal by the time it gets here —
+                                // whichever admin asked for it is long out of
+                                // scope — so it acts as the engine.
+                                let _system = set_system_identity();
                                 hot_reload(&lua, &module_name, &mudlib_path, &game_path);
                             }
                             LuaCommand::TimerFired { id } => {
+                                // No player is behind a tick. Without this the
+                                // dispatch has no identity at all and every
+                                // gated efun a daemon calls is denied — see
+                                // `efuns::enter_system_dispatch`.
+                                let _system = set_system_identity();
                                 dispatch_event(&lua, "on_timer", &[id], &game_logger, &session_handler_for_log);
+                            }
+                            LuaCommand::ComputeResult {
+                                id, kind, value, error, tag, module, func,
+                                queued_ms, run_ms, logs,
+                            } => {
+                                // No player is behind a compute result, the
+                                // same as a timer tick — so it dispatches with
+                                // the engine's own identity rather than none.
+                                let _system = set_system_identity();
+                                dispatch_compute_result(
+                                    &lua, id, kind, &value, error.as_deref(), &tag,
+                                    &module, &func, queued_ms, run_ms, &logs,
+                                    &game_logger, &session_handler_for_log,
+                                );
+                            }
+                            LuaCommand::AuthResult { session_id, kind, account, error } => {
+                                // The session is set for the same reason it is
+                                // on OnInput: everything the login hook goes on
+                                // to call — `authenticate_session`, the world
+                                // and character daemons — reads it.
+                                set_current_session(Some(session_id.clone()));
+                                dispatch_auth_result(
+                                    &lua, &session_id, kind, account.as_ref(), error.as_deref(),
+                                    &game_logger, &session_handler_for_log,
+                                );
+                                set_current_session(None);
                             }
                             // The sync_hook call above is the entire point.
                             LuaCommand::DebugSync => {}
                             LuaCommand::Shutdown => {
+                                // The mudlib's last chance to flush what it is
+                                // holding in memory. `CHARACTER_D` is a
+                                // write-back cache emptied by the autosave
+                                // ticker, so without this dispatch a clean
+                                // restart silently discards everything since
+                                // the last tick.
+                                //
+                                // No player is behind a shutdown, so it runs
+                                // under the engine's own identity for the same
+                                // reason a timer tick does — otherwise every
+                                // gated efun the flush touches is denied.
+                                let _system = set_system_identity();
+                                dispatch_event(&lua, "on_shutdown", &[], &game_logger, &session_handler_for_log);
                                 tracing::info!("Lua engine shutting down");
                                 break;
                             }
@@ -223,11 +379,17 @@ impl ScriptEngine {
                     }
                 }
             }
+
+            // Whoever asked for the shutdown is waiting on this. Dropping the
+            // VM comes after: the saving is done by here, and a caller that
+            // gave up waiting must not be blocked by LuaJIT teardown.
+            let _ = finished_tx.send(());
         });
 
         Ok(ScriptEngine {
             cmd_tx,
             thread_handle: Some(thread_handle),
+            finished,
         })
     }
 
@@ -236,13 +398,84 @@ impl ScriptEngine {
         let _ = self.cmd_tx.send(cmd);
     }
 
-    /// Shut down the Lua VM and wait for the thread to finish.
+    /// Ask the mudlib to shut down and wait — up to `timeout` — for it.
+    ///
+    /// The Lua thread dispatches `on_shutdown` before it stops, which is where
+    /// the mudlib flushes anything it holds in memory. Returning without
+    /// waiting would race that flush against process exit, so this blocks; but
+    /// a mudlib that wedges in `on_shutdown` must not wedge the server's
+    /// shutdown with it, so the wait is bounded.
+    ///
+    /// Returns `false` if the timeout expired first — the caller should log
+    /// that and exit anyway, accepting whatever the flush did not finish.
+    pub fn shutdown_within(&self, timeout: std::time::Duration) -> bool {
+        if self.cmd_tx.send(LuaCommand::Shutdown).is_err() {
+            // The thread is already gone; nothing to wait for.
+            return true;
+        }
+        match self.finished.recv_timeout(timeout) {
+            Ok(()) => true,
+            // Disconnected means the thread ended without signalling — it
+            // panicked. Not a clean shutdown, but not something waiting fixes.
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => true,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => false,
+        }
+    }
+
+    /// Shut down the Lua VM and wait for the thread to finish, however long it
+    /// takes. Prefer [`ScriptEngine::shutdown_within`] anywhere a wedged mudlib
+    /// could hang a user-visible path.
     pub fn shutdown(mut self) {
         let _ = self.cmd_tx.send(LuaCommand::Shutdown);
         if let Some(handle) = self.thread_handle.take() {
             let _ = handle.join();
         }
     }
+}
+
+/// Turn off the LuaJIT compiler so the instruction budget can be enforced.
+///
+/// The hook is the only way to interrupt Lua, and LuaJIT does not dispatch
+/// hooks from inside a compiled trace. Measured on this build, a one-line
+/// `while true do s = s + 1 end` delivers **no** hook events at all with the
+/// JIT on — not count, not line, not call. It is not that the count trigger is
+/// too coarse; the events never arrive. So an enforced limit and the compiler
+/// are mutually exclusive, and the config key chooses between them.
+///
+/// The price, measured through the real mudlib by `benches/dispatch.rs`:
+///
+/// ```text
+///                     look    who   mudstatus   numeric loop (control)
+///   cost of enforcing 1.03x  1.02x    1.07x            2.59x
+///   compiler worth    1.00x  1.01x    1.06x            2.10x
+/// ```
+///
+/// The compiler earns its keep on arithmetic and almost nothing on command
+/// dispatch: nothing in one command loops the 56 times LuaJIT needs to start a
+/// trace, and the dispatcher's `gsub`/`match`/`gmatch` calls abort tracing
+/// anyway. Hence the limit being on by default.
+///
+/// `jit.off()` only stops *new* traces, so this must run before any mudlib
+/// code — which it does. `apply_sandbox` then removes the `jit` table outright,
+/// otherwise a single `jit.on()` in a room file would hand the compiler back
+/// and silently disarm the budget.
+fn disable_jit_for_budget(lua: &Lua, by_env: bool) -> bool {
+    if let Err(e) = lua.load("jit.off()").set_name("=<oxigeon>/jit_off").exec() {
+        tracing::error!("jit.off() failed: {}", e);
+        return false;
+    }
+    if by_env {
+        tracing::warn!(
+            "LuaJIT compiler disabled by OXIGEON_JIT=off — this is a benchmarking \
+             control, not a supported way to run a server"
+        );
+    } else {
+        tracing::info!(
+            "LuaJIT compiler disabled so limits.lua_instruction_limit can be enforced \
+             (set it to 0 to keep the compiler and drop the limit)"
+        );
+    }
+    true
 }
 
 /// Log a Lua error to the structured journal.
@@ -258,10 +491,12 @@ fn log_lua_error(
     let err_str = error.to_string();
     let source = extract_lua_source(&err_str);
 
-    let sid = get_current_session().unwrap_or_else(|| "unknown".to_string());
+    // `current_actor` rather than the raw session: an error raised on a timer
+    // tick is attributed to "system", not to "unknown".
+    let sid = current_actor();
     let char_id = {
         if let Ok(id) = sid.parse::<crate::core::session::SessionId>() {
-            sh.read().unwrap().get(&id).and_then(|s| s.state.character_id())
+            sh.read_recover().get(&id).and_then(|s| s.state.character_id())
         } else {
             None
         }
@@ -409,6 +644,126 @@ fn dispatch_event_2(
     }
 }
 
+/// Deliver a finished compute job to the mudlib.
+///
+/// Calls `on_compute_result(id, ok, value, err, meta)`. A mudlib with no such
+/// global gets a loud error rather than silence, for the same reason
+/// `on_auth_result` does: the caller would otherwise wait forever for an
+/// answer that was produced and thrown away.
+#[allow(clippy::too_many_arguments)]
+fn dispatch_compute_result(
+    lua: &Lua,
+    id: u64,
+    kind: &str,
+    value: &crate::core::compute::LuaData,
+    error: Option<&str>,
+    tag: &crate::core::compute::LuaData,
+    module: &str,
+    func: &str,
+    queued_ms: f64,
+    run_ms: f64,
+    logs: &[(String, String)],
+    gl: &Arc<crate::core::logging::GameLogger>,
+    sh: &Arc<std::sync::RwLock<crate::core::session::SessionHandler>>,
+) {
+    use crate::core::compute::marshal;
+
+    let Ok(func_ref) = lua.globals().get::<LuaFunction>("on_compute_result") else {
+        tracing::error!(
+            "mudlib defines no on_compute_result — the {} result for job {} ({}.{}) is \
+             lost, and whatever asked for it will wait forever",
+            kind, id, module, func
+        );
+        return;
+    };
+
+    // A job's own log lines go to the journal from here, on the Lua thread,
+    // rather than from the worker — the worker is not rate-limited and nothing
+    // there knows the job's identity.
+    for (level, message) in logs {
+        gl.journal(crate::core::logging::JournalEntry {
+            level,
+            source: "compute",
+            message,
+            meta: Some(serde_json::json!({"job": id, "module": module, "fn": func})),
+        });
+    }
+
+    let build_args = || -> LuaResult<(u64, bool, LuaValue, Option<String>, LuaTable)> {
+        let meta = lua.create_table()?;
+        meta.set("kind", kind)?;
+        meta.set("module", module)?;
+        meta.set("fn", func)?;
+        meta.set("queued_ms", queued_ms)?;
+        meta.set("run_ms", run_ms)?;
+        meta.set("tag", marshal::to_lua(lua, tag)?)?;
+        Ok((
+            id,
+            kind == "ok",
+            marshal::to_lua(lua, value)?,
+            error.map(str::to_string),
+            meta,
+        ))
+    };
+
+    let args = match build_args() {
+        Ok(args) => args,
+        Err(e) => {
+            tracing::error!("compute: could not build the result for job {}: {}", id, e);
+            return;
+        }
+    };
+
+    if let Err(e) = func_ref.call::<()>(args) {
+        tracing::error!("Lua error in on_compute_result: {}", e);
+        log_lua_error(gl, sh, "on_compute_result", &e,
+            Some(serde_json::json!({"job": id, "module": module, "fn": func})));
+    }
+}
+
+/// Deliver an off-thread authentication result to the mudlib.
+///
+/// Calls `on_auth_result(session_id, kind, account_or_nil, error_or_nil)`.
+/// A mudlib with no such global gets a loud error rather than silence: the
+/// player would otherwise be left staring at a password prompt that never
+/// answers, which is indistinguishable from the server having hung.
+fn dispatch_auth_result(
+    lua: &Lua,
+    session_id: &str,
+    kind: &str,
+    account: Option<&serde_json::Value>,
+    error: Option<&str>,
+    gl: &Arc<crate::core::logging::GameLogger>,
+    sh: &Arc<std::sync::RwLock<crate::core::session::SessionHandler>>,
+) {
+    let Ok(func) = lua.globals().get::<LuaFunction>("on_auth_result") else {
+        tracing::error!(
+            "mudlib defines no on_auth_result — the {} result for session {} is lost \
+             and that player's login will never complete",
+            kind,
+            session_id
+        );
+        return;
+    };
+
+    let account_val = match account {
+        Some(json) => match super::efuns::json_to_lua(lua, json) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("Could not convert the account table for Lua: {}", e);
+                LuaValue::Nil
+            }
+        },
+        None => LuaValue::Nil,
+    };
+
+    let args = (session_id.to_string(), kind.to_string(), account_val, error.map(str::to_string));
+    if let Err(e) = func.call::<()>(args) {
+        tracing::error!("Lua error in on_auth_result: {}", e);
+        log_lua_error(gl, sh, "on_auth_result", &e, Some(serde_json::json!({"kind": kind})));
+    }
+}
+
 /// Dispatch a GMCP event with structured error logging.
 fn dispatch_event_gmcp(
     lua: &Lua,
@@ -511,6 +866,11 @@ fn hot_reload(lua: &Lua, module_name: &str, mudlib_path: &Path, game_path: &Path
 
 impl Drop for ScriptEngine {
     fn drop(&mut self) {
+        // A backstop for teardown paths that never got to ask politely — a
+        // failed startup, a test dropping its VM, a panic unwinding past the
+        // driver. It only sends; it does not wait, so on this path the flush
+        // races process exit. Anything that cares about the data going to disk
+        // calls `shutdown_within` first.
         let _ = self.cmd_tx.send(LuaCommand::Shutdown);
     }
 }

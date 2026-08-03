@@ -65,6 +65,9 @@ max_characters_per_account = 1
 
 [limits]
 lua_memory_mb = 64
+# Enforcing this disables the LuaJIT compiler — measured at 2-7% on real
+# commands, which is why it is on by default. 0 turns it off.
+# See docs/src/lua-api/performance.md.
 lua_instruction_limit = 1000000
 input_buffer_bytes = 4096
 ```

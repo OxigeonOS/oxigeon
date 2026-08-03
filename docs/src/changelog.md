@@ -1,5 +1,49 @@
 # Changelog
 
+## Phase 3: Hardening, Performance & Persistence
+
+### Security
+
+- **The sandbox is now applied to the running VM.** `apply_sandbox` was well tested and never called: `io.open`, `io.popen`, `os.execute`, `os.exit` and `package.loadlib` were all reachable from mudlib code, and `io.open` read files outside the mudlib jail. The dead `create_sandboxed_env` was deleted so there is one boundary, not two.
+- `jit`, `package.cpath` and the native module loaders removed; `load`/`loadstring` now refuse binary bytecode.
+- **Argon2 moved off the game thread.** Every login froze the whole game for ~370 ms, pre-authentication, so spamming attempts was a trivial denial of service. `authenticate` and `create_account` are now asynchronous and answer at `on_auth_result`. Added a bounded queue and a per-address lockout after 5 failed attempts.
+- **Timer-dispatched code has an explicit identity.** Gated efuns called from a daemon tick used to fail closed, silently. Engine-internal dispatch now declares itself; `tests/timer_identity.rs` pins that a player session is still refused.
+
+### Correctness
+
+- **`lua_to_json` had five silent failures on the `save_character_data` path**: a table that is both a list and a map lost every string key, cycles exhausted the Rust stack and killed the process, NaN and infinity became `0`, functions became `null`, and unusual keys vanished. All now raise, naming the offending field.
+- **Output is no longer silently dropped.** Ten `try_send` sites against a 64-slot channel lost text with no log, counter or marker. Drops are counted, logged, surfaced in `server_info()`, and the player sees a truncation notice.
+- **Lock poisoning is survivable.** 42 `.unwrap()` calls on lock acquisition would have turned one panic into a permanently dead game. `read_recover`/`write_recover`/`lock_recover` recover and report.
+- **The stat whitelist in `Mobile:new` is gone.** It rebuilt `obj.stats` from a fixed list of nine keys on every load, so any other stat was silently dropped even though `to_save` had faithfully written it — a trait named `wisdom` would have vanished on every login.
+- **`Char.Status` reported 0 experience and 0 gold for every character, always**, because `gmcp_d` read `player.stats.xp` and `player.stats.gold`, which have never existed. `death_d`'s XP-loss-on-death was dead code for the same reason.
+- **`ticker_d.remove_by_prefix` now exists.** `character_d.unload` had called it since it was written; the function was never there, so the call raised into a pcall that logged at debug level and every per-player timer leaked.
+- **`send_lines` accepts a table again.** Both spellings were in use across the mudlib and the table form printed `table: 0x...` to the player — which is what `death_d` had been announcing deaths with.
+- **A clean shutdown now saves.** `LuaCommand::Shutdown` broke the engine loop without dispatching anything to Lua, and the Ctrl+C path never joined the Lua thread — `Drop for ScriptEngine` only sent the command and returned. Two failures compounding: nothing asked the mudlib to save, and nothing would have waited if it had. Since `CHARACTER_D` is a write-back cache flushed by the autosave ticker, **every clean restart discarded up to `autosave_seconds` (default 300) of every online player's progress.** The engine now dispatches [`on_shutdown`](./lua-api/events.md) under its own identity before breaking, and the driver waits for the thread — bounded by `game.shutdown_timeout_seconds` (default 30) so a mudlib that wedges in the hook cannot hang the process. `tests/clean_shutdown.rs` pins all of it, ending with a save through the real mudlib.
+- Fixed the file jail refusing every legitimate read on a relative mudlib root — `audit_d` could not load its watch list and said nothing.
+- SQLite now runs in WAL mode with `synchronous = NORMAL`, removing an fsync from the Lua thread on every write.
+
+### Performance
+
+- **`lua_instruction_limit` is enforced, and on by default.** It was parsed and never read. Enforcing it disables the LuaJIT compiler — LuaJIT dispatches no debug hooks from inside a compiled trace — but measured through the real mudlib that costs 2-7% on commands, because the compiler is worth ~1.00x on command dispatch and 2.10x only on tight arithmetic. See [Performance & the JIT Trade-off](./lua-api/performance.md).
+- `lua_memory_mb` is enforced too; it turned out to work on this build after all.
+- `cargo bench` (criterion) measures the real mudlib and refuses to run if its own control shows the JIT toggle is broken.
+
+### Features
+
+- **[Traits](./lua-api/traits.md)** — character attributes that are *computed* rather than stored: derived from other traits (Willpower from Wisdom), filtered through active effects, and regenerating from a timestamp rather than a timer. Deliberately no `mod` field on a trait: Evennia's Traits contrib stores one, which makes a buff a write to the thing it buffs, so any path that misses the matching unapply leaves the character permanently wrong. Here nothing is stored, so there is nothing to unapply. Dependencies are declared and *enforced* — reading an undeclared one raises — which is what lets `seal()` report a cycle as a path rather than a shrug.
+- **[Effects](./lua-api/effects.md)** — buffs and debuffs as an event pipeline. `run(entity, "damage_taken", ev)` passes the numbers through every effect that cares. Ordering is by declared **phase**, not registration order, so "-15% damage" and "-5 flat damage" on a 30-point hit give 20 rather than depending on which buff landed first. Passive stat modifiers are the same pipeline under the hook family `trait:<id>`, so a +2 ring and a -15% buff are authored identically. Definitions hold functions and live in code; instances are nine plain fields and live in the cache.
+- **[State Cache](./lua-api/state-cache.md)** — the write-behind tier `task_list.md` item 3 asked for, plus `DAEMON.cooldown`. Three tiers chosen by how much you would mind losing the data. Measured: 10 changes to one player cost 1.20 ms written through and 0.15 ms written behind; 1000 changes, 1077 ms against 2.3 ms. A flush is one `db_put` of the whole scope rather than a merge patch, because RFC 7396 expresses deletion as a JSON null and a Lua table cannot hold one — a merge flush could never remove an expired effect. Values are checked against `lua_to_json`'s rules when written rather than when flushed, so a bad value is refused at the call site instead of raising inside `on_shutdown`.
+- **[Creatures & Combat](./lua-api/combat.md)** — `mob_d` and `combat_d`: templates, instances, room occupancy, respawn, and a minimal round-based fight so the pipeline is visible in numbers a player sees. Combat state is memory-tier and never written.
+- **[Compute Bridge](./lua-api/compute.md)** — `compute()` runs a long computation on a worker thread with its own LuaJIT VM and answers at `on_compute_result`. Worker VMs have no efuns at all.
+- **[Document Store](./lua-api/document-store.md)** — twelve `db_*` efuns over a generic JSON table. Persisting a new type needs no Rust, no migration and no rebuild, which matters because `embed_migrations!` is compile-time and the game layer can never ship schema.
+
+### Fixed
+
+- `mudstatus` printed "0s" uptime: it read `info.uptime_seconds`, but the field is `uptime_secs` — and `types/oxigeon.lua` declared the wrong name, which is why. The stub also declared two fields that never existed.
+- `save_character_data`/`load_character_data` were annotated as taking and returning strings; they take and return tables.
+- The "Persistent Store" annotation claimed persistence across restarts. It is a Lua table that survives hot reload only.
+
+
 ## Phase 2: Game World
 
 ### Features
@@ -100,7 +144,7 @@
 
 #### Scripting
 - LuaJIT (5.1 API) on a dedicated OS thread
-- Full sandbox: `io`, `os`, `debug` modules removed; binary bytecode loading blocked
+- Full sandbox: `io` and `debug` removed, `os` reduced to its clock functions, binary bytecode loading blocked
 - `require()` jailed to mudlib directory — sets `package.path` before loading `init.lua`
   (Windows UNC `\\?\` extended path prefix stripped to avoid Lua `?` substitution conflicts)
 - Path traversal prevention (`../` jailing) for all file efuns
@@ -122,7 +166,7 @@
 **Session:** `this_session()`, `get_session()`, `all_sessions()`, `set_session_state()`,
 `authenticate_session()`, `enter_game_session()`
 
-**Account:** `authenticate()`, `create_account()`, `get_account()`
+**Account:** `authenticate()`, `create_account()` (both asynchronous — they answer at `on_auth_result`), `get_account()`
 
 **Character:** `create_character()`, `get_characters()`, `get_character()`
 

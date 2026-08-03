@@ -49,219 +49,123 @@ fn normalize_path(path: &Path) -> PathBuf {
     components.iter().collect()
 }
 
-/// Create the sandboxed Lua environment.
-/// Removes io, os, debug and replaces with controlled efuns.
-pub fn create_sandboxed_env(lua: &Lua, mudlib_path: String) -> LuaResult<LuaTable> {
-    let env = lua.create_table()?;
+/// The `os` functions the mudlib is allowed to keep. They read a clock and
+/// nothing else; `efuns_io.rs` wraps the same three as `os_time`/`os_clock`/
+/// `os_date` for code that would rather use an efun.
+const OS_KEPT: &[&str] = &["time", "date", "clock", "difftime"];
+
+/// Strip everything that lets Lua reach outside the game from the VM's globals.
+///
+/// This is the *production* security boundary. `engine::ScriptEngine::start`
+/// calls it on the real VM after `register_all`, so what unprivileged mudlib
+/// code can reach is exactly what survives this function — there is no second,
+/// parallel sandbox to drift out of sync with.
+/// `docs/src/lua-api/sandboxing.md` documents the same list.
+///
+/// Everything removed here has a jailed efun equivalent (`read_file`,
+/// `write_file`, `list_dir`, ...) that enforces the mudlib jail and the
+/// directory permissions in `config/permissions.toml`. Raw `io` walked straight
+/// around both.
+pub fn apply_sandbox(lua: &Lua) -> LuaResult<()> {
     let globals = lua.globals();
 
-    // Whitelisted global functions — safe builtins with no I/O side effects
-    let safe_globals = [
-        "print", "tostring", "tonumber", "type",
-        "pairs", "ipairs", "next", "select", "unpack",
-        "error", "pcall", "xpcall", "assert",
-        "setmetatable", "getmetatable",
-        "rawget", "rawset", "rawequal",
-        "setfenv", "getfenv",
-        "collectgarbage",
-    ];
-    for name in &safe_globals {
-        if let Ok(val) = globals.get::<LuaValue>(*name) {
-            env.set(*name, val)?;
+    // Whole modules with no safe subset. `debug` is already hidden by
+    // `debugger::introspect::hide_debug_library` when the debug adapter is on;
+    // this covers the case where it was never loaded at all.
+    globals.set("io", LuaValue::Nil)?;
+    globals.set("debug", LuaValue::Nil)?;
+
+    // Uncontrolled file loading. `require` is the supported route and is
+    // confined to package.path, which the engine sets to mudlib + game only.
+    globals.set("loadfile", LuaValue::Nil)?;
+    globals.set("dofile", LuaValue::Nil)?;
+
+    // LuaJIT's compiler controls. `jit.on()` would re-enable trace compilation,
+    // and a compiled trace dispatches no hooks — so leaving this reachable
+    // would let one line in a room file disarm the instruction budget. Nothing
+    // in the mudlib uses it.
+    globals.set("jit", LuaValue::Nil)?;
+
+    // Keep the clock functions, drop everything that touches the host process
+    // or the filesystem. Removing the whole `os` table instead would break
+    // date formatting for no extra safety.
+    if let Ok(os_table) = globals.get::<LuaTable>("os") {
+        let mut doomed = Vec::new();
+        for pair in os_table.clone().pairs::<LuaValue, LuaValue>() {
+            let (k, _) = pair?;
+            if let Some(name) = k.as_str() {
+                if !OS_KEPT.contains(&name.as_ref()) {
+                    doomed.push(k.clone());
+                }
+            } else {
+                doomed.push(k.clone());
+            }
+        }
+        for k in doomed {
+            os_table.set(k, LuaValue::Nil)?;
         }
     }
 
-    // Whitelisted standard library modules (no I/O side effects)
-    for table_name in &["string", "table", "math", "coroutine"] {
-        if let Ok(val) = globals.get::<LuaValue>(*table_name) {
-            env.set(*table_name, val)?;
+    // Native code loading. `loadlib` opens a shared library directly; loaders
+    // 3 and 4 are how `require` would find one on `cpath`.
+    if let Ok(package) = globals.get::<LuaTable>("package") {
+        package.set("loadlib", LuaValue::Nil)?;
+        package.set("cpath", "")?;
+        if let Ok(loaders) = package.get::<LuaTable>("loaders") {
+            // 1 = package.preload, 2 = the Lua-source searcher. Lua 5.1's
+            // `require` walks this array and stops at the first nil, so
+            // clearing 3 leaves exactly those two in play.
+            loaders.set(3, LuaValue::Nil)?;
+            loaders.set(4, LuaValue::Nil)?;
         }
     }
 
-    // Safe `load` — text chunks only, no binary bytecode
-    let safe_load = lua.create_function(|lua, (code, name): (String, Option<String>)| {
-        // Reject binary bytecode (first byte = 0x1B/ESC)
-        if code.as_bytes().first() == Some(&27) {
-            return Err(LuaError::RuntimeError(
-                "Loading binary bytecode is not permitted".into()
-            ));
-        }
-        lua.load(code.as_str())
-            .set_name(name.as_deref().unwrap_or("=(load)"))
-            .into_function()
-    })?;
-    env.set("load", safe_load)?;
-
-    // Controlled require — jailed to mudlib path, no C modules
-    let mudlib_for_require = mudlib_path.clone();
-    let safe_require = lua.create_function(move |lua, module_name: String| {
-        // Sanitize module name (convert dots to path separators)
-        let safe_name = module_name.replace('.', "/");
-        if safe_name.contains("..") {
-            return Err(LuaError::RuntimeError(
-                format!("Invalid module name: {}", module_name)
-            ));
-        }
-
-        // Check package.loaded first
-        let loaded: LuaTable = lua.globals()
-            .get::<LuaTable>("package")?
-            .get("loaded")?;
-        if let Ok(cached) = loaded.get::<LuaValue>(module_name.clone()) {
-            if !matches!(cached, LuaValue::Nil) {
-                return Ok(cached);
-            }
-        }
-
-        // Load from mudlib path only
-        let lua_path = format!("{}/{}.lua", mudlib_for_require, safe_name);
-        let code = std::fs::read_to_string(&lua_path)
-            .map_err(|_| LuaError::RuntimeError(
-                format!("module '{}' not found at {}", module_name, lua_path)
-            ))?;
-
-        if code.as_bytes().first() == Some(&27) {
-            return Err(LuaError::RuntimeError(
-                "Binary Lua modules are not permitted".into()
-            ));
-        }
-
-        let module: LuaValue = lua.load(code.as_str())
-            .set_name(&lua_path)
-            .call(())?;
-
-        // Cache in package.loaded
-        loaded.set(module_name, module.clone())?;
-        Ok(module)
-    })?;
-    env.set("require", safe_require)?;
-
-    // ── BLOCKED — NOT included in sandbox ──
-    // io.*        → use read_file(), write_file() efuns
-    // os.execute  → BLOCKED (arbitrary command execution)
-    // os.exit     → BLOCKED (would kill the server!)
-    // os.getenv   → BLOCKED (env variable leakage)
-    // debug.*     → BLOCKED (can escape sandbox)
-    // loadfile    → BLOCKED (use require)
-    // dofile      → BLOCKED (use require)
-
-    Ok(env)
-}
-
-/// Register controlled I/O efuns as a table in the Lua environment.
-/// These replace the native io/os modules.
-pub fn register_io_efuns(lua: &Lua, env: &LuaTable, mudlib_path: String) -> LuaResult<()> {
-    // read_file(path) -> string|nil
-    let mudlib_for_read = mudlib_path.clone();
-    let read_file = lua.create_function(move |lua, path: String| {
-        match resolve_jailed_path(Path::new(&mudlib_for_read), &path) {
-            Err(_) => Ok(LuaValue::Nil),
-            Ok(full_path) => {
-                match std::fs::read_to_string(&full_path) {
-                    Ok(content) => {
-                        let s = lua.create_string(&content)?;
-                        Ok(LuaValue::String(s))
-                    }
-                    Err(_) => Ok(LuaValue::Nil),
-                }
-            }
-        }
-    })?;
-    env.set("read_file", read_file)?;
-
-    // write_file(path, content) -> bool
-    let mudlib_for_write = mudlib_path.clone();
-    let write_file = lua.create_function(move |_, (path, content): (String, String)| {
-        match resolve_jailed_path(Path::new(&mudlib_for_write), &path) {
-            Err(_) => Ok(false),
-            Ok(full_path) => {
-                if let Some(parent) = full_path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                Ok(std::fs::write(full_path, content).is_ok())
-            }
-        }
-    })?;
-    env.set("write_file", write_file)?;
-
-    // append_file(path, content) -> bool
-    let mudlib_for_append = mudlib_path.clone();
-    let append_file = lua.create_function(move |_, (path, content): (String, String)| {
-        match resolve_jailed_path(Path::new(&mudlib_for_append), &path) {
-            Err(_) => Ok(false),
-            Ok(full_path) => {
-                use std::io::Write;
-                match std::fs::OpenOptions::new().append(true).create(true).open(full_path) {
-                    Ok(mut f) => Ok(f.write_all(content.as_bytes()).is_ok()),
-                    Err(_) => Ok(false),
-                }
-            }
-        }
-    })?;
-    env.set("append_file", append_file)?;
-
-    // file_exists(path) -> bool
-    let mudlib_for_exists = mudlib_path.clone();
-    let file_exists = lua.create_function(move |_, path: String| {
-        match resolve_jailed_path(Path::new(&mudlib_for_exists), &path) {
-            Err(_) => Ok(false),
-            Ok(full_path) => Ok(full_path.exists()),
-        }
-    })?;
-    env.set("file_exists", file_exists)?;
-
-    // delete_file(path) -> bool
-    let mudlib_for_delete = mudlib_path.clone();
-    let delete_file = lua.create_function(move |_, path: String| {
-        match resolve_jailed_path(Path::new(&mudlib_for_delete), &path) {
-            Err(_) => Ok(false),
-            Ok(full_path) => Ok(std::fs::remove_file(full_path).is_ok()),
-        }
-    })?;
-    env.set("delete_file", delete_file)?;
-
-    // os_time() -> number
-    let os_time = lua.create_function(|_, ()| {
-        Ok(std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as f64)
-    })?;
-    env.set("os_time", os_time)?;
-
-    // os_clock() -> number
-    let os_clock = lua.create_function(|_, ()| {
-        Ok(std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs_f64())
-    })?;
-    env.set("os_clock", os_clock)?;
+    install_text_only_loaders(lua, &globals)?;
 
     Ok(())
 }
 
-/// Remove dangerous modules from Lua globals in-place.
-/// This is the "hard" sandbox — after calling this, io/os/debug cannot be accessed
-/// from any code unless they are explicitly re-added.
-/// Used for testing and for the default VM setup.
-pub fn apply_sandbox(lua: &Lua) -> LuaResult<()> {
-    let globals = lua.globals();
-    // Remove dangerous modules
-    globals.set("io", LuaValue::Nil)?;
-    globals.set("debug", LuaValue::Nil)?;
-    // Remove dangerous os functions (keep os table but strip dangerous keys)
-    if let Ok(os_table) = globals.get::<LuaTable>("os") {
-        os_table.set("execute", LuaValue::Nil)?;
-        os_table.set("exit", LuaValue::Nil)?;
-        os_table.set("getenv", LuaValue::Nil)?;
-        os_table.set("tmpname", LuaValue::Nil)?;
-        os_table.set("rename", LuaValue::Nil)?;
-        os_table.set("remove", LuaValue::Nil)?;
+/// Replace `load` and `loadstring` with wrappers that refuse binary chunks.
+///
+/// Pre-compiled LuaJIT bytecode is not validated on load and is a known route
+/// to memory corruption, so the only thing the VM will compile is text.
+fn install_text_only_loaders(lua: &Lua, globals: &LuaTable) -> LuaResult<()> {
+    for name in ["load", "loadstring"] {
+        if globals.get::<LuaValue>(name)?.is_nil() {
+            continue;
+        }
+        let default_chunk_name = format!("=({})", name);
+        let f = lua.create_function(
+            move |lua, (chunk, chunk_name): (LuaValue, Option<mlua::String>)| {
+                let Some(code) = chunk.as_string() else {
+                    // The reader-function form of `load` would hand us chunks
+                    // one piece at a time, which we cannot screen. Nothing in
+                    // the mudlib uses it.
+                    return Ok((
+                        LuaValue::Nil,
+                        Some("load: only string chunks are permitted".to_string()),
+                    ));
+                };
+                let bytes = code.as_bytes();
+                if bytes.first() == Some(&0x1B) {
+                    return Ok((
+                        LuaValue::Nil,
+                        Some("load: binary bytecode is not permitted".to_string()),
+                    ));
+                }
+                let name = chunk_name
+                    .as_ref()
+                    .map(|s| s.to_string_lossy())
+                    .unwrap_or_else(|| default_chunk_name.clone());
+                // Returns `nil, err` on a syntax error, as `load` always has.
+                match lua.load(bytes.as_ref()).set_name(name).into_function() {
+                    Ok(func) => Ok((LuaValue::Function(func), None)),
+                    Err(e) => Ok((LuaValue::Nil, Some(e.to_string()))),
+                }
+            },
+        )?;
+        globals.set(name, f)?;
     }
-    // Remove file-loading functions
-    globals.set("loadfile", LuaValue::Nil)?;
-    globals.set("dofile", LuaValue::Nil)?;
     Ok(())
 }
 
@@ -306,64 +210,84 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    /// The `os` keys that survive are exactly `OS_KEPT` — a new LuaJIT release
+    /// adding another one must not slip in unnoticed.
     #[test]
-    fn test_sandbox_blocks_io() {
+    fn sandbox_leaves_only_the_clock_functions_on_os() {
         let lua = Lua::new();
-        // Ensure io module is NOT accessible by default after sandbox
-        let env = create_sandboxed_env(&lua, "/tmp/mudlib".to_string()).unwrap();
-        let io_val: LuaValue = env.get("io").unwrap();
-        assert!(matches!(io_val, LuaValue::Nil), "io should be nil in sandbox");
+        apply_sandbox(&lua).unwrap();
+        let os: LuaTable = lua.globals().get("os").unwrap();
+        let mut kept: Vec<String> = os
+            .pairs::<String, LuaValue>()
+            .filter_map(|pair: LuaResult<(String, LuaValue)>| pair.ok().map(|(k, _)| k))
+            .collect();
+        kept.sort();
+        let mut expected: Vec<String> = OS_KEPT.iter().map(|s| s.to_string()).collect();
+        expected.sort();
+        assert_eq!(kept, expected);
     }
 
     #[test]
-    fn test_sandbox_blocks_os() {
+    fn sandbox_blocks_binary_bytecode_via_load() {
         let lua = Lua::new();
-        let env = create_sandboxed_env(&lua, "/tmp/mudlib".to_string()).unwrap();
-        let os_val: LuaValue = env.get("os").unwrap();
-        assert!(matches!(os_val, LuaValue::Nil), "os should be nil in sandbox");
+        apply_sandbox(&lua).unwrap();
+        // A real chunk, compiled, then handed back to `load` as bytecode.
+        let dumped: mlua::String = lua
+            .load(r#"return string.dump(function() return 42 end)"#)
+            .eval()
+            .unwrap();
+        let (val, err): (LuaValue, Option<String>) =
+            lua.globals().get::<LuaFunction>("load").unwrap().call(dumped).unwrap();
+        assert!(val.is_nil(), "binary bytecode should not compile");
+        assert!(err.unwrap().contains("binary bytecode"));
     }
 
     #[test]
-    fn test_sandbox_blocks_debug() {
+    fn sandbox_still_allows_text_load() {
         let lua = Lua::new();
-        let env = create_sandboxed_env(&lua, "/tmp/mudlib".to_string()).unwrap();
-        let debug_val: LuaValue = env.get("debug").unwrap();
-        assert!(matches!(debug_val, LuaValue::Nil), "debug should be nil in sandbox");
+        apply_sandbox(&lua).unwrap();
+        let n: i64 = lua.load(r#"return load("return 42")()"#).eval().unwrap();
+        assert_eq!(n, 42);
     }
 
     #[test]
-    fn test_sandbox_allows_string() {
+    fn sandbox_reports_syntax_errors_the_way_load_always_has() {
         let lua = Lua::new();
-        let env = create_sandboxed_env(&lua, "/tmp/mudlib".to_string()).unwrap();
-        let string_val: LuaValue = env.get("string").unwrap();
-        assert!(!matches!(string_val, LuaValue::Nil), "string should be available");
+        apply_sandbox(&lua).unwrap();
+        let (val, err): (LuaValue, Option<String>) = lua
+            .globals()
+            .get::<LuaFunction>("load")
+            .unwrap()
+            .call("this is not lua")
+            .unwrap();
+        assert!(val.is_nil());
+        assert!(err.is_some(), "a syntax error must come back as nil, message");
+    }
+
+    /// `require` has to keep working — the whole mudlib is built on it.
+    #[test]
+    fn sandbox_leaves_the_lua_source_searcher_in_place() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("probe.lua"), "return 7").unwrap();
+        let lua = Lua::new();
+        apply_sandbox(&lua).unwrap();
+        lua.load(format!(
+            "package.path = [[{}/?.lua]] .. ';' .. package.path",
+            dir.path().to_string_lossy().replace('\\', "/")
+        ))
+        .exec()
+        .unwrap();
+        let n: i64 = lua.load("return require('probe')").eval().unwrap();
+        assert_eq!(n, 7);
     }
 
     #[test]
-    fn test_sandbox_allows_math() {
+    fn sandbox_removes_the_native_module_loaders() {
         let lua = Lua::new();
-        let env = create_sandboxed_env(&lua, "/tmp/mudlib".to_string()).unwrap();
-        let math_val: LuaValue = env.get("math").unwrap();
-        assert!(!matches!(math_val, LuaValue::Nil), "math should be available");
-    }
-
-    #[test]
-    fn test_sandbox_blocks_binary_bytecode_via_load() {
-        let lua = Lua::new();
-        let env = create_sandboxed_env(&lua, "/tmp/mudlib".to_string()).unwrap();
-        let load_fn: LuaFunction = env.get("load").unwrap();
-        // Binary chunk starts with 0x1B (ESC)
-        let binary = "\x1BLua";
-        let result: LuaResult<LuaValue> = load_fn.call(binary.to_string());
-        assert!(result.is_err(), "Binary bytecode should be rejected");
-    }
-
-    #[test]
-    fn test_sandbox_allows_text_load() {
-        let lua = Lua::new();
-        let env = create_sandboxed_env(&lua, "/tmp/mudlib".to_string()).unwrap();
-        let load_fn: LuaFunction = env.get("load").unwrap();
-        let result: LuaResult<LuaValue> = load_fn.call("return 42".to_string());
-        assert!(result.is_ok(), "Text chunks should be allowed");
+        apply_sandbox(&lua).unwrap();
+        assert!(lua.globals().get::<LuaTable>("package").unwrap()
+            .get::<LuaValue>("loadlib").unwrap().is_nil());
+        let cpath: String = lua.load("return package.cpath").eval().unwrap();
+        assert_eq!(cpath, "");
     }
 }

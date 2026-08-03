@@ -21,6 +21,28 @@ if not ok then log("warn", "Failed to load ticker_d daemon: " .. tostring(err)) 
 ok, err = pcall(function() DAEMON.event   = require("daemons.event_d") end)
 if not ok then log("warn", "Failed to load event_d daemon: " .. tostring(err)) end
 
+-- The state cache underpins cooldowns, effects and combat, so it loads before
+-- any of them: each declares its namespaces at require time.
+ok, err = pcall(function() DAEMON.cache   = require("daemons.cache_d") end)
+if not ok then log("warn", "Failed to load cache_d daemon: " .. tostring(err)) end
+
+ok, err = pcall(function() DAEMON.cooldown = require("daemons.cooldown_d") end)
+if not ok then log("warn", "Failed to load cooldown_d daemon: " .. tostring(err)) end
+
+-- Traits before effects: effect_d refuses a modifier aimed at a gauge, and it
+-- needs the trait definitions loaded to know which ones those are.
+ok, err = pcall(function() DAEMON.trait   = require("daemons.trait_d") end)
+if not ok then log("warn", "Failed to load trait_d daemon: " .. tostring(err)) end
+
+ok, err = pcall(function() DAEMON.effect  = require("daemons.effect_d") end)
+if not ok then log("warn", "Failed to load effect_d daemon: " .. tostring(err)) end
+
+ok, err = pcall(function() DAEMON.mobs    = require("daemons.mob_d") end)
+if not ok then log("warn", "Failed to load mob_d daemon: " .. tostring(err)) end
+
+ok, err = pcall(function() DAEMON.combat  = require("daemons.combat_d") end)
+if not ok then log("warn", "Failed to load combat_d daemon: " .. tostring(err)) end
+
 ok, err = pcall(function() DAEMON.prompt  = require("daemons.prompt_d") end)
 if not ok then log("warn", "Failed to load prompt_d daemon: " .. tostring(err)) end
 
@@ -133,6 +155,13 @@ function on_input(session_id, text)
     end
 end
 
+--- Called when an off-thread password hash finishes.
+-- Argon2 runs on a worker pool rather than the Lua thread, so `authenticate`
+-- and `create_account` answer here instead of returning a value.
+function on_auth_result(session_id, kind, account, err)
+    login.on_result(session_id, kind, account, err)
+end
+
 --- Called when a client disconnects
 function on_disconnect(session_id)
     log("debug", "Disconnected: " .. session_id)
@@ -150,6 +179,31 @@ function on_disconnect(session_id)
             if not ok then
                 log("error", "Failed to clean up channel subscriptions for "
                     .. tostring(char_id) .. ": " .. tostring(err))
+            end
+        end
+
+        -- Stop any fight they were in, so nothing keeps swinging at a
+        -- character who is no longer here.
+        if DAEMON and DAEMON.combat then
+            local ok, err = pcall(DAEMON.combat.disengage_all, char_id)
+            if not ok then
+                log("error", "Failed to leave combat for "
+                    .. tostring(char_id) .. ": " .. tostring(err))
+            end
+        end
+
+        -- Write out everything the state cache is holding for this character.
+        -- Before character_d.unload, which drops the Player object the effect
+        -- scopes are keyed on.
+        if DAEMON and DAEMON.cache then
+            local ok, err = pcall(DAEMON.cache.evict_owner, char_id)
+            if not ok then
+                log("error", "Failed to flush cached state for "
+                    .. tostring(char_id) .. ": " .. tostring(err))
+                if DAEMON.journal then
+                    DAEMON.journal.error("CACHE_D flush failed on disconnect for char "
+                        .. tostring(char_id) .. ": " .. tostring(err))
+                end
             end
         end
 
@@ -208,6 +262,50 @@ function on_gmcp(session_id, package, data)
     log("debug", "GMCP from " .. session_id .. ": " .. package)
 end
 
+--- Called once by the driver before the Lua VM stops, on a clean shutdown.
+-- The last chance to write anything held in memory: CHARACTER_D is a cache
+-- that only reaches the database on an autosave tick or a disconnect, so
+-- without this every restart discards up to autosave_seconds of progress for
+-- everyone still online.
+--
+-- The driver waits for this to return, bounded by game.shutdown_timeout_seconds
+-- — so it must finish, and every step is protected so one failure cannot skip
+-- the rest.
+function on_shutdown()
+    log("info", "Shutdown: flushing game state")
+    if DAEMON and DAEMON.journal then
+        pcall(DAEMON.journal.info, "Server shutting down — flushing game state")
+    end
+
+    -- Everything the state cache is holding — effects, cooldowns, counters.
+    -- First, because it is the cheapest of the two and there is a deadline.
+    if DAEMON and DAEMON.cache then
+        local ok, flushed = pcall(DAEMON.cache.flush_all, { reason = "shutdown" })
+        if not ok then
+            log("error", "Shutdown cache flush failed: " .. tostring(flushed))
+            if DAEMON.journal then
+                pcall(DAEMON.journal.error, "SHUTDOWN: cache flush failed: " .. tostring(flushed))
+            end
+        else
+            log("info", "Shutdown: flushed " .. tostring(flushed) .. " cached scope(s)")
+        end
+    end
+
+    -- Save every loaded character. Same task the autosave ticker runs, so
+    -- there is one definition of "what needs writing".
+    if DAEMON and DAEMON.character then
+        local ok, err = pcall(function() require('tasks.autosave').run() end)
+        if not ok then
+            log("error", "Shutdown autosave failed: " .. tostring(err))
+            if DAEMON.journal then
+                pcall(DAEMON.journal.error, "SHUTDOWN: autosave failed: " .. tostring(err))
+            end
+        end
+    end
+
+    log("info", "Shutdown: flush complete")
+end
+
 --- Called when a driver-side timer fires
 function on_timer(id)
     if DAEMON and DAEMON.ticker then
@@ -251,6 +349,12 @@ function on_load(module_name)
         ["daemons.codegen_d"]    = "codegen",
         ["daemons.olc_d"]        = "olc",
         ["daemons.item_d"]       = "items",
+        ["daemons.cache_d"]      = "cache",
+        ["daemons.cooldown_d"]   = "cooldown",
+        ["daemons.trait_d"]      = "trait",
+        ["daemons.effect_d"]     = "effect",
+        ["daemons.mob_d"]        = "mobs",
+        ["daemons.combat_d"]     = "combat",
     }
 
     -- Convert slash-separated path to dot-separated require path
@@ -261,6 +365,13 @@ function on_load(module_name)
         if loaded then
             DAEMON[key] = loaded
             log("info", "Re-bound DAEMON." .. key .. " after reload")
+            -- Trait values are memoized against the definition generation, and
+            -- a reloaded trait_d or effect_d is a new generation. Without this
+            -- every online character would keep answering with values computed
+            -- by the code that was just replaced.
+            if (key == "trait" or key == "effect") and DAEMON.trait then
+                pcall(DAEMON.trait.bump_all)
+            end
         end
     end
 

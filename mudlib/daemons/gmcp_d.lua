@@ -14,11 +14,13 @@ function M.send_vitals(session_id)
     local pok, player = pcall(function() return get_player(session_id) end)
     if not pok or not player or not player.stats then return false end
     
+    -- Through :stat() rather than the raw table, so a client's health bar
+    -- reflects buffs and regeneration the same way the prompt does.
     local data = {
-        hp = player.stats.hp or 0,
-        maxhp = player.stats.max_hp or 0,
-        mp = player.stats.mp or 0,
-        maxmp = player.stats.max_mp or 0
+        hp = player:stat("hp"),
+        maxhp = player:stat("max_hp"),
+        mp = player:stat("mp"),
+        maxmp = player:stat("max_mp")
     }
     
     local send_ok, err = pcall(function() send_gmcp(session_id, "Char.Vitals", data) end)
@@ -68,10 +70,12 @@ function M.send_status(session_id)
     local pok, player = pcall(function() return get_player(session_id) end)
     if not pok or not player or not player.stats then return false end
     
+    -- xp and gold live on the Player, not in stats. Reading them from
+    -- `player.stats` meant this reported 0 for every character, always.
     local data = {
-        level = player.stats.level or 1,
-        xp = player.stats.xp or 0,
-        gold = player.stats.gold or 0
+        level = player:stat("level"),
+        xp = player.xp or 0,
+        gold = player.gold or 0
     }
     
     local send_ok, err = pcall(function() send_gmcp(session_id, "Char.Status", data) end)
@@ -79,9 +83,38 @@ function M.send_status(session_id)
     return true
 end
 
+--- Everything currently affecting the character, for a client that wants to
+--- draw buff icons.
+function M.send_effects(session_id)
+    local ok, sess = pcall(function() return get_session(session_id) end)
+    if not ok or not sess or not sess.gmcp_supported then return false end
+    if not (DAEMON and DAEMON.effect) then return false end
+
+    local pok, player = pcall(function() return get_player(session_id) end)
+    if not pok or not player then return false end
+
+    local now = os_time()
+    local list = {}
+    local aok, active = pcall(DAEMON.effect.active, player)
+    if not aok then return false end
+    for _, e in ipairs(active) do
+        list[#list + 1] = {
+            id = e.inst.def,
+            label = e.def.label or e.inst.def,
+            remaining = e.inst.expires and math.max(0, math.floor(e.inst.expires - now)) or -1,
+            stacks = e.inst.stacks or 1,
+        }
+    end
+
+    local send_ok, err = pcall(function() send_gmcp(session_id, "Char.Effects", list) end)
+    if not send_ok then log_error("gmcp_d send_effects error: " .. tostring(err)) end
+    return true
+end
+
 function M.send_all(session_id)
     M.send_vitals(session_id)
     M.send_status(session_id)
+    M.send_effects(session_id)
     M.send_room(session_id)
 end
 

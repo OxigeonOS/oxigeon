@@ -2,6 +2,8 @@
 
 Oxigeon runs Lua in a controlled sandbox designed to prevent untrusted mudlib code from escaping the server.
 
+The boundary is one function — `apply_sandbox` in `src/core/scripting/sandbox.rs` — called by `ScriptEngine::start` after the efuns are registered and before any mudlib code loads. What game code can reach is exactly what survives that call, and `tests/sandbox_reality_check.rs` asserts the table below against the VM the engine actually builds, not against a helper.
+
 ## What is Removed
 
 | Module / Function | Status | Reason |
@@ -10,11 +12,13 @@ Oxigeon runs Lua in a controlled sandbox designed to prevent untrusted mudlib co
 | `os.execute` | ❌ Removed | Arbitrary command execution |
 | `os.exit` | ❌ Removed | Would kill the server process |
 | `os.getenv` | ❌ Removed | Environment variable leakage |
+| `os.remove`, `os.rename`, `os.tmpname` | ❌ Removed | Uncontrolled file system writes |
 | `debug.*` | ❌ Removed | Can escape sandbox, inspect/modify any closure |
+| `jit.*` | ❌ Removed | `jit.on()` would disarm the instruction limit |
 | `loadfile(path)` | ❌ Removed | Uncontrolled file loading; use `require` |
 | `dofile(path)` | ❌ Removed | Same |
 | `package.loadlib` | ❌ Removed | Loading native C extensions |
-| `require` (outside mudlib) | ❌ Blocked | Jailed to mudlib directory |
+| `package.cpath`, C loaders | ❌ Removed | `require` cannot reach a native module |
 | Binary bytecode (`\x1B...`) | ❌ Blocked | Only text Lua is allowed |
 
 ## What is Available
@@ -26,27 +30,30 @@ Oxigeon runs Lua in a controlled sandbox designed to prevent untrusted mudlib co
 | `math.*` | ✅ Available | All functions |
 | `coroutine.*` | ✅ Available | All functions |
 | `pcall`, `xpcall` | ✅ Available | Error handling |
-| `require(module)` | ✅ Jailed | Only from mudlib directory |
-| `load(code)` | ✅ Text only | Binary bytecode rejected |
+| `require(module)` | ✅ Jailed | Lua sources on `package.path` — game and mudlib roots only |
+| `load(code)` | ✅ Text only | Binary bytecode rejected; returns `nil, err` |
 | `read_file`, `write_file`, `append_file` | ✅ Jailed | Only within mudlib |
 | `list_dir`, `file_exists`, `delete_file` | ✅ Jailed | Only within mudlib |
-| `os_time`, `os_clock`, `os_date` | ✅ Available | Safe subset of `os` |
+| `os.time`, `os.date`, `os.clock`, `os.difftime` | ✅ Available | The clock functions have no side effects |
+| `os_time`, `os_clock`, `os_date` | ✅ Available | Efun equivalents of the above |
 
 ## Why These Choices?
 
-**`io` removed**: Unrestricted file access would allow mudlib code to read `/etc/passwd`, server private keys, or the database file directly. The `read_file`/`write_file` efuns provide controlled alternatives jailed to the mudlib directory.
+**`io` removed**: Unrestricted file access would allow mudlib code to read `/etc/passwd`, server private keys, or the database file directly. The `read_file`/`write_file` efuns provide controlled alternatives jailed to the mudlib directory *and* checked against the directory permissions in `config/permissions.toml`. Raw `io` walked around both.
 
 **`os.execute` removed**: This would allow arbitrary shell command execution on the server host. This is a complete security boundary violation.
 
 **`os.exit` removed**: Calling `os.exit()` from Lua would immediately kill the server process, allowing players to crash the game.
 
-**`debug` removed**: The `debug` library allows inspecting and modifying closures, upvalues, and metatables — it can be used to break out of any sandbox by patching internal state.
+**`os` kept for clocks**: `os.time`, `os.date`, `os.clock` and `os.difftime` read a clock and do nothing else. Removing the whole table would break date formatting for no gain.
 
-**Binary bytecode blocked**: Pre-compiled Lua bytecode can trigger memory corruption bugs in LuaJIT. Only text source code is loaded.
+**`debug` removed**: The `debug` library allows inspecting and modifying closures, upvalues, and metatables — it can be used to break out of any sandbox by patching internal state. When the debug adapter is enabled the library is loaded but stashed in the registry and removed from `_G` before any mudlib code runs, so the game still cannot see it.
+
+**Binary bytecode blocked**: Pre-compiled Lua bytecode is not validated by LuaJIT and can trigger memory corruption. `load` and `loadstring` are replaced with wrappers that reject any chunk starting with `\x1B`, and report it the way `load` always has — `nil` plus a message.
 
 ## The `require` Jail
 
-`require` is available but restricted:
+`require` is available but restricted to Lua sources found on `package.path`, which the engine sets to the game and mudlib roots only. The native-module loaders are removed, so `require` cannot load a `.dll`/`.so` at all.
 
 ```lua
 -- ✅ Allowed — loads from mudlib/lib/strings.lua
@@ -67,12 +74,41 @@ Configured via `config/server.toml`:
 
 ```toml
 [limits]
-lua_memory_mb = 64          # Max Lua VM memory
-lua_instruction_limit = 1000000  # Max instructions per call
+lua_memory_mb = 64                # enforced
+lua_instruction_limit = 1000000   # enforced; 0 = off
 ```
 
-> [!NOTE]
-> The instruction limit prevents infinite loops from hanging the server. A Lua script that exceeds the limit will receive a runtime error.
+### `lua_memory_mb` — enforced
+
+Applied to the VM at startup. An allocation past the ceiling raises a normal, catchable Lua error and the VM keeps serving, so one greedy command cannot take the game down. Set to `0` for no ceiling.
+
+### `lua_instruction_limit` — enforced, but it costs the JIT
+
+A limit greater than zero installs a `every_nth_instruction` debug hook that charges each dispatch against a budget and raises a Lua error past it. The budget is per dispatch: a command that blows it does not affect the next one.
+
+**Enforcing this disables the LuaJIT compiler.** LuaJIT dispatches no debug hooks from inside a compiled trace, so with the JIT on, a one-line `while true do s = s + 1 end` delivers *no* hook events at all — not count, not line, not call. There is no hook mask that catches it. The engine therefore calls `jit.off()` at startup whenever a limit is configured, and `apply_sandbox` removes the `jit` table so game code cannot turn the compiler back on.
+
+Measured through the real mudlib with `scripts/bench.ps1`:
+
+| Workload | Cost of enforcing |
+|---|---|
+| `look` | 1.03× |
+| `who` | 1.02× |
+| `mudstatus` | 1.07× |
+| Tight numeric loop *(control)* | 2.59× |
+
+The compiler is worth 2.10× on that numeric loop and ~1.00× on real command dispatch, so **the limit is on by default**. See [Performance & the JIT Trade-off](./performance.md) for the full results and how to re-run them.
+
+> [!WARNING]
+> **Known gap.** The limit stops accidents, not sabotage. `pcall` catches the error the budget raises and Lua 5.1 has no uncatchable error, so
+>
+> ```lua
+> while true do pcall(function() while true do end end) end
+> ```
+>
+> still wedges the game thread. Every raise lands inside the inner loop at a fixed offset, so the outer loop is never reached. Treat the ability to write Lua on this server as a trusted privilege regardless of this setting.
+
+While a debug adapter client is attached the budget is suspended — stepping through a breakpoint is meant to take as long as it takes.
 
 ## Permissions System
 

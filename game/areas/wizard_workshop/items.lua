@@ -55,6 +55,29 @@ items[#items + 1] = Item:new({
     weight      = 0,
 })
 
+-- ─── Draught of slow mending ─────────────────────────────────────────────────
+-- The vertical slice for the effect system: a player-facing action, through an
+-- existing component and an existing command, that puts a real effect on a
+-- character. `drink` needs no changes; `on_drink` simply applies the effect.
+local regen_draught = Item:new({
+    id          = "regen_draught",
+    short       = "a draught of slow mending",
+    description = "A stoppered flask of cloudy green liquid, faintly warm to the touch. Silt drifts through it, never quite settling.",
+    weight      = 1,
+    value       = 120,
+    tags        = {"potion", "healing"},
+})
+drinkable.apply(regen_draught, {
+    drink_message      = "The draught tastes of moss and iron. A warm glow spreads outward from your chest.",
+    drink_room_message = "{name} drinks a cloudy green draught.",
+    on_drink = function(item, player)
+        if DAEMON and DAEMON.effect then
+            DAEMON.effect.apply(player, "regeneration", { source = "potion:regen_draught" })
+        end
+    end,
+})
+items[#items + 1] = regen_draught
+
 -- ─── Manasteel bar ───────────────────────────────────────────────────────────
 items[#items + 1] = Item:new({
     id          = "manasteel_bar",

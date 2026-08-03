@@ -35,13 +35,23 @@ function M.handle_death(data)
     end)
     if not send_ok then log_error("death_d send messages error") end
 
-    if M._config.xp_penalty > 0 and player.stats and player.stats.xp then
-        player.stats.xp = math.max(0, math.floor(player.stats.xp * (1.0 - M._config.xp_penalty)))
+    -- XP lives on the Player, not in stats. This read `player.stats.xp`,
+    -- which has never existed, so the penalty was dead code.
+    if M._config.xp_penalty > 0 and type(player.xp) == "number" then
+        player.xp = math.max(0, math.floor(player.xp * (1.0 - M._config.xp_penalty)))
+    end
+
+    -- Death ends most effects. A definition can opt out with
+    -- `survives_death = true` — a long curse should outlast dying.
+    if DAEMON and DAEMON.effect then
+        local eff_ok, eff_err = pcall(DAEMON.effect.clear, player,
+            { keep_survivors = true, reason = "death" })
+        if not eff_ok then log_error("death_d effect clear error: " .. tostring(eff_err)) end
     end
 
     if DAEMON and DAEMON.ticker then
         local timer_ok, timer_err = pcall(function()
-            DAEMON.ticker.after(M._config.respawn_delay, "respawn_" .. char_id, function()
+            DAEMON.ticker.after(M._config.respawn_delay, "player." .. char_id .. ".respawn", function()
                 M.handle_respawn(char_id, session_id)
             end)
         end)
@@ -53,7 +63,14 @@ function M.handle_respawn(char_id, session_id)
     local ok, player = pcall(function() return get_player(session_id) end)
     if not ok or not player then return end
 
-    if player.stats and player.stats.max_hp then
+    -- Through TRAIT_D rather than writing player.stats.hp directly: a raw
+    -- write would leave the regeneration anchor pointing at the moment before
+    -- they died, and they would be handed all the intervening seconds of
+    -- healing the instant they respawned.
+    if DAEMON and DAEMON.trait and DAEMON.trait.get_def and DAEMON.trait.get_def("hp") then
+        local max_hp = player:stat("max_hp")
+        DAEMON.trait.set_cur(player, "hp", math.floor(max_hp * M._config.hp_on_respawn))
+    elseif player.stats and player.stats.max_hp then
         player.stats.hp = math.floor(player.stats.max_hp * M._config.hp_on_respawn)
     end
 

@@ -1,6 +1,12 @@
 # Models — Account & Character
 
-See [src/domain/models/](file:///C:/Users/sheri/.gemini/antigravity/scratch/oxigeon/src/domain/models) for the Diesel ORM model definitions.
+See `src/domain/models/` for the Diesel ORM model definitions.
+
+> [!TIP]
+> Most things that need persisting do **not** need a model here. The
+> [document store](../lua-api/document-store.md) handles arbitrary JSON from
+> Lua with no Rust, no migration and no rebuild. Add a model when you need
+> indexed columns, joins or foreign keys.
 
 ## Account
 

@@ -37,14 +37,29 @@ end
 
 -- ─── Variable resolution ─────────────────────────────────────────────────────
 
+--- A stat as the player experiences it, buffs included.
+---
+--- Reading `player.stats.max_hp` directly would show the stored number, which
+--- for a derived trait is not stored at all and for a buffed one is the wrong
+--- answer. This is the prompt, so it renders on every command — TRAIT_D's memo
+--- is what keeps that cheap.
+local function stat(player, id, fallback)
+    if player.stat then
+        local ok, v = pcall(player.stat, player, id)
+        if ok and type(v) == "number" then return tostring(v) end
+    end
+    local raw = player.stats and player.stats[id]
+    return tostring(type(raw) == "number" and raw or fallback)
+end
+
 local function resolve_var(var, player, char_id)
-    if var == "h" then return tostring(player.stats and player.stats.hp or 0) end
-    if var == "H" then return tostring(player.stats and player.stats.max_hp or 0) end
-    if var == "m" then return tostring(player.stats and player.stats.mp or 0) end
-    if var == "M" then return tostring(player.stats and player.stats.max_mp or 0) end
+    if var == "h" then return stat(player, "hp", 0) end
+    if var == "H" then return stat(player, "max_hp", 0) end
+    if var == "m" then return stat(player, "mp", 0) end
+    if var == "M" then return stat(player, "max_mp", 0) end
     if var == "g" then return tostring(player.gold or 0) end
     if var == "x" then return tostring(player.xp or 0) end
-    if var == "l" then return tostring(player.stats and player.stats.level or 1) end
+    if var == "l" then return stat(player, "level", 1) end
     if var == "n" then return tostring(player.name or "Someone") end
     if var == "r" then
         if DAEMON.world then
@@ -91,6 +106,12 @@ function M.render(session_id)
         send_prompt(session_id, DEFAULT_TEMPLATE)
         return
     end
+
+    -- Bring regenerating gauges up to date before showing them. This is the
+    -- only place in the game that runs on every single command, which makes it
+    -- both the right place to do this and the place where it has to be cheap:
+    -- a settle that earned nothing returns without writing anything.
+    if DAEMON.trait then pcall(DAEMON.trait.touch, player) end
 
     local template = M.get_template(char_id)
 

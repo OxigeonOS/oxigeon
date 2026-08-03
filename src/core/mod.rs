@@ -1,3 +1,6 @@
+pub mod auth;
+pub mod compute;
+pub mod lock;
 pub mod network;
 pub mod session;
 pub mod scripting;

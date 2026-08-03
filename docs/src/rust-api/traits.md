@@ -3,6 +3,18 @@
 Oxigeon's domain-layer subsystems are defined as Rust traits so the backing implementation
 can be replaced without changing any driver code. The default implementations use Diesel + SQLite.
 
+> [!WARNING]
+> **These traits are currently aspirational.** All three are implemented, and
+> none is consumed: nothing in the tree uses `dyn AccountStore`, or takes one
+> as a generic bound. `EfunContext` holds `Arc<DieselAccountStore>`, not
+> `Arc<dyn AccountStore>`.
+>
+> The practical consequence is that adding a method means writing its signature
+> three times — inherent impl, trait declaration, forwarding impl — for a
+> swappability the code does not actually offer. **New stores should not add a
+> trait**; `DieselDocumentStore` deliberately has none. Either make the traits
+> load-bearing or delete them, but do not grow the tax in the meantime.
+
 ---
 
 ## `AccountStore`
@@ -16,6 +28,7 @@ pub trait AccountStore: Send + Sync {
     fn find_by_id(&self, id: i64) -> Result<Option<Account>>;
     fn find_by_name(&self, name: &str) -> Result<Option<Account>>;
     fn update_password(&self, id: i64, new_password: &str) -> Result<()>;
+    fn set_admin(&self, id: i64, is_admin: bool) -> Result<()>;
     fn delete(&self, id: i64) -> Result<()>;
 }
 ```
@@ -35,12 +48,58 @@ pub trait CharacterStore: Send + Sync {
     fn find_by_id(&self, id: i64) -> Result<Option<Character>>;
     fn find_by_account(&self, account_id: i64) -> Result<Vec<Character>>;
     fn find_by_name(&self, name: &str) -> Result<Option<Character>>;
+    /// The character's JSON `data` column — see Character Data & Persistence.
+    fn save_data(&self, id: i64, data: &str) -> Result<()>;
+    fn load_data(&self, id: i64) -> Result<Option<String>>;
     fn delete(&self, id: i64) -> Result<()>;
 }
 ```
 
 The default `DieselCharacterStore` enforces the `max_characters_per_account` limit
 set in `server.toml` and enforces globally unique character names.
+
+---
+
+## `RoleStore`
+
+Defined in `src/domain/traits.rs`. Implemented by `DieselRoleStore`. Backs the RBAC
+system described in [Permissions & Roles](../lua-api/permissions.md) — roles, the
+permissions attached to them, and the characters they are granted to.
+
+```rust
+pub trait RoleStore: Send + Sync {
+    fn create_role(&self, name: &str) -> Result<Role>;
+    fn find_role_by_name(&self, name: &str) -> Result<Option<Role>>;
+    fn list_roles(&self) -> Result<Vec<Role>>;
+    fn delete_role(&self, id: i64) -> Result<()>;
+
+    fn grant_permission(&self, role_id: i64, permission: &str) -> Result<()>;
+    fn revoke_permission(&self, role_id: i64, permission: &str) -> Result<()>;
+    fn get_permissions_for_role(&self, role_id: i64) -> Result<Vec<String>>;
+
+    fn assign_role(&self, character_id: i64, role_id: i64) -> Result<()>;
+    fn unassign_role(&self, character_id: i64, role_id: i64) -> Result<()>;
+    fn get_roles_for_character(&self, character_id: i64) -> Result<Vec<Role>>;
+    fn get_permissions_for_character(&self, character_id: i64) -> Result<Vec<String>>;
+}
+```
+
+`get_permissions_for_character` is the one the driver actually calls on a hot path:
+`enter_game_session` reads it once and caches the result on the session, so a permission
+check during play is an in-memory set lookup rather than a query.
+
+> [!NOTE]
+> The `**superuser**` sentinel is not a row in this table. It is inserted into a session's
+> cached permission set when `accounts.is_admin` is true, and it short-circuits every check.
+
+---
+
+## The document store has no trait
+
+`DieselDocumentStore` (see [Document Store](../lua-api/document-store.md)) deliberately has
+no trait mirror. It is the most backend-specific store of the set — its query builder is
+SQLite JSON1 throughout — and a fourth copy of the signature tax would buy nothing while
+there is no second backend. This is a decision, not an oversight.
 
 ---
 
@@ -60,8 +119,9 @@ let account_store = Arc::new(DieselAccountStore::new(db_pool.clone(), min_pw_len
 let account_store = Arc::new(MyRedisAccountStore::new(redis_client.clone()));
 ```
 
-The `EfunContext` holds the stores as `Arc<DieselAccountStore>` currently — a future refactor
-will change these to `Arc<dyn AccountStore>` to make trait-object dispatch automatic.
+`EfunContext` holds the stores as `Arc<DieselAccountStore>` and friends, so swapping one
+means changing that field's type too — the trait alone does not buy it. See the warning at
+the top of this page.
 
 ---
 

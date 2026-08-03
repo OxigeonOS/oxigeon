@@ -84,6 +84,13 @@ function Room:get_appearance(session_id)
         parts[#parts + 1] = table.concat(chars_here, "\r\n")
     end
 
+    -- Creatures. After the players, so the last thing before the prompt is
+    -- whatever might be about to bite you.
+    if DAEMON and DAEMON.mobs then
+        local ok, mobs = pcall(DAEMON.mobs.describe_room, self.id)
+        if ok and mobs then parts[#parts + 1] = mobs end
+    end
+
     return table.concat(parts, "\r\n") .. "\r\n"
 end
 

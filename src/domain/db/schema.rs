@@ -51,6 +51,19 @@ diesel::table! {
     }
 }
 
+// The generic document store. Deliberately joins nothing — it has no foreign
+// keys and never appears in a query with another table, so it needs neither a
+// `joinable!` nor a place in `allow_tables_to_appear_in_same_query!`.
+diesel::table! {
+    documents (collection, id) {
+        collection -> Text,
+        id -> Text,
+        data -> Text,
+        created_at -> Text,
+        updated_at -> Text,
+    }
+}
+
 diesel::joinable!(characters -> accounts (account_id));
 diesel::joinable!(role_permissions -> roles (role_id));
 diesel::joinable!(role_permissions -> permissions (permission_id));

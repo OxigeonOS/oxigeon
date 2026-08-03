@@ -2,23 +2,38 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use mlua::prelude::*;
+use crate::core::lock::RwLockExt;
 
 use crate::config::PermissionConfig;
 use crate::core::session::{SessionHandler, SessionId};
 
-/// Resolve a Lua-supplied path relative to the mudlib root, preventing `../` escapes.
-fn resolve_jailed_path(mudlib_root: &Path, lua_path: &str) -> Result<PathBuf, String> {
-    let requested = mudlib_root.join(lua_path);
+/// Drop `.` and resolve `..` without touching the filesystem, so a path that
+/// does not exist yet can still be checked.
+fn lexically_normalize(path: &Path) -> PathBuf {
     let mut components = Vec::new();
-    for component in requested.components() {
+    for component in path.components() {
         match component {
-            std::path::Component::ParentDir => { components.pop(); }
+            std::path::Component::ParentDir => {
+                components.pop();
+            }
             std::path::Component::CurDir => {}
-            c => { components.push(c); }
+            c => components.push(c),
         }
     }
-    let resolved: PathBuf = components.iter().collect();
-    if !resolved.starts_with(mudlib_root) {
+    components.iter().collect()
+}
+
+/// Resolve a Lua-supplied path relative to the mudlib root, preventing `../` escapes.
+///
+/// Both sides are normalized before the comparison. Normalizing only the
+/// requested path was a real bug: the configured root is `./mudlib`, the
+/// requested path normalized to `mudlib/...`, and `starts_with` then said no —
+/// so every legitimate read was refused on a default install. `audit_d` could
+/// not load its watch list, and said nothing about it.
+fn resolve_jailed_path(mudlib_root: &Path, lua_path: &str) -> Result<PathBuf, String> {
+    let root = lexically_normalize(mudlib_root);
+    let resolved = lexically_normalize(&root.join(lua_path));
+    if !resolved.starts_with(&root) {
         return Err(format!("Path '{}' escapes mudlib root", lua_path));
     }
     Ok(resolved)
@@ -33,17 +48,24 @@ fn check_dir_permission(
     perm_config: &PermissionConfig,
     sh: &Arc<std::sync::RwLock<SessionHandler>>,
 ) -> bool {
-    // Get relative path string
-    let rel = match resolved_path.strip_prefix(mudlib_root) {
+    // Against the *normalized* root, for the same reason `resolve_jailed_path`
+    // normalizes: `resolved_path` has had its `./` removed and the configured
+    // root has not, so a raw `strip_prefix` fails on every relative root and
+    // this function denies everything.
+    let rel = match resolved_path.strip_prefix(lexically_normalize(mudlib_root)) {
         Ok(r) => format!("/{}", r.to_string_lossy().replace('\\', "/")),
         Err(_) => return false, // not under mudlib, already jailed
     };
     match perm_config.dir_permission(&rel, op) {
         None => true, // no restriction
+        // Engine-internal dispatch — a daemon writing on a tick, the mudlib
+        // load — has no session and acts with the driver's own authority. See
+        // `efuns::enter_system_dispatch`.
+        Some(_) if crate::core::scripting::efuns::is_system_dispatch() => true,
         Some(required_perm) => {
             crate::core::scripting::efuns::get_current_session()
                 .and_then(|sid_str| sid_str.parse::<SessionId>().ok())
-                .map(|sid| sh.read().unwrap().has_permission(&sid, required_perm))
+                .map(|sid| sh.read_recover().has_permission(&sid, required_perm))
                 .unwrap_or(false)
         }
     }
@@ -276,4 +298,55 @@ pub fn register_io_file_efuns(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The configured `mudlib_path` is `./mudlib`, so this is the real shape.
+    #[test]
+    fn a_relative_root_still_admits_paths_inside_it() {
+        let root = Path::new("./mudlib");
+        assert_eq!(
+            resolve_jailed_path(root, "logs/audit_watch.json").unwrap(),
+            Path::new("mudlib/logs/audit_watch.json")
+        );
+    }
+
+    #[test]
+    fn an_absolute_root_works_the_same_way() {
+        let root = Path::new("/srv/oxigeon/mudlib");
+        assert_eq!(
+            resolve_jailed_path(root, "cmds/who.lua").unwrap(),
+            Path::new("/srv/oxigeon/mudlib/cmds/who.lua")
+        );
+    }
+
+    #[test]
+    fn traversal_out_of_a_relative_root_is_still_refused() {
+        let root = Path::new("./mudlib");
+        assert!(resolve_jailed_path(root, "../Cargo.toml").is_err());
+        assert!(resolve_jailed_path(root, "../../etc/passwd").is_err());
+        assert!(resolve_jailed_path(root, "cmds/../../Cargo.toml").is_err());
+    }
+
+    /// `..` that stays inside the root is fine — refusing it would break
+    /// nothing dangerous and surprise anyone building a path by hand.
+    #[test]
+    fn traversal_that_stays_inside_the_root_is_allowed() {
+        let root = Path::new("./mudlib");
+        assert_eq!(
+            resolve_jailed_path(root, "cmds/../lib/strings.lua").unwrap(),
+            Path::new("mudlib/lib/strings.lua")
+        );
+    }
+
+    /// A sibling directory whose name merely starts with the root's must not
+    /// pass — `starts_with` on components, not on the string, is what stops it.
+    #[test]
+    fn a_sibling_with_a_prefix_name_does_not_slip_through() {
+        let root = Path::new("./mudlib");
+        assert!(resolve_jailed_path(root, "../mudlib_secrets/keys.txt").is_err());
+    }
 }

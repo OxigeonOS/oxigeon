@@ -4,6 +4,7 @@ use std::sync::{Arc, RwLock};
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
+use crate::core::lock::RwLockExt;
 
 use crate::config::{DriverConfig, ServerConfig};
 use crate::config::driver_config::DatabaseBackend;
@@ -31,6 +32,8 @@ pub struct Driver {
     pub script_engine: ScriptEngine,
     pub db_pool: AnyPool,
     pub debug_state: crate::core::scripting::debugger::SharedDebugState,
+    pub auth_worker: crate::core::auth::AuthWorker,
+    pub compute: Option<crate::core::compute::ComputeBridge>,
 }
 
 impl Driver {
@@ -62,6 +65,12 @@ impl Driver {
             server_config.accounts.max_characters_per_account,
         ));
         let role_store = Arc::new(DieselRoleStore::new(db_pool.clone()));
+        // One table serves every collection a game invents, so a game author
+        // never needs a migration. See docs/src/lua-api/document-store.md.
+        let document_store = Arc::new(crate::domain::models::DieselDocumentStore::new(
+            db_pool.clone(),
+            server_config.documents.clone(),
+        )?);
 
         // 4. Create session handler
         let session_handler = Arc::new(RwLock::new(SessionHandler::new(
@@ -87,7 +96,35 @@ impl Driver {
         // Shared with the DAP listener started in `run()`. Created here because
         // the Lua thread claims its request channel at startup.
         let debug_cfg = driver_config.servers.debug.clone().unwrap_or_default();
-        let debug_state = crate::core::scripting::debugger::DebugState::from_config(&debug_cfg);
+        let debug_state = crate::core::scripting::debugger::DebugState::from_config(
+            &debug_cfg,
+            server_config.limits.lua_instruction_limit,
+        );
+        match server_config.limits.lua_instruction_limit {
+            0 => tracing::info!(
+                "limits.lua_instruction_limit is 0 — the LuaJIT compiler stays on, and a \
+                 runaway loop in Lua will wedge the game thread until the process is killed"
+            ),
+            n => tracing::info!("Lua instruction limit: {} per dispatch", n),
+        }
+
+        // Two workers: enough that one slow verify does not stall the next
+        // login, few enough that a flood of attempts cannot turn into a fan of
+        // CPU-bound threads competing with the game thread.
+        let auth_worker = crate::core::auth::AuthWorker::start(
+            account_store.clone(),
+            engine_cmd_tx.clone(),
+            2,
+        );
+
+        // The compute pool. `None` unless [compute] enabled = true, which is
+        // what keeps the efuns unregistered and the feature free when unused.
+        let compute = crate::core::compute::ComputeBridge::start(
+            server_config.compute.clone(),
+            mudlib_path.clone(),
+            PathBuf::from(server_config.game.game_path.as_deref().unwrap_or("./game")),
+            engine_cmd_tx.clone(),
+        );
 
         let efun_ctx = EfunContext {
             session_handler: session_handler.clone(),
@@ -102,6 +139,9 @@ impl Driver {
             started_at,
             started_at_utc,
             debug_state: debug_state.clone(),
+            auth_worker: Some(auth_worker.clone()),
+            compute: compute.clone(),
+            document_store,
         };
 
         let script_engine = ScriptEngine::start(mudlib_path, efun_ctx, engine_cmd_tx, engine_cmd_rx)?;
@@ -114,6 +154,8 @@ impl Driver {
             script_engine,
             db_pool,
             debug_state,
+            auth_worker,
+            compute,
         })
     }
 
@@ -157,6 +199,8 @@ impl Driver {
         tracing::info!("Oxigeon v{} started — accepting connections on {}",
             env!("CARGO_PKG_VERSION"), listener.addr());
 
+        // Compute deadlines are watched by a thread the bridge owns, not from
+        // here — see `ComputeBridge::spawn_watchdog`.
         loop {
             tokio::select! {
                 result = listener.accept() => {
@@ -165,8 +209,9 @@ impl Driver {
                             let sh = self.session_handler.clone();
                             let cmd_tx = self.script_engine.cmd_tx.clone();
                             let max_buf = self.server_config.limits.input_buffer_bytes;
+                            let auth = self.auth_worker.clone();
                             tokio::spawn(async move {
-                                handle_connection(conn, reader, addr, sh, cmd_tx, max_buf).await;
+                                handle_connection(conn, reader, addr, sh, cmd_tx, max_buf, auth).await;
                             });
                         }
                         Err(e) => {
@@ -177,7 +222,7 @@ impl Driver {
                 _ = tokio::signal::ctrl_c() => {
                     tracing::info!("Shutdown signal received");
                     {
-                        let handler = self.session_handler.read().unwrap();
+                        let handler = self.session_handler.read_recover();
                         handler.broadcast("\r\nServer shutting down. Goodbye!\r\n");
                     }
                     break;
@@ -185,7 +230,31 @@ impl Driver {
             }
         }
 
+        self.shutdown_lua();
         Ok(())
+    }
+
+    /// Ask the mudlib to flush, and wait for it.
+    ///
+    /// Ordering is the whole point. `Drop for ScriptEngine` sends the same
+    /// command but never waits, so relying on it meant the process could exit
+    /// before the Lua thread had even read the message — and nothing asked the
+    /// mudlib to save in the first place. Since `CHARACTER_D` only reaches the
+    /// database on an autosave tick, that discarded up to `autosave_seconds`
+    /// of every online player's progress on every clean restart.
+    fn shutdown_lua(&self) {
+        let timeout = self.server_config.game.shutdown_timeout();
+        tracing::info!("Flushing game state (waiting up to {:?})", timeout);
+        if self.script_engine.shutdown_within(timeout) {
+            tracing::info!("Game state flushed");
+        } else {
+            tracing::error!(
+                "on_shutdown did not finish within {:?} — exiting anyway. Player data \
+                 changed since the last autosave may be lost; look for a mudlib \
+                 on_shutdown that blocks, or raise game.shutdown_timeout_seconds",
+                timeout
+            );
+        }
     }
 }
 
@@ -200,6 +269,7 @@ async fn handle_connection(
     session_handler: Arc<RwLock<SessionHandler>>,
     cmd_tx: tokio::sync::mpsc::UnboundedSender<LuaCommand>,
     max_buf: usize,
+    auth_worker: crate::core::auth::AuthWorker,
 ) {
     // Create output channel for this session
     let (output_tx, mut output_rx) = mpsc::channel::<SessionOutput>(64);
@@ -211,7 +281,7 @@ async fn handle_connection(
 
     // Register with handler — drop the guard before awaiting
     let connect_result = {
-        let mut handler = session_handler.write().unwrap();
+        let mut handler = session_handler.write_recover();
         handler.connect(session)
     };
 
@@ -323,13 +393,17 @@ async fn handle_connection(
 
     // ── Cleanup ───────────────────────────────────────────
     {
-        let mut handler = session_handler.write().unwrap();
+        let mut handler = session_handler.write_recover();
         handler.disconnect(&session_id);
     }
 
     let _ = cmd_tx.send(LuaCommand::OnDisconnect {
         session_id: session_id_str.clone(),
     });
+
+    // Drop this address's failed-login tally, unless it is actually locked
+    // out — otherwise reconnecting would be a free reset.
+    auth_worker.forget(Some(addr.ip()));
 
     let _ = conn.close().await;
     tracing::info!("Connection closed: {} ({})", session_id_str, addr);

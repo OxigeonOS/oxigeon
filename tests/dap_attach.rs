@@ -231,7 +231,7 @@ async fn handshake(c: &mut Client, path: &std::path::Path, lines: &[u32]) {
 async fn breakpoint_stops_the_vm_and_reports_a_stack() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = write_chunk(&dir);
-    let st = DebugState::from_config(&DebugServerConfig::default());
+    let st = DebugState::from_config(&DebugServerConfig::default(), 0);
     let addr = debugger::dap::serve("127.0.0.1", 0, st.clone()).await.unwrap();
     let (go, done, _h) = spawn_vm(st.clone(), path.clone());
 
@@ -280,7 +280,7 @@ async fn breakpoint_stops_the_vm_and_reports_a_stack() {
 async fn stepping_moves_through_and_out_of_a_frame() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = write_chunk(&dir);
-    let st = DebugState::from_config(&DebugServerConfig::default());
+    let st = DebugState::from_config(&DebugServerConfig::default(), 0);
     let addr = debugger::dap::serve("127.0.0.1", 0, st.clone()).await.unwrap();
     let (go, _done, _h) = spawn_vm(st.clone(), path.clone());
 
@@ -325,7 +325,7 @@ async fn stepping_moves_through_and_out_of_a_frame() {
 async fn requests_are_rejected_while_the_vm_is_running() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = write_chunk(&dir);
-    let st = DebugState::from_config(&DebugServerConfig::default());
+    let st = DebugState::from_config(&DebugServerConfig::default(), 0);
     let addr = debugger::dap::serve("127.0.0.1", 0, st.clone()).await.unwrap();
     let (_go, _done, _h) = spawn_vm(st.clone(), path.clone());
 
@@ -350,7 +350,7 @@ async fn vm_auto_continues_when_the_client_goes_silent() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = write_chunk(&dir);
     let cfg = DebugServerConfig { auto_continue_secs: 1, ..Default::default() };
-    let st = DebugState::from_config(&cfg);
+    let st = DebugState::from_config(&cfg, 0);
     let addr = debugger::dap::serve("127.0.0.1", 0, st.clone()).await.unwrap();
     let (go, done, _h) = spawn_vm(st.clone(), path.clone());
 
@@ -371,7 +371,7 @@ async fn vm_auto_continues_when_the_client_goes_silent() {
 async fn detaching_disarms_the_hook_and_clears_breakpoints() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = write_chunk(&dir);
-    let st = DebugState::from_config(&DebugServerConfig::default());
+    let st = DebugState::from_config(&DebugServerConfig::default(), 0);
     let addr = debugger::dap::serve("127.0.0.1", 0, st.clone()).await.unwrap();
 
     let mut c = Client::connect(addr).await;
@@ -401,7 +401,7 @@ async fn detaching_disarms_the_hook_and_clears_breakpoints() {
 async fn locals_are_readable_at_a_breakpoint() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = write_chunk(&dir);
-    let st = DebugState::from_config(&DebugServerConfig { enabled: true, ..Default::default() });
+    let st = DebugState::from_config(&DebugServerConfig { enabled: true, ..Default::default() }, 0);
     let addr = debugger::dap::serve("127.0.0.1", 0, st.clone()).await.unwrap();
     let (go, _done, _h) = spawn_vm_with_debug_lib(st.clone(), path.clone());
 
@@ -453,7 +453,7 @@ async fn locals_are_readable_at_a_breakpoint() {
 async fn evaluate_runs_in_the_paused_frame() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = write_chunk(&dir);
-    let st = DebugState::from_config(&DebugServerConfig { enabled: true, ..Default::default() });
+    let st = DebugState::from_config(&DebugServerConfig { enabled: true, ..Default::default() }, 0);
     let addr = debugger::dap::serve("127.0.0.1", 0, st.clone()).await.unwrap();
     let (go, _done, _h) = spawn_vm_with_debug_lib(st.clone(), path.clone());
 
@@ -502,7 +502,7 @@ async fn evaluate_runs_in_the_paused_frame() {
 async fn variable_handles_do_not_survive_a_resume() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = write_chunk(&dir);
-    let st = DebugState::from_config(&DebugServerConfig { enabled: true, ..Default::default() });
+    let st = DebugState::from_config(&DebugServerConfig { enabled: true, ..Default::default() }, 0);
     let addr = debugger::dap::serve("127.0.0.1", 0, st.clone()).await.unwrap();
     let (go, _done, _h) = spawn_vm_with_debug_lib(st.clone(), path.clone());
 
@@ -548,7 +548,7 @@ async fn set_conditional(c: &mut Client, path: &std::path::Path, bps: Value) {
 async fn a_condition_selects_which_iteration_stops() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = write_chunk(&dir);
-    let st = DebugState::from_config(&DebugServerConfig { enabled: true, ..Default::default() });
+    let st = DebugState::from_config(&DebugServerConfig { enabled: true, ..Default::default() }, 0);
     let addr = debugger::dap::serve("127.0.0.1", 0, st.clone()).await.unwrap();
     let (go, done, _h) = spawn_vm_with_debug_lib(st.clone(), path.clone());
 
@@ -575,7 +575,7 @@ async fn a_condition_selects_which_iteration_stops() {
 async fn a_never_true_condition_never_stops() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = write_chunk(&dir);
-    let st = DebugState::from_config(&DebugServerConfig { enabled: true, ..Default::default() });
+    let st = DebugState::from_config(&DebugServerConfig { enabled: true, ..Default::default() }, 0);
     let addr = debugger::dap::serve("127.0.0.1", 0, st.clone()).await.unwrap();
     let (go, done, _h) = spawn_vm_with_debug_lib(st.clone(), path.clone());
 
@@ -595,7 +595,7 @@ async fn a_never_true_condition_never_stops() {
 async fn a_broken_condition_stops_and_reports_the_error() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = write_chunk(&dir);
-    let st = DebugState::from_config(&DebugServerConfig { enabled: true, ..Default::default() });
+    let st = DebugState::from_config(&DebugServerConfig { enabled: true, ..Default::default() }, 0);
     let addr = debugger::dap::serve("127.0.0.1", 0, st.clone()).await.unwrap();
     let (go, _done, _h) = spawn_vm_with_debug_lib(st.clone(), path.clone());
 
@@ -634,7 +634,7 @@ async fn a_broken_condition_stops_and_reports_the_error() {
 async fn a_hit_condition_skips_earlier_hits() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = write_chunk(&dir);
-    let st = DebugState::from_config(&DebugServerConfig { enabled: true, ..Default::default() });
+    let st = DebugState::from_config(&DebugServerConfig { enabled: true, ..Default::default() }, 0);
     let addr = debugger::dap::serve("127.0.0.1", 0, st.clone()).await.unwrap();
     let (go, _done, _h) = spawn_vm_with_debug_lib(st.clone(), path.clone());
 
@@ -657,7 +657,7 @@ async fn a_hit_condition_skips_earlier_hits() {
 async fn conditional_support_is_advertised() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = write_chunk(&dir);
-    let st = DebugState::from_config(&DebugServerConfig { enabled: true, ..Default::default() });
+    let st = DebugState::from_config(&DebugServerConfig { enabled: true, ..Default::default() }, 0);
     let addr = debugger::dap::serve("127.0.0.1", 0, st.clone()).await.unwrap();
 
     let mut c = Client::connect(addr).await;
@@ -691,7 +691,7 @@ async fn tables_preview_their_contents_instead_of_an_address() {
     )
     .unwrap();
 
-    let st = DebugState::from_config(&DebugServerConfig { enabled: true, ..Default::default() });
+    let st = DebugState::from_config(&DebugServerConfig { enabled: true, ..Default::default() }, 0);
     let addr = debugger::dap::serve("127.0.0.1", 0, st.clone()).await.unwrap();
     let (go, _done, _h) = spawn_vm_with_debug_lib(st.clone(), path.clone());
 
@@ -754,3 +754,6 @@ async fn tables_preview_their_contents_instead_of_an_address() {
     c.request("disconnect", json!({})).await;
     let _ = c.response("disconnect").await;
 }
+
+
+

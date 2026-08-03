@@ -178,8 +178,25 @@ function M.unload(char_id)
         if DAEMON and DAEMON.ticker then
             local ok, err = pcall(DAEMON.ticker.remove_by_prefix, "player." .. char_id .. ".")
             if not ok then
-                -- ticker might not have remove_by_prefix — that's ok
-                log("debug", "CHARACTER_D: ticker cleanup note for char "
+                log_error("CHARACTER_D: Failed to clean up timers for character "
+                    .. tostring(char_id) .. ": " .. tostring(err))
+            end
+        end
+
+        -- Write out anything the effect system was holding for them, and stop
+        -- the sweep and the heartbeat from walking a character who has gone.
+        if DAEMON and DAEMON.effect then
+            local ok, err = pcall(DAEMON.effect.detach, player)
+            if not ok then
+                log_error("CHARACTER_D: Failed to detach effects for character "
+                    .. tostring(char_id) .. ": " .. tostring(err))
+            end
+        end
+
+        if DAEMON and DAEMON.trait then
+            local ok, err = pcall(DAEMON.trait.detach, player)
+            if not ok then
+                log_error("CHARACTER_D: Failed to detach traits for character "
                     .. tostring(char_id) .. ": " .. tostring(err))
             end
         end

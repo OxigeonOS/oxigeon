@@ -17,25 +17,56 @@ DAEMON.journal.log("info", "Server startup complete.")
 
 ## Core Daemons
 
-### Mudlib Layer (`mudlib/daemons/`)
+All of them live in `mudlib/daemons/`. Anything substantial has its own page;
+this table is the directory.
+
+### Infrastructure
 
 | Daemon | Key | Purpose |
 |--------|-----|---------|
-| `journal_d` | `DAEMON.journal` | Structured logging to server console and log files. |
+| `journal_d` | `DAEMON.journal` | Structured logging to server console and log files. See [Observability](./observability.md). |
 | `audit_d` | `DAEMON.audit` | Security and compliance audit trail for player/admin actions. |
-| `ticker_d` | `DAEMON.ticker` | Timer scheduler — manages Lua callbacks for Tokio-backed async timers. |
-| `event_d` | `DAEMON.event` | Signal/event system — Godot-style named event channels with subscribe/emit. |
-| `prompt_d` | `DAEMON.prompt` | Prompt template engine — per-player customizable prompt rendering with variable substitution. |
+| `ticker_d` | `DAEMON.ticker` | Timer scheduler — Lua callbacks for Tokio-backed async timers. |
+| `event_d` | `DAEMON.event` | Signal system — named channels with subscribe/emit. See [Signals](./signals.md). |
+| `task_d` | `DAEMON.task` | Higher-level scheduled tasks with pause, resume and run counts. |
+| `cache_d` | `DAEMON.cache` | Tiered game state: memory, write-behind, write-through. See [State Cache](./state-cache.md). |
 
-### Game Layer (`game/daemons/`)
+### World
 
 | Daemon | Key | Purpose |
 |--------|-----|---------|
 | `room_d` | `DAEMON.room` | Room creation — data-oriented (`from_data`, `load_area`, `merge`) and builder pattern. |
-| `character_d` | `DAEMON.character` | In-memory character state cache with DB persistence. |
 | `world_d` | `DAEMON.world` | Room registry, character locations, movement, virtual providers, area metadata. |
-| `codegen_d` | `DAEMON.codegen` | Code generation for OLC — produces clean Lua data files for rooms and area metadata. |
-| `olc_d` | `DAEMON.olc` | Online Creation session manager — tracks per-session OLC state (area, room, mode). |
+| `item_d` | `DAEMON.items` | Item template registry and instance resolution. |
+| `mob_d` | `DAEMON.mobs` | Creature templates, instances, room occupancy, respawn. See [Combat](./combat.md). |
+
+### Characters
+
+| Daemon | Key | Purpose |
+|--------|-----|---------|
+| `character_d` | `DAEMON.character` | In-memory character state cache with DB persistence. See [Character Data](./character-data.md). |
+| `trait_d` | `DAEMON.trait` | Attributes, derived values and regeneration. See [Traits](./traits.md). |
+| `effect_d` | `DAEMON.effect` | Buffs, debuffs and the event pipeline. See [Effects](./effects.md). |
+| `cooldown_d` | `DAEMON.cooldown` | "Not yet" gates, stored as expiry. See [State Cache](./state-cache.md). |
+| `combat_d` | `DAEMON.combat` | Engagement and rounds. See [Combat](./combat.md). |
+| `death_d` | `DAEMON.death` | Death handling, respawn, and what death costs. |
+
+### Interface
+
+| Daemon | Key | Purpose |
+|--------|-----|---------|
+| `prompt_d` | `DAEMON.prompt` | Per-player prompt templates with variable substitution. |
+| `channel_d` | `DAEMON.channel` | Chat channels and subscriptions. |
+| `gmcp_d` | `DAEMON.gmcp` | GMCP packages — `Char.Vitals`, `Char.Status`, `Char.Effects`, `Room.Info`. |
+| `pager_d` | `DAEMON.pager` | Paged output for long text. |
+| `snoop_d` | `DAEMON.snoop` | Admin session snooping. |
+
+### Building
+
+| Daemon | Key | Purpose |
+|--------|-----|---------|
+| `codegen_d` | `DAEMON.codegen` | Produces clean Lua data files for rooms and area metadata. |
+| `olc_d` | `DAEMON.olc` | Online Creation session state (area, room, mode). |
 
 ### journal_d vs audit_d
 
@@ -93,4 +124,4 @@ if not ok then log("error", "Failed to load weather_d: " .. tostring(err)) end
 - Wrap every `require()` in `pcall` during init so a broken daemon doesn't crash the layer.
 - Log critical failures to both `log()` and `DAEMON.journal`.
 - Validate inputs — return clear failure values rather than crashing.
-- See [GEMINI.md](../../GEMINI.md) for the full error handling policy.
+- See [CLAUDE.md](../../CLAUDE.md) for the full error handling policy.

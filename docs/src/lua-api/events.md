@@ -106,6 +106,33 @@ function on_timer(id)
 end
 ```
 
+### `on_shutdown()`
+Called once, before the Lua VM stops, when the server is shutting down cleanly
+(Ctrl+C). This is the last chance to write anything the game is holding in
+memory.
+
+It matters because `CHARACTER_D` is a write-back cache: a player's progress
+reaches the database on an autosave tick, on disconnect, or here. Without this
+hook a clean restart discards everything changed since the last tick.
+
+```lua
+function on_shutdown()
+    log("info", "Shutdown: flushing game state")
+    local ok, err = pcall(function() require('tasks.autosave').run() end)
+    if not ok then log("error", "Shutdown autosave failed: " .. tostring(err)) end
+end
+```
+
+Three things to know:
+
+- **The driver waits for it**, so it must return. The wait is bounded by
+  `game.shutdown_timeout_seconds` (default 30); when that expires the server
+  logs an error and exits regardless, losing whatever had not been written.
+- **It runs with the engine's identity**, like a timer tick, so permission-gated
+  efuns are available to it.
+- **It only runs on a clean shutdown.** A kill, a power cut, or a panic reaches
+  no Lua at all — which is what `autosave_seconds` is for.
+
 ---
 
 ## Event Dispatch Order
@@ -126,6 +153,12 @@ For disconnects:
 
 ```
 TCP close → on_disconnect(session_id) → session removed from registry
+```
+
+For a clean shutdown:
+
+```
+Ctrl+C → broadcast goodbye → on_shutdown() → driver waits for the Lua thread → exit
 ```
 
 ---

@@ -125,12 +125,10 @@ In `"single"` multisession mode, this kicks any existing session for the same ac
 returns its session ID. Returns `nil` if no session was kicked.
 
 ```lua
-local account = authenticate(username, password)
-if account then
-    local kicked = authenticate_session(session_id, account.id)
-    if kicked then
-        log("info", "Kicked old session: " .. kicked)
-    end
+-- `account` here comes from on_auth_result; see Account Management below.
+local kicked = authenticate_session(session_id, account.id)
+if kicked then
+    log("info", "Kicked old session: " .. kicked)
 end
 ```
 
@@ -148,29 +146,39 @@ enter_game_session(session_id, account.id, char.id)  -- → "playing"
 
 ## Account Management
 
-### `authenticate(username, password) → table|nil`
-Verify credentials against the database. Returns an account table on success, `nil` on failure.
+> [!IMPORTANT]
+> `authenticate` and `create_account` are **asynchronous**. They hash with
+> Argon2, which costs a few hundred milliseconds, and the whole game runs on
+> one Lua thread — doing it inline froze the world on every login, before
+> authentication, so anyone able to open a socket could freeze it on demand.
+> Both efuns hand the work to a worker pool and return nothing; the answer
+> arrives at the global `on_auth_result`.
+
+### `authenticate(session_id, username, password)`
+Verify credentials against the database. Returns nothing. The result is delivered to `on_auth_result`.
+
+### `create_account(session_id, username, password)`
+Create a new account. Returns nothing. The result is delivered to `on_auth_result`.
+
+### `on_auth_result(session_id, kind, account, err)` *(mudlib hook)*
+Called by the driver when either of the above finishes. `kind` is `"authenticate"` or `"create_account"`. Exactly one of `account` and `err` is set; `err` is a message safe to show the player.
 
 ```lua
-local account = authenticate(username, password)
-if account then
-    send(session_id, "Welcome back, " .. account.username .. "!\n")
-else
-    send(session_id, "Invalid credentials.\n")
+function on_auth_result(session_id, kind, account, err)
+    if not account then
+        send(session_id, (err or "Login failed.") .. "\r\n")
+        return
+    end
+    send(session_id, "Welcome back, " .. account.username .. "!\r\n")
+    authenticate_session(session_id, account.id)
 end
 ```
 
 **Account table fields:** `id`, `username`, `is_admin`, `created_at`
 
-### `create_account(username, password) → table|nil`
-Create a new account. Returns account table or `nil` on failure (name taken, password too short, etc.).
+A request can be refused before any hashing happens — the queue is bounded, and an address is locked out for 30 seconds after 5 consecutive failures. Refusals come back through `on_auth_result` like any other failure, so there is only one place a login can finish.
 
-```lua
-local account = create_account(username, password)
-if not account then
-    send(session_id, "Could not create account.\n")
-end
-```
+While a hash is in flight, `mudlib/login.lua` ignores further input from that session. Queueing it would let one connection stack up Argon2 work, which is the denial of service this design exists to prevent.
 
 ### `get_account(id) → table|nil`
 Look up an account by its integer ID.

@@ -37,6 +37,17 @@ trace_show    = "efun.trace"
 trace_timings = "efun.trace"
 trace_clear   = "efun.trace"
 
+# ─── Document store ──────────────────────────────────────────────────────────
+# Reads and ordinary writes are ungated: the store exists so game code can use
+# it freely. Only the call that can destroy a whole collection is gated by
+# default. Every db_* efun consults this table, so any of them can be gated by
+# adding a line here — e.g. db_put = "efun.db.write".
+#
+# NOTE: gating does not stop a ticker callback. Engine-internal dispatch runs
+# with the driver's own authority, so a daemon can call db_clear on a tick
+# whatever this says. That is already true of write_file.
+db_clear = "efun.db.clear"
+
 [directories]
 # Maps mudlib path prefixes to {read, write} permission requirements.
 # Longest-prefix match wins. Omit read or write to leave that op unrestricted.

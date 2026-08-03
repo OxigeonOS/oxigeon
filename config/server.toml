@@ -19,6 +19,35 @@ area_reset_seconds = 900
 # How often player data is auto-saved in seconds.
 # Set to 0 to disable autosave. Default: 300 (5 minutes).
 autosave_seconds = 300
+# How long a clean shutdown waits for the mudlib's on_shutdown hook to finish
+# saving. The server exits anyway when this expires, so raise it only if a
+# large game genuinely needs longer to flush. Default: 30.
+shutdown_timeout_seconds = 30
+
+# ─── State cache (DAEMON.cache) ──────────────────────────────────────────────
+# The write-behind tier. See docs/src/lua-api/state-cache.md.
+# How often dirty scopes are considered for flushing. This is the scheduler's
+# granularity; each namespace declares its own flush interval. Default: 5.
+cache_flush_seconds = 5
+# Scopes one tick may write before deferring the rest. Bounds the hitch when
+# many go dirty at once (32 x ~101us ~= 3.2ms). Default: 32.
+cache_flush_budget = 32
+# How long an unowned, clean scope may sit untouched before leaving memory.
+# 0 disables idle eviction. Default: 900.
+cache_evict_seconds = 900
+# Cooldowns at least this long are stored durably; shorter ones live in memory
+# and are forgotten on restart. Under a minute is a game mechanic, over a
+# minute is a promise to the player. Default: 60.
+cooldown_durable_seconds = 60
+
+# ─── Effects and combat ──────────────────────────────────────────────────────
+# How often expired effects are swept, so on_expire fires and its message is
+# sent even for a player who is typing nothing. Default: 5.
+effect_sweep_seconds = 5
+# Drives effects that tick — regeneration, damage over time. Default: 3.
+effect_heartbeat_seconds = 3
+# Seconds per combat round. Default: 3.
+combat_round_seconds = 3
 
 [sessions]
 # How multiple client connections per account are handled:
@@ -39,9 +68,118 @@ min_password_length = 8
 max_characters_per_account = 1
 
 [limits]
-# Lua VM memory limit in megabytes
+# Lua VM memory ceiling in megabytes. 0 = no ceiling.
+#
+# Enforced. Applied to the VM at startup; an allocation past the ceiling
+# raises a normal, catchable Lua error and the VM keeps serving, so one
+# greedy command cannot take the game down. If mlua ever reports
+# MemoryControlNotAvailable on a future build, the driver logs a warning at
+# startup rather than pretending the limit is in force.
 lua_memory_mb = 64
-# Max Lua instructions per script invocation (prevents infinite loops)
+
+# Max Lua instructions one dispatch may execute. 0 disables the limit.
+#
+# Enforcing this DISABLES THE LUAJIT COMPILER. LuaJIT dispatches no debug hooks
+# from inside a compiled trace, so a `while true do end` is invisible to any
+# hook while the JIT is on — the limit and the compiler cannot both be had.
+#
+# Measured through the real mudlib (`scripts/bench.ps1`), enforcing costs:
+#
+#     look        1.03x        numeric loop (control)   2.59x
+#     who         1.02x
+#     mudstatus   1.07x
+#
+# The compiler is worth 2.10x on a tight arithmetic loop and ~1.00x on real
+# command dispatch — nothing in one command loops the 56 times LuaJIT needs to
+# start a trace, and the dispatcher's gsub/match/gmatch calls abort tracing
+# anyway. So the limit is on by default: 2-7% is a small price for a runaway
+# loop raising an error instead of needing the process killed.
+#
+# Set 0 if your game does heavy arithmetic in Lua on the game thread — though
+# [compute] is the better home for that work. See
+# docs/src/lua-api/performance.md.
 lua_instruction_limit = 1000000
+
 # Max bytes in a single input line from a client
 input_buffer_bytes = 4096
+
+# ============================================================
+# Compute — running long Lua off the game thread
+# ============================================================
+# The whole game runs on one Lua thread, so anything expensive on it freezes
+# every player for its duration. `compute()` hands a job to a worker thread
+# with its own LuaJIT VM and delivers the answer later via the mudlib hook
+# `on_compute_result`.
+#
+# Worker VMs have NO efuns at all. A job gets its arguments and returns a
+# value; it cannot see sessions, the world, the database, or object state.
+# See docs/src/lua-api/compute.md.
+[compute]
+# Off by default: a feature nobody uses should cost nothing.
+enabled = false
+
+# Threads, each with its own VM, built lazily on first use. Keep well under the
+# core count — compute competes with the game thread, and the game thread is
+# the one players are waiting on.
+workers = 2
+
+# Jobs allowed to wait before new ones are refused. Shallow on purpose: a
+# compute job is expected to take a while, so a deep queue only produces
+# answers that arrive long after they stopped mattering.
+queue_depth = 16
+
+# Wall clock a job gets before the CALLER is told it timed out. The worker may
+# still be running after this — the deadline unblocks the caller, it does not
+# stop the job. See instruction_limit.
+default_deadline_ms = 5000
+max_deadline_ms = 60000
+
+# Instructions one job may execute. As on the game thread, enforcing this
+# disables the LuaJIT compiler for the worker VM.
+#
+# The default is 0 — the opposite of limits.lua_instruction_limit — because
+# this facility exists to run expensive code fast, and the compiler is worth
+# 2.1x on exactly the arithmetic-heavy work that belongs here. The cost of
+# that choice is real: a runaway job burns one of `workers` threads for the
+# life of the process, since Rust cannot kill a thread. Set a limit to make
+# workers recoverable, and to make deadlines and compute_cancel enforceable
+# rather than advisory. Watch server_info().compute.wedged either way.
+instruction_limit = 0
+
+# Memory ceiling per worker VM, in megabytes. 0 = no ceiling.
+memory_mb = 256
+
+# Module prefixes an entry point may live under, relative to game/ and mudlib/.
+# A guardrail, not a security boundary — the boundary is that the worker VM has
+# no efuns. It stops `compute("daemons/world_d", ...)` failing with a baffling
+# "attempt to call nil (global 'send')".
+roots = ["compute"]
+
+# Ceilings on copying a value between VMs. A table deeper or larger than this
+# is refused at the call site rather than recursed into, so a cycle cannot
+# exhaust the stack.
+max_arg_depth = 64
+max_arg_nodes = 100000
+
+# ============================================================
+# Documents — the generic store behind the db_* efuns
+# ============================================================
+# One table serves every collection a game invents, so persisting a new type
+# needs no Rust and no migration. See docs/src/lua-api/document-store.md.
+#
+# Every one of these is a hard error when exceeded. Nothing is ever silently
+# truncated: a document that does not fit is a document that was not saved,
+# and the caller is told so.
+[documents]
+# Max serialized JSON bytes for one document.
+max_bytes = 65536
+
+# Runaway-insert ceilings. Counts are kept in memory and warmed at startup.
+max_per_collection = 100000
+max_collections = 256
+
+# Hard ceiling on rows one db_find() may return. A query with no explicit
+# limit that matches more than this ERRORS rather than silently returning the
+# first N — a report list missing its oldest entries but looking complete is
+# exactly the failure this project forbids.
+max_results = 500

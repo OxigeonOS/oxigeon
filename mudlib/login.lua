@@ -1,10 +1,31 @@
 -- mudlib/login.lua — Login and account creation flow
 -- Handles the full login sequence including password masking via ECHO.
+--
+-- `authenticate` and `create_account` are asynchronous: they hand the password
+-- to a worker pool and return immediately, because Argon2 takes a few hundred
+-- milliseconds and the whole game runs on the Lua thread. The answer arrives
+-- later at M.on_result, wired to the driver's on_auth_result hook in init.lua.
+-- While a session is waiting, its input is ignored — see M.handle_input.
 
 local M = {}
 
 -- Per-session login state (cleared on disconnect or successful login)
 local login_state = {}
+
+local function log_error(message)
+    log("error", message)
+    if DAEMON and DAEMON.journal then
+        DAEMON.journal.error(message)
+    end
+end
+
+--- Send the player back to the username prompt.
+local function restart(session_id, state, message)
+    if message then send(session_id, message) end
+    send(session_id, "\r\nUsername: ")
+    state.step = "username"
+    state.username = nil
+end
 
 --- Display the welcome banner and prompt for a username
 function M.greet(session_id)
@@ -31,6 +52,13 @@ function M.handle_input(session_id, text)
         return
     end
 
+    -- A hash is in flight for this session. Dropping the line is deliberate:
+    -- queueing it would let one connection stack up Argon2 work, which is the
+    -- denial of service this whole path exists to prevent.
+    if state.step == "waiting" then
+        return
+    end
+
     -- Trim input
     text = text:gsub("^%s+", ""):gsub("%s+$", "")
 
@@ -52,20 +80,13 @@ function M.handle_input(session_id, text)
         send(session_id, "\r\n")
 
         if text == "" then
-            send(session_id, "Password cannot be empty.\r\n\r\nUsername: ")
-            state.step = "username"
-            state.username = nil
+            restart(session_id, state, "Password cannot be empty.\r\n")
             return
         end
 
-        local account = authenticate(state.username, text)
-        if account then
-            M.enter_game(session_id, account)
-        else
-            send(session_id, "Invalid username or password. Please try again.\r\n\r\nUsername: ")
-            state.step = "username"
-            state.username = nil
-        end
+        state.step = "waiting"
+        send(session_id, "Checking...\r\n")
+        authenticate(session_id, state.username, text)
 
     elseif state.step == "new_username" then
         if text == "" or text:len() < 3 then
@@ -86,15 +107,45 @@ function M.handle_input(session_id, text)
         stop_echo(session_id)
         send(session_id, "\r\n")
 
-        local account = create_account(state.username, text)
-        if account then
-            send(session_id, "Account created! Welcome, " .. state.username .. "!\r\n")
-            M.enter_game(session_id, account)
-        else
-            send(session_id, "Could not create account. The name may already be taken, or the password is too short.\r\n")
-            send(session_id, "\r\nUsername: ")
-            state.step = "username"
-            state.username = nil
+        state.step = "waiting"
+        send(session_id, "Creating your account...\r\n")
+        create_account(session_id, state.username, text)
+    end
+end
+
+--- Called by the driver when an off-thread hash finishes.
+-- @param session_id string
+-- @param kind string  "authenticate" or "create_account"
+-- @param account table|nil  the account on success
+-- @param err string|nil  a player-facing message on failure
+function M.on_result(session_id, kind, account, err)
+    local state = login_state[session_id]
+    if not state then
+        -- The player disconnected while the hash was running, or logged in by
+        -- another route. Nothing to do, and nowhere to send a message.
+        log("debug", "Auth result for " .. tostring(session_id) .. " with no login state")
+        return
+    end
+
+    if not account then
+        restart(session_id, state, (err or "Login failed.") .. "\r\n")
+        return
+    end
+
+    if kind == "create_account" then
+        send(session_id, "Account created! Welcome, " .. tostring(state.username) .. "!\r\n")
+    end
+
+    -- enter_game touches the world, character and channel daemons; a failure
+    -- in any of them would otherwise leave the session stuck in "waiting"
+    -- with no prompt and no way out.
+    local ok, enter_err = pcall(M.enter_game, session_id, account)
+    if not ok then
+        log_error("LOGIN: enter_game failed for session " .. tostring(session_id)
+            .. ": " .. tostring(enter_err))
+        send(session_id, "\r\nSomething went wrong entering the game. Please try again.\r\n")
+        if login_state[session_id] then
+            restart(session_id, login_state[session_id])
         end
     end
 end

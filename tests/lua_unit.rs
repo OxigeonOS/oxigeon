@@ -122,10 +122,66 @@ fn make_test_lua() -> Lua {
     }).unwrap();
     globals.set("read_file", rf_fn).unwrap();
 
+    // set_persistent / get_persistent — the VM global that survives hot reload.
+    // Backed by a real table here for the same reason object state is: the
+    // daemons that use it store their whole world behind it, and a no-op stub
+    // would make every one of them look stateless.
+    lua.load(r#"
+        _persistent_store = {}
+        function set_persistent(key, value) _persistent_store[key] = value end
+        function get_persistent(key) return _persistent_store[key] end
+    "#).exec().expect("stub persistent store");
+
+    // server_info() — only `uptime_secs` matters here; it is the monotonic
+    // clock cache_d schedules on. Frozen, like os_time, so a test drives it.
+    lua.load(r#"
+        _uptime = 0
+        function server_info() return { uptime_secs = _uptime, name = "TestMUD" } end
+    "#).exec().expect("stub server_info");
+
     // Empty DAEMON table
     lua.load("DAEMON = {}").exec().expect("init DAEMON");
 
     lua
+}
+
+/// A VM with the daemons this plan added already loaded into `DAEMON`.
+///
+/// `cache_d` is the substrate for `cooldown_d` and `effect_d`, so almost every
+/// test below needs the same four lines. Note there is deliberately no `db_*`
+/// stub: everything reachable from here is the in-memory half, and the write
+/// path is tested against the real store in `tests/state_cache.rs`. A stubbed
+/// `db_put` here would prove only that a function was called.
+fn make_daemon_lua() -> Lua {
+    let lua = make_test_lua();
+    lua.load(r#"
+        -- `db_get` returns nil, which is not a lie: there is no database here,
+        -- so every document really is absent. `db_put` and `db_delete` are
+        -- deliberately left undefined — a stub that reported a successful write
+        -- is exactly the kind of thing that keeps a suite green while the real
+        -- path is broken. What reaches disk is tested in tests/state_cache.rs
+        -- against the real store.
+        function db_get() return nil end
+
+        DAEMON.ticker = { every = function() end, after = function() end,
+                          remove = function() end }
+        DAEMON.cache    = require('daemons.cache_d')
+        DAEMON.cooldown = require('daemons.cooldown_d')
+        DAEMON.trait    = require('daemons.trait_d')
+        DAEMON.effect   = require('daemons.effect_d')
+    "#).exec().expect("load the state daemons");
+    lua
+}
+
+/// Move both clocks. `os_time` drives expiry, `server_info().uptime_secs`
+/// drives flush scheduling, and a test that only moved one would be testing a
+/// world that cannot happen.
+fn set_time(lua: &Lua, seconds: i64) {
+    lua.load(format!(
+        "_now = {seconds} _uptime = {seconds} function os_time() return _now end"
+    ).as_str())
+    .exec()
+    .expect("set time");
 }
 
 /// Helper: run a Lua snippet and return a boolean result.
@@ -143,10 +199,6 @@ fn eval_int(lua: &Lua, code: &str) -> i64 {
     lua.load(code).eval::<i64>().unwrap()
 }
 
-/// Helper: run a Lua snippet and return a float result.
-fn eval_num(lua: &Lua, code: &str) -> f64 {
-    lua.load(code).eval::<f64>().unwrap()
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  Object tests
@@ -1475,4 +1527,1162 @@ fn test_trace_command_exposes_the_standard_command_shape() {
     assert!(eval_bool(&lua, "return trace.category == 'admin'"));
     assert!(eval_bool(&lua, "return trace.permission == 'admin'"));
     assert!(eval_bool(&lua, "return type(trace.execute) == 'function'"));
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  jsonsafe — can this value survive the trip to the database?
+//
+//  These mirror rules that live in Rust (`lua_to_json`), so they are a
+//  reimplementation and reimplementations drift. `tests/state_cache.rs` runs
+//  the same values past the real encoder and demands the two agree; these are
+//  the fast half of that pair.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn jsonsafe_accepts_ordinary_data() {
+    let lua = make_test_lua();
+    lua.load("js = require('lib.jsonsafe')").exec().unwrap();
+    assert!(eval_bool(&lua, r#"return js.check({ a = 1, b = "two", c = true })"#));
+    assert!(eval_bool(&lua, r#"return js.check({ 1, 2, 3 })"#));
+    assert!(eval_bool(&lua, r#"return js.check({ nested = { deep = { 1, 2 } } })"#));
+    assert!(eval_bool(&lua, r#"return js.check(42)"#));
+    assert!(eval_bool(&lua, r#"return js.check("hello")"#));
+    assert!(eval_bool(&lua, r#"return js.check({})"#));
+}
+
+#[test]
+fn jsonsafe_refuses_a_function_and_names_the_field() {
+    let lua = make_test_lua();
+    lua.load("js = require('lib.jsonsafe')").exec().unwrap();
+    let why = eval_str(&lua, r#"
+        local ok, why = js.check({ effect = { tick = function() end } })
+        return (not ok) and why or "ACCEPTED"
+    "#);
+    assert!(why.contains("effect.tick"), "should name the field, got {why:?}");
+    assert!(why.contains("function"), "should say what was wrong, got {why:?}");
+}
+
+#[test]
+fn jsonsafe_refuses_a_table_that_is_both_a_list_and_a_map() {
+    let lua = make_test_lua();
+    lua.load("js = require('lib.jsonsafe')").exec().unwrap();
+    let why = eval_str(&lua, r#"
+        local ok, why = js.check({ 1, 2, name = "mixed" })
+        return (not ok) and why or "ACCEPTED"
+    "#);
+    assert!(why.contains("'name'"), "should name the offending key, got {why:?}");
+    assert!(why.contains("list"), "should explain the clash, got {why:?}");
+}
+
+#[test]
+fn jsonsafe_refuses_infinities_and_nan() {
+    let lua = make_test_lua();
+    lua.load("js = require('lib.jsonsafe')").exec().unwrap();
+    assert!(!eval_bool(&lua, "return (js.check({ x = 1/0 }))"));
+    assert!(!eval_bool(&lua, "return (js.check({ x = -1/0 }))"));
+    assert!(!eval_bool(&lua, "return (js.check({ x = 0/0 }))"));
+}
+
+#[test]
+fn jsonsafe_refuses_a_boolean_key() {
+    let lua = make_test_lua();
+    lua.load("js = require('lib.jsonsafe')").exec().unwrap();
+    assert!(!eval_bool(&lua, "return (js.check({ [true] = 1 }))"));
+}
+
+/// A table that refers to itself has no JSON form, and the driver catches it
+/// with the depth limit rather than by tracking identity. So does this.
+#[test]
+fn jsonsafe_refuses_a_cycle_by_running_out_of_depth() {
+    let lua = make_test_lua();
+    lua.load("js = require('lib.jsonsafe')").exec().unwrap();
+    let why = eval_str(&lua, r#"
+        local t = {}
+        t.self = t
+        local ok, why = js.check(t)
+        return (not ok) and why or "ACCEPTED"
+    "#);
+    assert!(why.contains("nesting is deeper"), "got {why:?}");
+    assert!(why.contains("refers to itself"), "should hint at the cause, got {why:?}");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  lib/traits — dependency ordering and the regeneration settle
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn topo_sort_puts_dependencies_first() {
+    let lua = make_test_lua();
+    lua.load("tl = require('lib.traits')").exec().unwrap();
+    let order = eval_str(&lua, r#"
+        local order = tl.topo_sort({
+            willpower = { depends = { "wisdom", "level" } },
+            wisdom    = { depends = {} },
+            level     = { depends = {} },
+        })
+        return table.concat(order, ",")
+    "#);
+    let pos = |id: &str| order.split(',').position(|s| s == id).unwrap();
+    assert!(pos("wisdom") < pos("willpower"), "got {order}");
+    assert!(pos("level") < pos("willpower"), "got {order}");
+}
+
+/// "There is a cycle in your 30 traits" is not something anyone can act on.
+#[test]
+fn topo_sort_reports_the_cycle_as_a_path() {
+    let lua = make_test_lua();
+    lua.load("tl = require('lib.traits')").exec().unwrap();
+    let path = eval_str(&lua, r#"
+        local order, cycle = tl.topo_sort({
+            willpower = { depends = { "wisdom" } },
+            wisdom    = { depends = { "insight" } },
+            insight   = { depends = { "willpower" } },
+        })
+        if order then return "NO CYCLE FOUND" end
+        return table.concat(cycle, " -> ")
+    "#);
+    assert!(path.contains("willpower"), "got {path}");
+    assert!(path.contains("wisdom"), "got {path}");
+    assert!(path.contains("insight"), "got {path}");
+    // The path closes on itself, so the first name appears again at the end.
+    let names: Vec<&str> = path.split(" -> ").collect();
+    assert_eq!(names[0], names[names.len() - 1], "the path should close: {path}");
+}
+
+/// The table that pins the regeneration arithmetic. The two "nothing changed"
+/// rows are the most important assertions in this file: a settle that always
+/// reported a change would dirty every online player's state on every prompt
+/// and undo the whole write-behind design.
+#[test]
+fn settle_earns_whole_units_and_carries_the_remainder() {
+    let lua = make_test_lua();
+    lua.load("tl = require('lib.traits')").exec().unwrap();
+
+    // name, rate, per, cur, anchor, now, expected cur ("" = no change), expected anchor
+    let cases: &[(&str, f64, f64, f64, f64, f64, &str, &str)] = &[
+        ("nothing has elapsed",      1.0, 3.0, 40.0, 1000.0, 1000.0, "",    ""),
+        ("less than one unit",       1.0, 3.0, 40.0, 1000.0, 1002.0, "",    ""),
+        ("three units, one carried", 1.0, 3.0, 40.0, 1000.0, 1010.0, "43",  "1009"),
+        ("a faster rate",            0.5, 1.0, 40.0, 1000.0, 1003.0, "41",  "1002"),
+        ("clamped, re-anchored",     1.0, 3.0, 98.0, 1000.0, 1100.0, "100", "1100"),
+        ("the clock stepped back",   1.0, 3.0, 40.0, 1000.0,  900.0, "40",  "900"),
+    ];
+
+    for (name, rate, per, cur, anchor, now, want_cur, want_anchor) in cases {
+        let got = eval_str(&lua, &format!(r#"
+            local c, a = tl.settle({cur}, {anchor}, {now}, {rate}, {per}, 100, 0, 100)
+            if c == nil then return "" end
+            return tostring(c) .. "/" .. tostring(a)
+        "#));
+        let want = if want_cur.is_empty() {
+            String::new()
+        } else {
+            format!("{want_cur}/{want_anchor}")
+        };
+        assert_eq!(got, want, "settle case: {name}");
+    }
+}
+
+/// A gauge sitting at its target must not accumulate credit while it waits.
+/// Otherwise a player at full health banks an hour of regeneration and dumps
+/// it the instant something hits them.
+#[test]
+fn settle_at_target_reports_no_change_however_long_it_waits() {
+    let lua = make_test_lua();
+    lua.load("tl = require('lib.traits')").exec().unwrap();
+    assert!(eval_bool(&lua, r#"
+        local c, a = tl.settle(100, 1000, 99999, 1, 3, 100, 0, 100)
+        return c == nil and a == nil
+    "#));
+}
+
+#[test]
+fn round_modes_do_what_they_say() {
+    let lua = make_test_lua();
+    lua.load("tl = require('lib.traits')").exec().unwrap();
+    assert_eq!(eval_int(&lua, "return tl.round(2.7, 'floor')"), 2);
+    assert_eq!(eval_int(&lua, "return tl.round(2.2, 'ceil')"), 3);
+    assert_eq!(eval_int(&lua, "return tl.round(2.5, 'round')"), 3);
+    assert_eq!(eval_str(&lua, "return tostring(tl.round(2.7, 'none'))"), "2.7");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  lib/effects — phase ordering and the single fold
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// The worked example from the design: 30 damage, -15% and -5 flat.
+/// Percentage first gives 20.5; flat first gives 21.25. Phases are what make
+/// the answer independent of which effect happened to land first.
+#[test]
+fn a_percentage_applies_before_a_flat_reduction() {
+    let lua = make_test_lua();
+    lua.load("el = require('lib.effects')").exec().unwrap();
+    let amount = eval_str(&lua, r#"
+        local ev = { amount = 30, scale = 0, min = 0 }
+        el.dispatch(ev, {
+            -- deliberately registered flat-first, to prove registration order
+            -- is not what decides the answer
+            { phase = "reduce", def = "b", fn = function(e) e.amount = e.amount - 5 end },
+            { phase = "mult",   def = "a", fn = function(e) e.scale = e.scale - 0.15 end },
+        })
+        return tostring(ev.amount)
+    "#);
+    assert_eq!(amount, "20.5", "expected 30*0.85-5, got {amount}");
+    assert_ne!(amount, "21.25", "that is what phase-reversal would give");
+}
+
+#[test]
+fn multipliers_in_the_same_phase_add_rather_than_compound() {
+    let lua = make_test_lua();
+    lua.load("el = require('lib.effects')").exec().unwrap();
+    // Two +20% buffs: 140, not 144. Additive composition is what makes the
+    // mult phase genuinely order-independent.
+    assert_eq!(eval_str(&lua, r#"
+        local ev = { amount = 100, scale = 0 }
+        el.dispatch(ev, {
+            { phase = "mult", def = "a", fn = function(e) e.scale = e.scale + 0.2 end },
+            { phase = "mult", def = "b", fn = function(e) e.scale = e.scale + 0.2 end },
+        })
+        return tostring(ev.amount)
+    "#), "140");
+}
+
+#[test]
+fn cancelling_stops_the_rest_of_the_chain() {
+    let lua = make_test_lua();
+    lua.load("el = require('lib.effects')").exec().unwrap();
+    assert!(eval_bool(&lua, r#"
+        local ran = false
+        local ev = { amount = 30, scale = 0 }
+        el.dispatch(ev, {
+            { phase = "pre",    def = "a", fn = function(e)
+                e.cancelled = true e.reason = "The flames wash over you harmlessly." end },
+            { phase = "reduce", def = "b", fn = function() ran = true end },
+        })
+        return ev.cancelled and not ran and ev.reason ~= nil
+    "#));
+}
+
+#[test]
+fn ties_break_deterministically_by_definition_id() {
+    let lua = make_test_lua();
+    lua.load("el = require('lib.effects')").exec().unwrap();
+    assert_eq!(eval_str(&lua, r#"
+        local seen = {}
+        local ev = { amount = 0, scale = 0 }
+        el.dispatch(ev, {
+            { phase = "add", def = "zeta",  fn = function() seen[#seen+1] = "zeta" end },
+            { phase = "add", def = "alpha", fn = function() seen[#seen+1] = "alpha" end },
+            { phase = "add", def = "mid",   fn = function() seen[#seen+1] = "mid" end },
+        })
+        return table.concat(seen, ",")
+    "#), "alpha,mid,zeta");
+}
+
+/// The overwhelmingly common case: an entity with no effects at all. It must
+/// come out exactly as it went in, and it must not allocate a new table.
+#[test]
+fn an_event_with_no_handlers_is_returned_untouched() {
+    let lua = make_test_lua();
+    lua.load("el = require('lib.effects')").exec().unwrap();
+    assert!(eval_bool(&lua, r#"
+        local ev = { amount = 30 }
+        local out = el.dispatch(ev, {})
+        return out == ev and out.amount == 30 and out.scale == nil
+    "#));
+}
+
+#[test]
+fn a_handler_that_raises_does_not_stop_the_others() {
+    let lua = make_test_lua();
+    lua.load("el = require('lib.effects')").exec().unwrap();
+    assert_eq!(eval_str(&lua, r#"
+        local errors = 0
+        local ev = { amount = 10, scale = 0 }
+        el.dispatch(ev, {
+            { phase = "add", def = "bad",  fn = function() error("boom") end },
+            { phase = "add", def = "good", fn = function(e) e.amount = e.amount + 5 end },
+        }, function() errors = errors + 1 end)
+        return tostring(ev.amount) .. "/" .. tostring(errors)
+    "#), "15/1");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  The daemons load and register
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn the_state_daemons_load() {
+    let lua = make_daemon_lua();
+    assert!(eval_bool(&lua, "return type(DAEMON.cache.set) == 'function'"));
+    assert!(eval_bool(&lua, "return type(DAEMON.cooldown.mark) == 'function'"));
+    assert!(eval_bool(&lua, "return type(DAEMON.trait.value) == 'function'"));
+    assert!(eval_bool(&lua, "return type(DAEMON.effect.run) == 'function'"));
+}
+
+#[test]
+fn cooldown_d_registers_both_of_its_namespaces() {
+    let lua = make_daemon_lua();
+    assert_eq!(eval_str(&lua, r#"return DAEMON.cache.spec("cooldowns").tier"#), "write_through");
+    assert_eq!(eval_str(&lua, r#"return DAEMON.cache.spec("cooldowns_fast").tier"#), "memory");
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  cache_d — the tiered store
+//
+//  Everything here goes through `_plan_flush`, which reports what *would* be
+//  written without writing anything. That split is what lets scheduling,
+//  ephemerality, pruning and budgeting be tested honestly with no database
+//  stubs at all. The write itself is tested in tests/state_cache.rs.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// A namespace fixture: `nsdef(kind)` defines "t" with the given tier.
+fn cache_lua(spec: &str) -> Lua {
+    let lua = make_daemon_lua();
+    set_time(&lua, 1000);
+    lua.load(&format!(r#"DAEMON.cache.define("t", {spec})"#)).exec().unwrap();
+    lua
+}
+
+#[test]
+fn a_value_comes_back_out_of_the_cache() {
+    let lua = cache_lua(r#"{ tier = "write_behind" }"#);
+    assert!(eval_bool(&lua, r#"return DAEMON.cache.set("t", 42, "gold", 1200)"#));
+    assert_eq!(eval_int(&lua, r#"return DAEMON.cache.get("t", 42, "gold")"#), 1200);
+    // The scope accepts a number or a string and lands in the same place.
+    assert_eq!(eval_int(&lua, r#"return DAEMON.cache.get("t", "42", "gold")"#), 1200);
+}
+
+#[test]
+fn an_unknown_namespace_is_refused_rather_than_invented() {
+    let lua = cache_lua(r#"{ tier = "memory" }"#);
+    assert!(eval_bool(&lua, r#"return DAEMON.cache.get("nope", 1, "x") == nil"#));
+    assert!(!eval_bool(&lua, r#"return DAEMON.cache.set("nope", 1, "x", 1)"#));
+}
+
+/// A number key would come back from JSON as a string, silently changing the
+/// shape of the document. Refusing costs one line and removes the whole class.
+#[test]
+fn a_number_key_is_refused() {
+    let lua = cache_lua(r#"{ tier = "write_behind" }"#);
+    assert!(!eval_bool(&lua, r#"return DAEMON.cache.set("t", 1, 7, "value")"#));
+}
+
+#[test]
+fn a_value_that_could_not_be_written_is_refused_at_the_call_site() {
+    let lua = cache_lua(r#"{ tier = "write_behind" }"#);
+    assert!(!eval_bool(&lua, r#"return DAEMON.cache.set("t", 1, "bad", { f = function() end })"#));
+    assert!(eval_bool(&lua, r#"return DAEMON.cache.get("t", 1, "bad") == nil"#),
+        "a value that cannot be flushed must not be stored either — memory and \
+         the database would disagree forever");
+    assert_eq!(eval_int(&lua, "return DAEMON.cache.stats().rejected_writes"), 1);
+}
+
+/// The memory tier never serializes, so it may hold things JSON cannot: live
+/// object references, functions, an aggro table pointing at real mobs.
+#[test]
+fn the_memory_tier_accepts_what_json_cannot() {
+    let lua = cache_lua(r#"{ tier = "memory" }"#);
+    assert!(eval_bool(&lua, r#"return DAEMON.cache.set("t", 1, "aggro", { fn = function() end })"#));
+    assert!(eval_bool(&lua, r#"return DAEMON.cache.get("t", 1, "aggro") ~= nil"#));
+}
+
+#[test]
+fn writing_dirties_a_scope_and_reading_does_not() {
+    let lua = cache_lua(r#"{ tier = "write_behind" }"#);
+    lua.load(r#"DAEMON.cache.set("t", 1, "a", 1)"#).exec().unwrap();
+    assert!(eval_bool(&lua, r#"return DAEMON.cache.inspect("t", 1).dirty"#));
+
+    lua.load(r#"DAEMON.cache._apply(DAEMON.cache._plan_flush(nil, { all = true }))"#).exec().unwrap();
+    // No db_put here, so the write fails and the scope stays dirty — which is
+    // itself the right behaviour, and is asserted in a_failed_write_is_retried.
+    assert_eq!(eval_int(&lua, r#"return #DAEMON.cache.keys("t", 1)"#), 1);
+    assert!(eval_bool(&lua, r#"return DAEMON.cache.get("t", 1, "a") == 1"#));
+    assert!(!eval_bool(&lua, r#"return DAEMON.cache.inspect("t", 2) ~= nil"#));
+}
+
+#[test]
+fn a_flush_plan_carries_the_whole_scope_as_one_document() {
+    let lua = cache_lua(r#"{ tier = "write_behind", flush_seconds = 0 }"#);
+    lua.load(r#"
+        for i = 1, 5 do DAEMON.cache.set("t", 42, "k" .. i, i * 10) end
+    "#).exec().unwrap();
+
+    assert_eq!(eval_int(&lua, r#"
+        local plan = DAEMON.cache._plan_flush(nil, { all = true })
+        return #plan
+    "#), 1, "five keys in one scope are one document write, not five");
+
+    assert_eq!(eval_str(&lua, r#"
+        local plan = DAEMON.cache._plan_flush(nil, { all = true })
+        local n = 0
+        for _ in pairs(plan[1].doc) do n = n + 1 end
+        return plan[1].action .. "/" .. plan[1].id .. "/" .. n
+    "#), "put/42/5");
+}
+
+#[test]
+fn the_scope_prefix_becomes_the_document_id() {
+    let lua = cache_lua(r#"{ tier = "write_behind", scope_prefix = "char:" }"#);
+    lua.load(r#"DAEMON.cache.set("t", 42, "a", 1)"#).exec().unwrap();
+    assert_eq!(eval_str(&lua, r#"
+        return DAEMON.cache._plan_flush(nil, { all = true })[1].id
+    "#), "char:42");
+}
+
+/// The requirement, generalised: an entry that would have expired before the
+/// server came back is not worth writing. Not because writing is expensive —
+/// because writing it would be wrong.
+#[test]
+fn an_entry_shorter_than_min_lifetime_is_never_written() {
+    let lua = cache_lua(r#"{ tier = "write_behind", min_lifetime = 30 }"#);
+    lua.load(r#"
+        DAEMON.cache.set("t", 1, "brief", "gone soon", { expires_at = 1020 })
+        DAEMON.cache.set("t", 1, "lasting", "still here", { expires_at = 5000 })
+    "#).exec().unwrap();
+
+    // Both are fully live in memory.
+    assert!(eval_bool(&lua, r#"return DAEMON.cache.get("t", 1, "brief") ~= nil"#));
+
+    assert_eq!(eval_str(&lua, r#"
+        local plan = DAEMON.cache._plan_flush(nil, { all = true })
+        local keys = {}
+        for k in pairs(plan[1].doc) do keys[#keys+1] = k end
+        table.sort(keys)
+        return table.concat(keys, ",")
+    "#), "lasting", "the short-lived entry must not reach the document");
+}
+
+/// And a scope holding nothing but ephemeral entries is not dirty at all —
+/// otherwise a stream of short buffs would schedule a write every interval
+/// that had nothing to say.
+#[test]
+fn ephemeral_entries_do_not_make_a_scope_dirty() {
+    let lua = cache_lua(r#"{ tier = "write_behind", min_lifetime = 30 }"#);
+    lua.load(r#"DAEMON.cache.set("t", 1, "brief", "x", { expires_at = 1010 })"#).exec().unwrap();
+    assert!(!eval_bool(&lua, r#"return DAEMON.cache.inspect("t", 1).dirty"#));
+    assert_eq!(eval_int(&lua, r#"return #DAEMON.cache._plan_flush(nil, { all = true })"#), 0);
+}
+
+#[test]
+fn an_expired_key_disappears_on_read_and_from_the_plan() {
+    let lua = cache_lua(r#"{ tier = "write_behind" }"#);
+    lua.load(r#"
+        DAEMON.cache.set("t", 1, "temp", "x", { expires_at = 1005 })
+        DAEMON.cache.set("t", 1, "keep", "y")
+    "#).exec().unwrap();
+    set_time(&lua, 1010);
+
+    assert!(eval_bool(&lua, r#"return DAEMON.cache.get("t", 1, "temp") == nil"#));
+    assert_eq!(eval_str(&lua, r#"
+        local plan = DAEMON.cache._plan_flush(nil, { all = true })
+        local keys = {}
+        for k in pairs(plan[1].doc) do keys[#keys+1] = k end
+        return table.concat(keys, ",")
+    "#), "keep");
+}
+
+#[test]
+fn a_scope_that_empties_plans_a_delete_rather_than_an_empty_document() {
+    let lua = cache_lua(r#"{ tier = "write_behind", delete_when_empty = true }"#);
+    lua.load(r#"
+        DAEMON.cache.set("t", 1, "only", "x")
+        DAEMON.cache.delete("t", 1, "only")
+    "#).exec().unwrap();
+    assert_eq!(eval_str(&lua, r#"
+        return DAEMON.cache._plan_flush(nil, { all = true })[1].action
+    "#), "delete");
+}
+
+#[test]
+fn the_memory_tier_never_appears_in_a_flush_plan() {
+    let lua = cache_lua(r#"{ tier = "memory" }"#);
+    lua.load(r#"for i = 1, 10 do DAEMON.cache.set("t", i, "k", i) end"#).exec().unwrap();
+    assert_eq!(eval_int(&lua, r#"return #DAEMON.cache._plan_flush(nil, { all = true })"#), 0);
+}
+
+/// Two hundred dirty scopes on one tick is 20ms of game thread — a visible
+/// hitch. The budget spreads it, oldest first so staleness stays bounded.
+#[test]
+fn a_budget_limits_one_tick_and_takes_the_oldest_first() {
+    let lua = cache_lua(r#"{ tier = "write_behind", flush_seconds = 0 }"#);
+    lua.load(r#"for i = 1, 200 do DAEMON.cache.set("t", i, "k", i) end"#).exec().unwrap();
+
+    assert_eq!(eval_int(&lua, r#"return #DAEMON.cache._plan_flush(32, { all = true })"#), 32);
+    assert_eq!(eval_str(&lua, r#"
+        local plan = DAEMON.cache._plan_flush(3, { all = true })
+        return plan[1].id .. "," .. plan[2].id .. "," .. plan[3].id
+    "#), "1,2,3", "scope 1 was dirtied first, so it is written first");
+}
+
+#[test]
+fn edit_marks_the_scope_dirty_however_many_keys_it_touched() {
+    let lua = cache_lua(r#"{ tier = "write_behind" }"#);
+    assert!(eval_bool(&lua, r#"
+        DAEMON.cache.edit("t", 1, function(scope)
+            for i = 1, 12 do scope["k" .. i] = i end
+        end)
+        return DAEMON.cache.inspect("t", 1).dirty
+    "#));
+    assert_eq!(eval_int(&lua, r#"return #DAEMON.cache.keys("t", 1)"#), 12);
+}
+
+#[test]
+fn a_failed_write_is_retried_rather_than_dropped() {
+    let lua = cache_lua(r#"{ tier = "write_behind", flush_seconds = 0 }"#);
+    lua.load(r#"
+        DAEMON.cache.set("t", 1, "a", 1)
+        -- No db_put in this harness, so the write fails.
+        DAEMON.cache._apply(DAEMON.cache._plan_flush(nil, { all = true }))
+    "#).exec().unwrap();
+
+    assert!(eval_bool(&lua, r#"return DAEMON.cache.inspect("t", 1).dirty"#),
+        "a scope whose write failed must stay dirty — the data is still only in memory");
+    assert_eq!(eval_int(&lua, r#"return DAEMON.cache.inspect("t", 1).fails"#), 1);
+    assert_eq!(eval_int(&lua, "return DAEMON.cache.stats().flush_failures"), 1);
+}
+
+#[test]
+fn three_failures_quarantine_a_scope_without_losing_it() {
+    let lua = cache_lua(r#"{ tier = "write_behind", flush_seconds = 0 }"#);
+    lua.load(r#"
+        DAEMON.cache.set("t", 1, "a", 1)
+        for _ = 1, 3 do
+            local plan = DAEMON.cache._plan_flush(nil, { all = true })
+            -- Backoff would normally skip these; drive _apply directly.
+            if #plan == 0 then
+                plan = { { ns = "t", scope = "1", collection = "t", id = "1",
+                           action = "put", doc = { a = 1 } } }
+            end
+            DAEMON.cache._apply(plan)
+        end
+    "#).exec().unwrap();
+
+    assert!(eval_bool(&lua, r#"return DAEMON.cache.inspect("t", 1).poisoned"#));
+    assert_eq!(eval_int(&lua, r#"return DAEMON.cache.get("t", 1, "a")"#), 1,
+        "quarantine must keep the data in memory so the game carries on");
+    assert_eq!(eval_int(&lua, r#"return #DAEMON.cache._plan_flush(nil, { all = true })"#), 0,
+        "and stop scheduling it");
+}
+
+#[test]
+fn state_survives_a_hot_reload_of_the_daemon() {
+    let lua = cache_lua(r#"{ tier = "write_behind" }"#);
+    lua.load(r#"DAEMON.cache.set("t", 7, "kept", "yes")"#).exec().unwrap();
+    // What a hot reload does: drop the module and require it again.
+    lua.load(r#"
+        package.loaded['daemons.cache_d'] = nil
+        DAEMON.cache = require('daemons.cache_d')
+    "#).exec().unwrap();
+    assert_eq!(eval_str(&lua, r#"return DAEMON.cache.get("t", 7, "kept")"#), "yes");
+    assert!(eval_bool(&lua, r#"return DAEMON.cache.spec("t") ~= nil"#),
+        "namespaces registered by other daemons must survive too, or their \
+         define calls would never re-run");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  cooldown_d
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn a_cooldown_counts_down_and_then_reports_ready() {
+    let lua = make_daemon_lua();
+    set_time(&lua, 1000);
+    assert!(eval_bool(&lua, r#"return DAEMON.cooldown.mark(42, "manasteel", 3600) ~= false"#));
+    assert_eq!(eval_int(&lua, r#"return DAEMON.cooldown.remaining(42, "manasteel")"#), 3600);
+    assert!(!eval_bool(&lua, r#"return DAEMON.cooldown.ready(42, "manasteel")"#));
+
+    set_time(&lua, 1000 + 3599);
+    assert_eq!(eval_int(&lua, r#"return DAEMON.cooldown.remaining(42, "manasteel")"#), 1);
+
+    set_time(&lua, 1000 + 3600);
+    assert!(eval_bool(&lua, r#"return DAEMON.cooldown.ready(42, "manasteel")"#));
+    assert_eq!(eval_int(&lua, r#"return DAEMON.cooldown.remaining(42, "manasteel")"#), 0);
+}
+
+/// The threshold rule: under a minute it is a game mechanic and lives in
+/// memory, over a minute it is a promise to the player and goes to disk.
+#[test]
+fn duration_chooses_the_tier() {
+    let lua = make_daemon_lua();
+    set_time(&lua, 1000);
+    lua.load(r#"
+        DAEMON.cooldown.mark(1, "daily", 86400)
+        DAEMON.cooldown.mark(1, "fireball", 6)
+    "#).exec().unwrap();
+
+    assert!(eval_bool(&lua, r#"return DAEMON.cache.get("cooldowns", 1, "daily") ~= nil"#));
+    assert!(eval_bool(&lua, r#"return DAEMON.cache.get("cooldowns_fast", 1, "daily") == nil"#));
+    assert!(eval_bool(&lua, r#"return DAEMON.cache.get("cooldowns_fast", 1, "fireball") ~= nil"#));
+    assert!(eval_bool(&lua, r#"return DAEMON.cache.get("cooldowns", 1, "fireball") == nil"#));
+}
+
+#[test]
+fn the_durable_flag_overrides_the_threshold_both_ways() {
+    let lua = make_daemon_lua();
+    set_time(&lua, 1000);
+    lua.load(r#"
+        DAEMON.cooldown.mark(1, "rare_but_short", 10, { durable = true })
+        DAEMON.cooldown.mark(1, "long_but_cheap", 86400, { durable = false })
+    "#).exec().unwrap();
+    assert!(eval_bool(&lua, r#"return DAEMON.cache.get("cooldowns", 1, "rare_but_short") ~= nil"#));
+    assert!(eval_bool(&lua, r#"return DAEMON.cache.get("cooldowns_fast", 1, "long_but_cheap") ~= nil"#));
+}
+
+/// Re-marking with a different tier must not leave the old copy behind, or
+/// `remaining` would keep finding it.
+#[test]
+fn moving_a_cooldown_between_tiers_leaves_nothing_behind() {
+    let lua = make_daemon_lua();
+    set_time(&lua, 1000);
+    lua.load(r#"
+        DAEMON.cooldown.mark(1, "thing", 86400)
+        DAEMON.cooldown.mark(1, "thing", 5)
+    "#).exec().unwrap();
+    assert!(eval_bool(&lua, r#"return DAEMON.cache.get("cooldowns", 1, "thing") == nil"#));
+    assert_eq!(eval_int(&lua, r#"return DAEMON.cooldown.remaining(1, "thing")"#), 5);
+}
+
+#[test]
+fn listing_shows_only_what_is_still_gating() {
+    let lua = make_daemon_lua();
+    set_time(&lua, 1000);
+    lua.load(r#"
+        DAEMON.cooldown.mark(1, "short", 10, { durable = false })
+        DAEMON.cooldown.mark(1, "long", 100, { durable = false })
+    "#).exec().unwrap();
+    set_time(&lua, 1020);
+    assert_eq!(eval_str(&lua, r#"
+        local list = DAEMON.cooldown.list(1)
+        local out = {}
+        for _, c in ipairs(list) do out[#out+1] = c.what end
+        return table.concat(out, ",")
+    "#), "long");
+}
+
+#[test]
+fn a_cooldown_needs_a_positive_duration() {
+    let lua = make_daemon_lua();
+    assert!(!eval_bool(&lua, r#"return DAEMON.cooldown.mark(1, "x", 0) ~= false"#));
+    assert!(!eval_bool(&lua, r#"return DAEMON.cooldown.mark(1, "x", -5) ~= false"#));
+    assert!(!eval_bool(&lua, r#"return DAEMON.cooldown.mark(1, "", 10) ~= false"#));
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  trait_d — attributes, derivation, regeneration
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// A VM with a small but representative trait set: two attributes, a counter,
+/// two derived traits (one of which is a gauge's maximum), and a regenerating
+/// gauge. `e` is an attached entity.
+fn trait_lua() -> Lua {
+    let lua = make_daemon_lua();
+    set_time(&lua, 1000);
+    lua.load(r#"
+        _formula_calls = 0
+        DAEMON.trait.define_all({
+            { id = "constitution", kind = "attribute", default = 10 },
+            { id = "wisdom",       kind = "attribute", default = 10 },
+            { id = "level",        kind = "counter",   default = 1 },
+            { id = "max_hp", kind = "derived", depends = { "constitution", "level" },
+              formula = function(t)
+                  _formula_calls = _formula_calls + 1
+                  return 50 + t.constitution * 5 + t.level * 10
+              end },
+            { id = "hp", kind = "gauge", max = "max_hp", min = 0,
+              regen = { rate = 1, per = 3, target = "max" } },
+            { id = "willpower", kind = "derived", depends = { "wisdom", "level" },
+              formula = function(t) return math.floor((t.wisdom - 10) / 2) + t.level end },
+        })
+        DAEMON.trait.seal()
+        e = { char_id = 1, stats = {} }
+        DAEMON.trait.attach(e)
+    "#).exec().expect("trait fixture");
+    lua
+}
+
+#[test]
+fn an_attribute_starts_at_its_default_and_can_be_set() {
+    let lua = trait_lua();
+    assert_eq!(eval_int(&lua, r#"return DAEMON.trait.value(e, "constitution")"#), 10);
+    lua.load(r#"DAEMON.trait.set_base(e, "constitution", 16)"#).exec().unwrap();
+    assert_eq!(eval_int(&lua, r#"return DAEMON.trait.value(e, "constitution")"#), 16);
+    assert_eq!(eval_int(&lua, "return e.stats.constitution"), 16,
+        "the base is what is stored, and CHARACTER_D is what saves it");
+}
+
+/// The requirement: a trait derived from another trait, D&D style.
+#[test]
+fn a_derived_trait_reads_another_trait() {
+    let lua = trait_lua();
+    // wisdom 10, level 1 -> (10-10)/2 + 1
+    assert_eq!(eval_int(&lua, r#"return DAEMON.trait.value(e, "willpower")"#), 1);
+    lua.load(r#"DAEMON.trait.set_base(e, "wisdom", 18)"#).exec().unwrap();
+    assert_eq!(eval_int(&lua, r#"return DAEMON.trait.value(e, "willpower")"#), 5,
+        "changing wisdom must change willpower with nothing else touched");
+}
+
+#[test]
+fn a_derived_trait_is_never_stored() {
+    let lua = trait_lua();
+    lua.load(r#"local _ = DAEMON.trait.value(e, "max_hp")"#).exec().unwrap();
+    assert!(eval_bool(&lua, "return e.stats.max_hp == nil"),
+        "storing a derived value would shadow the formula forever");
+}
+
+/// `max_hp` used to be a plain saved number. Attaching an old character has to
+/// drop it, or the formula would never be consulted again.
+#[test]
+fn attaching_drops_a_stored_value_for_a_trait_that_is_now_derived() {
+    let lua = trait_lua();
+    lua.load(r#"
+        old = { char_id = 2, stats = { max_hp = 999, hp = 900, constitution = 10, level = 1 } }
+        DAEMON.trait.attach(old)
+    "#).exec().unwrap();
+    assert!(eval_bool(&lua, "return old.stats.max_hp == nil"));
+    assert_eq!(eval_int(&lua, r#"return DAEMON.trait.value(old, "max_hp")"#), 110);
+    assert_eq!(eval_int(&lua, r#"return DAEMON.trait.value(old, "hp")"#), 110,
+        "and the gauge is clamped into the range the formula now gives");
+}
+
+/// `depends` is what the cycle detector reasons about, so a formula that reads
+/// something it did not declare has to be an error rather than a quiet
+/// success — otherwise the declaration rots and the detector's answer is a lie.
+#[test]
+fn reading_an_undeclared_dependency_is_an_error() {
+    let lua = trait_lua();
+    lua.load(r#"
+        _logged = {}
+        function log(level, msg) _logged[#_logged + 1] = tostring(msg) end
+        DAEMON.trait.define({ id = "sneaky", kind = "derived", depends = { "wisdom" },
+            formula = function(t) return t.constitution end })
+        DAEMON.trait.seal()
+        DAEMON.trait.bump(e)
+        _v = DAEMON.trait.value(e, "sneaky")
+    "#).exec().unwrap();
+
+    assert_eq!(eval_int(&lua, "return _v"), 0, "it falls back to the default");
+    assert!(eval_bool(&lua, r#"
+        for _, m in ipairs(_logged) do
+            if m:find("undeclared dependency") and m:find("constitution") then return true end
+        end
+        return false
+    "#), "the error must name the dependency that was not declared");
+}
+
+#[test]
+fn a_dependency_cycle_is_reported_as_a_path_and_does_not_crash() {
+    let lua = trait_lua();
+    lua.load(r#"
+        _logged = {}
+        function log(level, msg) _logged[#_logged + 1] = tostring(msg) end
+        DAEMON.trait.define({ id = "a", kind = "derived", depends = { "b" },
+            formula = function(t) return t.b + 1 end })
+        DAEMON.trait.define({ id = "b", kind = "derived", depends = { "a" },
+            formula = function(t) return t.a + 1 end })
+        _ok = DAEMON.trait.seal()
+    "#).exec().unwrap();
+
+    assert!(!eval_bool(&lua, "return _ok"));
+    assert!(eval_bool(&lua, r#"
+        for _, m in ipairs(_logged) do
+            if m:find("dependency cycle") and m:find("->") then return true end
+        end
+        return false
+    "#), "the message has to show the path, not just that a cycle exists");
+    // Everything else still works.
+    assert_eq!(eval_int(&lua, r#"return DAEMON.trait.value(e, "willpower")"#), 1,
+        "one broken trait must not disable the other thirty");
+    assert!(eval_bool(&lua, r#"return DAEMON.trait.errors()["a"] ~= nil"#));
+}
+
+#[test]
+fn a_gauge_is_clamped_to_the_trait_that_is_its_maximum() {
+    let lua = trait_lua();
+    // constitution 10, level 1 -> max_hp 110
+    lua.load(r#"DAEMON.trait.set_cur(e, "hp", 500)"#).exec().unwrap();
+    assert_eq!(eval_int(&lua, r#"return DAEMON.trait.value(e, "hp")"#), 110);
+    lua.load(r#"DAEMON.trait.set_cur(e, "hp", -20)"#).exec().unwrap();
+    assert_eq!(eval_int(&lua, r#"return DAEMON.trait.value(e, "hp")"#), 0);
+}
+
+/// The memo is what keeps trait resolution off the per-command hot path.
+#[test]
+fn values_are_computed_once_until_something_changes() {
+    let lua = trait_lua();
+    lua.load(r#"
+        _formula_calls = 0
+        for _ = 1, 20 do local _ = DAEMON.trait.value(e, "max_hp") end
+    "#).exec().unwrap();
+    assert_eq!(eval_int(&lua, "return _formula_calls"), 1,
+        "twenty reads, one evaluation");
+
+    lua.load(r#"DAEMON.trait.set_base(e, "constitution", 12)"#).exec().unwrap();
+    lua.load(r#"local _ = DAEMON.trait.value(e, "max_hp")"#).exec().unwrap();
+    assert_eq!(eval_int(&lua, "return _formula_calls"), 2, "and a change invalidates it");
+    assert_eq!(eval_int(&lua, r#"return DAEMON.trait.value(e, "max_hp")"#), 120);
+}
+
+#[test]
+fn regeneration_advances_a_gauge_without_a_timer() {
+    let lua = trait_lua();
+    lua.load(r#"DAEMON.trait.set_cur(e, "hp", 40)"#).exec().unwrap();
+    assert_eq!(eval_int(&lua, r#"return DAEMON.trait.value(e, "hp")"#), 40);
+
+    set_time(&lua, 1010);
+    assert_eq!(eval_int(&lua, r#"return DAEMON.trait.value(e, "hp")"#), 43,
+        "ten seconds at one per three is three points");
+    assert_eq!(eval_int(&lua, "return e.stats._at.hp"), 1009,
+        "and the tenth second is carried, not lost");
+}
+
+/// The line that keeps write-behind working: a settle that earned nothing must
+/// not report a change, because the prompt calls this on every command.
+#[test]
+fn a_gauge_at_full_health_changes_nothing_however_long_it_idles() {
+    let lua = trait_lua();
+    lua.load(r#"DAEMON.trait.set_cur(e, "hp", 110)"#).exec().unwrap();
+    let anchor_before = eval_str(&lua, "return tostring(e.stats._at.hp)");
+    set_time(&lua, 99999);
+    assert!(!eval_bool(&lua, "return DAEMON.trait.touch(e)"));
+    assert_eq!(eval_str(&lua, "return tostring(e.stats._at.hp)"), anchor_before);
+}
+
+#[test]
+fn adjusting_a_gauge_settles_it_first() {
+    let lua = trait_lua();
+    lua.load(r#"DAEMON.trait.set_cur(e, "hp", 40)"#).exec().unwrap();
+    set_time(&lua, 1010);
+    // 40 -> 43 by regeneration, then -3 from the adjustment.
+    assert_eq!(eval_int(&lua, r#"return DAEMON.trait.adjust(e, "hp", -3)"#), 40);
+}
+
+#[test]
+fn all_reports_base_and_effective_side_by_side() {
+    let lua = trait_lua();
+    assert_eq!(eval_str(&lua, r#"
+        for _, t in ipairs(DAEMON.trait.all(e)) do
+            if t.id == "willpower" then
+                return t.label .. "/" .. t.kind .. "/" .. tostring(t.value)
+            end
+        end
+        return "missing"
+    "#), "willpower/derived/1");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  effect_d — instances, stacking, and the pipeline in anger
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// The trait fixture plus the three effects from the design: the four examples
+/// the whole system was specified against.
+fn effect_lua() -> Lua {
+    let lua = trait_lua();
+    lua.load(r#"
+        _events = {}
+        DAEMON.effect.define_all({
+            {
+                id = "insight", label = "Insight", duration = 3600,
+                stack = "stack", max_stacks = 3,
+                hooks = { xp_gained = { phase = "mult", fn = function(ev, ctx)
+                    ev.scale = ev.scale + 0.20 * (ctx.stacks or 1)
+                end } },
+            },
+            {
+                id = "stoneskin", label = "Stoneskin", duration = 60, potency = 5,
+                modifiers = { constitution = 2 },
+                hooks = {
+                    damage_taken = { phase = "mult", fn = function(ev)
+                        ev.scale = ev.scale - 0.15
+                    end },
+                    ["damage_taken#flat"] = { hook = "damage_taken", phase = "reduce",
+                        fn = function(ev, ctx)
+                            ev.amount = math.max(0, ev.amount - (ctx.potency or 5))
+                        end },
+                },
+                on_apply  = function() _events[#_events+1] = "stoneskin:apply" end,
+                on_expire = function(ctx) _events[#_events+1] = "stoneskin:expire:" .. tostring(ctx.reason) end,
+            },
+            {
+                id = "regeneration", label = "Regeneration", duration = 30, tick = 3,
+                hooks = { heartbeat = { phase = "post", fn = function(ev, ctx)
+                    _events[#_events+1] = "regen:" .. tostring(ev.ticks)
+                end } },
+            },
+        })
+    "#).exec().expect("effect fixture");
+    lua
+}
+
+#[test]
+fn an_effect_can_be_applied_and_read_back() {
+    let lua = effect_lua();
+    assert!(eval_bool(&lua, r#"return DAEMON.effect.apply(e, "stoneskin") ~= false"#));
+    assert!(eval_bool(&lua, r#"return DAEMON.effect.has(e, "stoneskin")"#));
+    assert_eq!(eval_int(&lua, "return #DAEMON.effect.active(e)"), 1);
+    assert_eq!(eval_str(&lua, "return _events[1]"), "stoneskin:apply");
+}
+
+/// The four worked examples, end to end through the real pipeline.
+#[test]
+fn the_pipeline_applies_a_percentage_before_a_flat_reduction() {
+    let lua = effect_lua();
+    lua.load(r#"DAEMON.effect.apply(e, "stoneskin")"#).exec().unwrap();
+    assert_eq!(eval_str(&lua, r#"
+        local ev = DAEMON.effect.run(e, "damage_taken", { amount = 30, scale = 0, min = 0 })
+        return tostring(ev.amount)
+    "#), "20.5", "30 * 0.85 - 5");
+}
+
+#[test]
+fn stacks_scale_a_multiplier() {
+    let lua = effect_lua();
+    lua.load(r#"
+        DAEMON.effect.apply(e, "insight")
+        DAEMON.effect.apply(e, "insight")
+    "#).exec().unwrap();
+    assert_eq!(eval_int(&lua, r#"
+        local inst = DAEMON.effect.active(e)[1].inst
+        return inst.stacks
+    "#), 2);
+    assert_eq!(eval_str(&lua, r#"
+        local ev = DAEMON.effect.run(e, "xp_gained", { amount = 100, scale = 0 })
+        return tostring(ev.amount)
+    "#), "140", "two stacks of +20% is +40%, not +44%");
+}
+
+#[test]
+fn a_passive_modifier_changes_a_trait_and_everything_derived_from_it() {
+    let lua = effect_lua();
+    let before = eval_int(&lua, r#"return DAEMON.trait.value(e, "max_hp")"#);
+    lua.load(r#"DAEMON.effect.apply(e, "stoneskin")"#).exec().unwrap();
+    assert_eq!(eval_int(&lua, r#"return DAEMON.trait.value(e, "constitution")"#), 12,
+        "+2 constitution from the effect, with nothing stored on the trait");
+    assert_eq!(eval_int(&lua, "return e.stats.constitution"), 10,
+        "and the base is untouched — this is what a stored `mod` gets wrong");
+    assert_eq!(eval_int(&lua, r#"return DAEMON.trait.value(e, "max_hp")"#), before + 10,
+        "the modifier flows through the dependency graph");
+
+    lua.load(r#"DAEMON.effect.remove(e, "stoneskin")"#).exec().unwrap();
+    assert_eq!(eval_int(&lua, r#"return DAEMON.trait.value(e, "max_hp")"#), before,
+        "and removing it needs no unapply step, because nothing was applied");
+}
+
+/// A gauge is changed by events, never by modifiers. Catching this at
+/// definition time beats a buff that silently does nothing.
+#[test]
+fn an_effect_cannot_declare_a_modifier_on_a_gauge() {
+    let lua = effect_lua();
+    assert!(!eval_bool(&lua, r#"
+        return DAEMON.effect.define({ id = "bogus", modifiers = { hp = 10 } })
+    "#));
+    assert!(!eval_bool(&lua, r#"
+        return DAEMON.effect.define({ id = "bogus2", modifiers = { level = 1 } })
+    "#), "a counter is the same story");
+}
+
+#[test]
+fn refreshing_extends_rather_than_duplicating() {
+    let lua = effect_lua();
+    lua.load(r#"DAEMON.effect.apply(e, "stoneskin", { source = "spell:x" })"#).exec().unwrap();
+    set_time(&lua, 1030);
+    lua.load(r#"DAEMON.effect.apply(e, "stoneskin", { source = "spell:x" })"#).exec().unwrap();
+    assert_eq!(eval_int(&lua, "return #DAEMON.effect.active(e)"), 1);
+    assert_eq!(eval_int(&lua, "return DAEMON.effect.active(e)[1].inst.expires"), 1090);
+}
+
+#[test]
+fn a_weaker_reapplication_never_shortens_an_effect() {
+    let lua = effect_lua();
+    lua.load(r#"DAEMON.effect.apply(e, "stoneskin", { duration = 600 })"#).exec().unwrap();
+    lua.load(r#"DAEMON.effect.apply(e, "stoneskin", { duration = 10 })"#).exec().unwrap();
+    assert_eq!(eval_int(&lua, "return DAEMON.effect.active(e)[1].inst.expires"), 1600);
+}
+
+#[test]
+fn independent_effects_each_keep_their_own_clock() {
+    let lua = effect_lua();
+    lua.load(r#"
+        DAEMON.effect.define({ id = "bleed", stack = "independent", duration = 20 })
+        DAEMON.effect.apply(e, "bleed")
+        DAEMON.effect.apply(e, "bleed")
+    "#).exec().unwrap();
+    assert_eq!(eval_int(&lua, "return #DAEMON.effect.active(e)"), 2);
+}
+
+#[test]
+fn ignore_and_replace_do_what_they_say() {
+    let lua = effect_lua();
+    lua.load(r#"
+        DAEMON.effect.define({ id = "shield", stack = "ignore", duration = 60 })
+        DAEMON.effect.define({ id = "stance", stack = "replace", duration = 60 })
+        _first  = DAEMON.effect.apply(e, "shield")
+        _second = DAEMON.effect.apply(e, "shield")
+        DAEMON.effect.apply(e, "stance")
+        DAEMON.effect.apply(e, "stance")
+    "#).exec().unwrap();
+    assert!(eval_bool(&lua, "return _first ~= false and _second == false"));
+    assert_eq!(eval_int(&lua, r#"
+        local n = 0
+        for _, x in ipairs(DAEMON.effect.active(e)) do
+            if x.inst.def == "stance" then n = n + 1 end
+        end
+        return n
+    "#), 1);
+}
+
+#[test]
+fn an_expired_effect_stops_applying_and_says_so_once() {
+    let lua = effect_lua();
+    lua.load(r#"
+        _events = {}
+        DAEMON.effect.apply(e, "stoneskin")
+    "#).exec().unwrap();
+    assert_eq!(eval_int(&lua, r#"return DAEMON.trait.value(e, "constitution")"#), 12);
+
+    set_time(&lua, 1000 + 61);
+    assert_eq!(eval_int(&lua, "return #DAEMON.effect.active(e)"), 0);
+    assert_eq!(eval_int(&lua, r#"return DAEMON.trait.value(e, "constitution")"#), 10,
+        "an expired effect must stop modifying, with no sweep having run");
+
+    // Reading again must not fire on_expire a second time.
+    lua.load("local _ = DAEMON.effect.active(e)").exec().unwrap();
+    assert_eq!(eval_int(&lua, r#"
+        local n = 0
+        for _, ev in ipairs(_events) do
+            if ev:find("stoneskin:expire") then n = n + 1 end
+        end
+        return n
+    "#), 1);
+}
+
+/// Time is the only thing that changed, so the memo has to notice it — via the
+/// one comparison TRAIT_D caches, not by giving up on memoization.
+#[test]
+fn expiry_invalidates_memoized_trait_values() {
+    let lua = effect_lua();
+    lua.load(r#"
+        DAEMON.effect.apply(e, "stoneskin")
+        _v1 = DAEMON.trait.value(e, "max_hp")
+    "#).exec().unwrap();
+    set_time(&lua, 1000 + 61);
+    assert!(eval_bool(&lua, r#"return DAEMON.trait.value(e, "max_hp") < _v1"#));
+}
+
+#[test]
+fn the_heartbeat_earns_whole_ticks_and_carries_the_rest() {
+    let lua = effect_lua();
+    lua.load(r#"
+        _events = {}
+        DAEMON.effect.apply(e, "regeneration")
+    "#).exec().unwrap();
+
+    set_time(&lua, 1010);
+    lua.load("DAEMON.effect.heartbeat()").exec().unwrap();
+    assert_eq!(eval_str(&lua, "return _events[1]"), "regen:3", "ten seconds is three ticks of three");
+    assert_eq!(eval_int(&lua, "return DAEMON.effect.active(e)[1].inst.last_tick"), 1009);
+
+    // Two more seconds is not another tick.
+    lua.load("_events = {}").exec().unwrap();
+    set_time(&lua, 1011);
+    lua.load("DAEMON.effect.heartbeat()").exec().unwrap();
+    assert_eq!(eval_int(&lua, "return #_events"), 0);
+}
+
+#[test]
+fn modify_returns_the_number_untouched_when_nothing_listens() {
+    let lua = effect_lua();
+    assert_eq!(eval_int(&lua, r#"return DAEMON.effect.modify(e, "nothing_listens", 30)"#), 30);
+}
+
+/// Equipment, room auras and anything else rebuilt from its source calls this
+/// on every login and every change. It has to be safe to call repeatedly.
+#[test]
+fn set_source_effects_is_idempotent() {
+    let lua = effect_lua();
+    lua.load(r#"
+        DAEMON.effect.set_source_effects(e, "equip:head", { { def = "stoneskin" } })
+        DAEMON.effect.set_source_effects(e, "equip:head", { { def = "stoneskin" } })
+    "#).exec().unwrap();
+    assert_eq!(eval_int(&lua, "return #DAEMON.effect.active(e)"), 1);
+
+    lua.load(r#"DAEMON.effect.set_source_effects(e, "equip:head", {})"#).exec().unwrap();
+    assert_eq!(eval_int(&lua, "return #DAEMON.effect.active(e)"), 0,
+        "taking the hat off takes the effect with it");
+}
+
+#[test]
+fn clearing_honours_effects_that_survive_death() {
+    let lua = effect_lua();
+    lua.load(r#"
+        DAEMON.effect.define({ id = "curse", duration = 3600, survives_death = true })
+        DAEMON.effect.apply(e, "stoneskin")
+        DAEMON.effect.apply(e, "curse")
+        DAEMON.effect.clear(e, { keep_survivors = true, reason = "death" })
+    "#).exec().unwrap();
+    assert_eq!(eval_int(&lua, "return #DAEMON.effect.active(e)"), 1);
+    assert_eq!(eval_str(&lua, "return DAEMON.effect.active(e)[1].inst.def"), "curse");
+}
+
+/// Instances are written to the database, so they must be plain data — and
+/// they must survive `Player._deep_copy`, which drops functions.
+#[test]
+fn an_effect_instance_is_plain_saveable_data() {
+    let lua = effect_lua();
+    lua.load(r#"
+        js = require('lib.jsonsafe')
+        Player = require('lib.player')
+        DAEMON.effect.apply(e, "stoneskin", { source = "potion:x", potency = 7, caster = 3 })
+        inst = DAEMON.effect.active(e)[1].inst
+    "#).exec().unwrap();
+
+    assert!(eval_bool(&lua, "return js.check(inst)"));
+    assert!(eval_bool(&lua, r#"
+        local copy = Player._deep_copy(inst)
+        for k, v in pairs(inst) do if copy[k] ~= v then return false end end
+        for k, v in pairs(copy) do if inst[k] ~= v then return false end end
+        return true
+    "#), "a deep copy must be identical — anything it dropped was not saveable");
+}
+
+/// Regeneration heals, healing is an event, and an effect could listen to it
+/// and heal again. Refusing beats a silent infinite loop on the game thread.
+#[test]
+fn the_pipeline_refuses_to_re_enter_itself() {
+    let lua = effect_lua();
+    lua.load(r#"
+        _depth = 0
+        DAEMON.effect.define({ id = "loop", duration = 60, hooks = {
+            heal_received = { phase = "post", fn = function(ev, ctx)
+                _depth = _depth + 1
+                DAEMON.effect.run(ctx.entity, "heal_received", { amount = 1, scale = 0 })
+            end },
+        } })
+        DAEMON.effect.apply(e, "loop")
+        DAEMON.effect.run(e, "heal_received", { amount = 10, scale = 0 })
+    "#).exec().unwrap();
+    assert_eq!(eval_int(&lua, "return _depth"), 1);
+}
+
+
+/// Overwriting the same key must not make the scope look as though it is
+/// growing. The byte estimate once added the key on every write rather than
+/// only the first, so a scope holding a single counter crept toward the
+/// document ceiling and eventually refused every write with a size complaint
+/// that was not true.
+#[test]
+fn repeatedly_overwriting_one_key_does_not_inflate_the_scope() {
+    let lua = cache_lua(r#"{ tier = "write_behind" }"#);
+    lua.load(r#"
+        for i = 1, 20000 do DAEMON.cache.set("t", 1, "counter", i) end
+    "#).exec().unwrap();
+
+    assert_eq!(eval_int(&lua, "return DAEMON.cache.stats().rejected_writes"), 0,
+        "twenty thousand updates to one small key must all be accepted");
+    assert_eq!(eval_int(&lua, r#"return DAEMON.cache.get("t", 1, "counter")"#), 20000);
+    assert!(eval_bool(&lua, r#"return DAEMON.cache.inspect("t", 1).bytes < 200"#),
+        "one small key should not be estimated at hundreds of bytes");
 }

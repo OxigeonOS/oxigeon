@@ -2,39 +2,20 @@
 //! Tests the commands.lua dispatcher and parser by running them through
 //! a minimal scripting engine backed by a real temp mudlib directory.
 
+mod common;
+
 use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
 use tempfile::TempDir;
-use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
 
-use oxigeon::core::scripting::{ScriptEngine, LuaCommand};
-use oxigeon::core::session::{SessionHandler, Session, SessionOutput};
+use oxigeon::config::MultisessionMode;
 use oxigeon::core::scripting::efuns::EfunContext;
-use oxigeon::core::logging::GameLogger;
-use oxigeon::config::{
-    ServerConfig, GameConfig, SessionsConfig, AccountsConfig, LimitsConfig, MultisessionMode,
-    DatabaseConfig, DatabaseBackend, PermissionConfig,
-};
-use oxigeon::domain::models::{DieselAccountStore, DieselCharacterStore};
-use oxigeon::domain::models::role::DieselRoleStore;
+use oxigeon::core::scripting::{LuaCommand, ScriptEngine};
+use oxigeon::core::session::{Session, SessionHandler, SessionOutput};
 use oxigeon::domain::db::connection::AnyPool;
 
-pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
-
 fn make_test_pool() -> (AnyPool, TempDir) {
-    let dir = TempDir::new().unwrap();
-    let db_path = dir.path().join("test.db");
-    let config = DatabaseConfig {
-        backend: DatabaseBackend::Sqlite,
-        url: db_path.to_string_lossy().to_string(),
-        pool_size: 1,
-    };
-    let pool = AnyPool::new(&config).unwrap();
-    {
-        let mut conn = pool.get_sqlite().unwrap();
-        conn.run_pending_migrations(MIGRATIONS).unwrap();
-    }
-    (pool, dir)
+    common::test_pool()
 }
 
 fn make_efun_context(
@@ -42,47 +23,7 @@ fn make_efun_context(
     mudlib_path: std::path::PathBuf,
     pool: AnyPool,
 ) -> EfunContext {
-    let server_config = ServerConfig {
-        game: GameConfig {
-            name: "TestMUD".to_string(),
-            mudlib_path: mudlib_path.to_string_lossy().to_string(),
-            game_path: Some(mudlib_path.join("game").to_string_lossy().to_string()),
-            command_paths: None,
-            start_room: None,
-            area_reset_seconds: Some(900),
-            autosave_seconds: Some(300),
-        },
-        sessions: SessionsConfig {
-            multisession_mode: MultisessionMode::Single,
-            max_connections: 256,
-        },
-        accounts: AccountsConfig {
-            allow_creation: true,
-            min_password_length: 6,
-            max_characters_per_account: 5,
-        },
-        limits: LimitsConfig {
-            lua_memory_mb: 64,
-            lua_instruction_limit: 1_000_000,
-            input_buffer_bytes: 4096,
-        },
-    };
-    let log_dir = mudlib_path.join("logs");
-    let game_logger = std::sync::Arc::new(GameLogger::new(&log_dir));
-    EfunContext {
-        session_handler: sh,
-        account_store: Arc::new(DieselAccountStore::new(pool.clone(), 6)),
-        character_store: Arc::new(DieselCharacterStore::new(pool.clone(), 5)),
-        role_store: Arc::new(DieselRoleStore::new(pool)),
-        server_config: Arc::new(server_config),
-        mudlib_path,
-        cmd_tx: None,
-        permission_config: Arc::new(PermissionConfig::default()),
-        game_logger,
-        started_at: std::time::Instant::now(),
-        started_at_utc: "2026-01-01T00:00:00Z".to_string(),
-        debug_state: oxigeon::core::scripting::debugger::DebugState::shared(1024, 64),
-    }
+    common::efun_context(sh, mudlib_path, pool, common::TestCtx::default())
 }
 
 /// Create a minimal mudlib with commands.lua dispatcher and a test command.
@@ -397,3 +338,4 @@ fn test_dispatch_whitespace_trimmed() {
     std::thread::sleep(std::time::Duration::from_millis(150));
     drop(engine);
 }
+

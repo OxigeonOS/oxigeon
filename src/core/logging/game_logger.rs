@@ -11,6 +11,7 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use crate::core::lock::MutexExt;
 
 use serde_json::json;
 
@@ -47,7 +48,7 @@ impl LogFile {
 
     /// Open the file lazily (creates it and parent dirs on first write).
     fn write_line(&self, line: &str) {
-        let mut guard = self.file.lock().unwrap();
+        let mut guard = self.file.lock_recover();
         if guard.is_none() {
             if let Some(parent) = self.path.parent() {
                 let _ = std::fs::create_dir_all(parent);

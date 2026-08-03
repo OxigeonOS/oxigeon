@@ -7,90 +7,37 @@
 //! 5. journal_write writes a readable entry.
 //! 6. audit_write writes a readable entry.
 
+mod common;
+
 use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
 use tempfile::TempDir;
-use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
 
-use oxigeon::core::scripting::{ScriptEngine, LuaCommand};
-use oxigeon::core::session::{SessionHandler, Session, SessionOutput};
+use oxigeon::config::MultisessionMode;
+use oxigeon::core::logging::GameLogger;
 use oxigeon::core::scripting::efuns::EfunContext;
-use oxigeon::core::logging::{GameLogger, JournalEntry};
-use oxigeon::config::{
-    ServerConfig, GameConfig, SessionsConfig, AccountsConfig, LimitsConfig, MultisessionMode,
-    DatabaseConfig, DatabaseBackend, PermissionConfig,
-};
-use oxigeon::domain::models::{DieselAccountStore, DieselCharacterStore};
-use oxigeon::domain::models::role::DieselRoleStore;
+use oxigeon::core::scripting::{LuaCommand, ScriptEngine};
+use oxigeon::core::session::{Session, SessionHandler, SessionOutput};
 use oxigeon::domain::db::connection::AnyPool;
 
-pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
-
 fn make_test_pool() -> (AnyPool, TempDir) {
-    let dir = TempDir::new().unwrap();
-    let db_path = dir.path().join("test.db");
-    let config = DatabaseConfig {
-        backend: DatabaseBackend::Sqlite,
-        url: db_path.to_string_lossy().to_string(),
-        pool_size: 1,
-    };
-    let pool = AnyPool::new(&config).unwrap();
-    {
-        let mut conn = pool.get_sqlite().unwrap();
-        conn.run_pending_migrations(MIGRATIONS).unwrap();
-    }
-    (pool, dir)
+    common::test_pool()
 }
 
-/// Create an EfunContext and return the GameLogger so tests can inspect the log.
 fn make_efun_context(
     sh: Arc<RwLock<SessionHandler>>,
     mudlib_path: std::path::PathBuf,
     pool: AnyPool,
     log_dir: &std::path::Path,
 ) -> (EfunContext, Arc<GameLogger>) {
-    let server_config = ServerConfig {
-        game: GameConfig {
-            name: "TestMUD".to_string(),
-            mudlib_path: mudlib_path.to_string_lossy().to_string(),
-            game_path: Some(mudlib_path.join("game").to_string_lossy().to_string()),
-            command_paths: None,
-            start_room: None,
-            area_reset_seconds: Some(900),
-            autosave_seconds: Some(300),
-        },
-        sessions: SessionsConfig {
-            multisession_mode: MultisessionMode::Single,
-            max_connections: 256,
-        },
-        accounts: AccountsConfig {
-            allow_creation: true,
-            min_password_length: 6,
-            max_characters_per_account: 5,
-        },
-        limits: LimitsConfig {
-            lua_memory_mb: 64,
-            lua_instruction_limit: 1_000_000,
-            input_buffer_bytes: 4096,
-        },
-    };
-
-    let game_logger = Arc::new(GameLogger::new(log_dir));
-    let ctx = EfunContext {
-        session_handler: sh,
-        account_store: Arc::new(DieselAccountStore::new(pool.clone(), 6)),
-        character_store: Arc::new(DieselCharacterStore::new(pool.clone(), 5)),
-        role_store: Arc::new(DieselRoleStore::new(pool)),
-        server_config: Arc::new(server_config),
+    let ctx = common::efun_context(
+        sh,
         mudlib_path,
-        cmd_tx: None,
-        permission_config: Arc::new(PermissionConfig::default()),
-        game_logger: game_logger.clone(),
-        started_at: std::time::Instant::now(),
-        started_at_utc: "2026-01-01T00:00:00Z".to_string(),
-        debug_state: oxigeon::core::scripting::debugger::DebugState::shared(1024, 64),
-    };
-    (ctx, game_logger)
+        pool,
+        common::TestCtx { log_dir: Some(log_dir.to_path_buf()), ..Default::default() },
+    );
+    let logger = ctx.game_logger.clone();
+    (ctx, logger)
 }
 
 /// Start the engine with a given init.lua content and return the engine + logger.
@@ -189,13 +136,12 @@ end
 "#;
     let (engine, _gl, _log_dir, _db_dir) = start_engine_with_lua(&mudlib, init_lua);
 
-    let sh = Arc::new(RwLock::new(SessionHandler::new(MultisessionMode::Single, 256)));
+    // The session is never registered with the handler: `verify_file` is
+    // permission-free under `PermissionConfig::default()`, so it only needs an
+    // id to dispatch against.
     let (tx, _rx) = mpsc::channel::<SessionOutput>(16);
     let addr = "127.0.0.1:9999".parse().unwrap();
-    let session = Session::new("telnet".to_string(), addr, tx);
-    let sid = session.id.to_string();
-    // We don't need the session in the handler for verify_file — it's a permission-free test
-    // because PermissionConfig::default() has no efun restrictions.
+    let sid = Session::new("telnet".to_string(), addr, tx).id.to_string();
 
     engine.send(LuaCommand::OnInput {
         session_id: sid,
@@ -402,3 +348,4 @@ end
         assert!(obj["action"].is_string());
     }
 }
+

@@ -61,7 +61,7 @@ impl SessionHandler {
 
                 for old_id in existing {
                     if let Some(old_session) = self.sessions.get(&old_id) {
-                        let _ = old_session.output_tx.try_send(SessionOutput::Disconnect);
+                        old_session.try_send(SessionOutput::Disconnect);
                     }
                     self.sessions.remove(&old_id);
                     kicked_id = Some(old_id);
@@ -162,20 +162,33 @@ impl SessionHandler {
             .collect()
     }
 
-    /// Send text to all connected sessions
-    pub fn broadcast(&self, text: &str) {
-        for session in self.sessions.values() {
-            let _ = session.output_tx.try_send(SessionOutput::Text(text.to_string()));
-        }
+    /// Send text to all connected sessions.
+    ///
+    /// Returns how many sessions could not take it, so a caller that cares can
+    /// say so. A broadcast to a room full of players on slow links is the most
+    /// likely place for output to go missing.
+    pub fn broadcast(&self, text: &str) -> usize {
+        self.sessions
+            .values()
+            .filter(|s| !s.try_send(SessionOutput::Text(text.to_string())))
+            .count()
     }
 
     /// Send text to a specific session
     pub fn send_to(&self, id: &SessionId, text: &str) -> Result<()> {
         let session = self.sessions.get(id)
             .ok_or_else(|| OxigeonError::SessionNotFound(id.to_string()))?;
-        session.output_tx.try_send(SessionOutput::Text(text.to_string()))
-            .map_err(|e| OxigeonError::Internal(format!("Channel send error: {}", e)))?;
+        if !session.try_send(SessionOutput::Text(text.to_string())) {
+            return Err(OxigeonError::Internal(format!(
+                "Session {} could not take output (channel full or closed)", id
+            )));
+        }
         Ok(())
+    }
+
+    /// Total output messages lost across all sessions, for `server_info`.
+    pub fn dropped_output_total(&self) -> u64 {
+        self.sessions.values().map(|s| s.dropped_output()).sum()
     }
 
     pub fn count(&self) -> usize {

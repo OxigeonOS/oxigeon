@@ -109,6 +109,41 @@ Entries are written to `logs/audit.log` via the Rust `GameLogger`. Commands can 
 
 **Rule of thumb:** If the question is "what went wrong?" → journal_d. If the question is "who did this?" → audit_d.
 
+## State: Choose the Tier by What You'd Mind Losing
+
+Evennia persists every attribute change straight to the database, and that is
+where its performance goes. A `db_put` here costs ~84 µs against ~0.8 µs for an
+in-memory write, synchronously on the game thread. The fix is not a faster
+store — it is writing less often.
+
+> **Choose the tier by how much you would mind losing it, not by convenience.**
+
+| Tier | Mechanism | You lose | For |
+|---|---|---|---|
+| memory | `DAEMON.cache` memory namespace | everything on restart | combat state, aggro, targets, sub-minute cooldowns, short buffs |
+| write-behind | `DAEMON.cache` write-behind namespace | up to `flush_seconds`, **only on a crash** | effects, quest counters, statistics |
+| character | `player.stats` + `SAVE_FIELDS` via CHARACTER_D | same as above | trait bases, gauge currents, progression |
+| write-through | `DAEMON.cache` write-through namespace | nothing | daily gates, admin actions, entitlements |
+
+### Which home does this state get?
+
+Three questions, in order:
+
+1. **Would you print it on a character sheet?** → `player.stats` / `SAVE_FIELDS`.
+2. **Does another subsystem own its lifecycle** — it ticks, expires, accumulates?
+   → `DAEMON.cache`, one namespace per subsystem.
+3. **How much would you mind losing it?** → the table above.
+
+Two corollaries worth stating outright:
+
+- **Do not put per-character state on a room.** `set_object_state` is wiped by
+  area resets, which is why a "once per 24 hours" gate stored on a room was
+  really "once per 15 minutes". Use `DAEMON.cooldown`.
+- **Stop growing `player.custom`.** It is where state goes when nobody decided,
+  and it is how a 64 KB character blob gets rewritten on every autosave.
+
+See `docs/src/lua-api/state-cache.md`.
+
 ## Lua Coding Conventions
 
 - Use `\r\n` for player-facing text sent via `send()`
@@ -122,7 +157,26 @@ Entries are written to `logs/audit.log` via the Rust `GameLogger`. Commands can 
 - Timers go through `DAEMON.ticker` — never raw `schedule_timer` unless building a daemon
 - Commands are auto-loaded from paths in `game.command_paths` config
 - Character state goes through CHARACTER_D (in-memory cache), not raw efuns
+- Stats are read through `player:stat(id)` or `DAEMON.trait.value` — `player.stats[id]`
+  is the *stored* value, which for a buffed or derived trait is the wrong answer
+- Effects never modify a gauge or a counter; they modify attributes and derived
+  traits. To raise a gauge's ceiling, modify the trait that is its `max`
+- A value written to `DAEMON.cache` must survive `lua_to_json`: no functions, no
+  mixed list/map tables, no NaN. The memory tier is the exception
 
 ## Testing
 
-Run `cargo test` before committing. All tests must pass. Current count: 147.
+Run `cargo test` before committing. All tests must pass. Current count: 548.
+
+### Test the real VM, not a helper beside it
+
+Two security controls once shipped broken because their tests exercised a
+helper in isolation while production took a different path — the sandbox was
+never applied to the VM the engine builds, and the instruction limit was parsed
+and never read. Both suites were green the whole time.
+
+`tests/common/mod.rs` boots a real `ScriptEngine` and runs probe Lua *inside
+it*. Any test of a security boundary — the sandbox, the instruction budget,
+permission gating, the auth path — goes through that harness, so it asks what
+game code can actually do rather than what a function does when called
+directly. See `tests/sandbox_reality_check.rs` for the shape.

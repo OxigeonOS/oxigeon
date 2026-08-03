@@ -12,12 +12,20 @@ Efuns are Rust functions exposed to Lua — they form the bridge between your mu
 - **[World Building — Rooms & Areas](./world-building.md)** — Data-oriented rooms, virtual providers, area metadata, multi-file areas, object state, tickers
 - **[Signals & Events (EVENT_D)](./signals.md)** — Godot-style signals: subscribe, emit, priority, deferred events, bulk cleanup
 - **[Character Data & Persistence](./character-data.md)** — `CHARACTER_D`, `save_character_data()`, `load_character_data()`
+- **[Document Store — Persisting Anything](./document-store.md)** — `db_put()`, `db_find()`, `db_update()`, `db_incr()`: persist any type with no Rust and no migration
 - **[Efuns — Driver Functions](./efuns.md)** — `send()`, `send_prompt()`, `broadcast()`, `authenticate_session()`, `set_object_state()`, `schedule_timer()`, `reload()`, etc.
-- **[Event Hooks](./events.md)** — `on_connect`, `on_input`, `on_disconnect`, `on_gmcp`, `on_timer`, `on_load`, `on_unload`
+- **[Event Hooks](./events.md)** — `on_connect`, `on_input`, `on_disconnect`, `on_gmcp`, `on_timer`, `on_shutdown`, `on_load`, `on_unload`
+- **[State Cache](./state-cache.md)** — memory / write-behind / write-through, and cooldowns
+- **[Traits](./traits.md)** — character attributes, derived values, regeneration
+- **[Effects](./effects.md)** — buffs, debuffs, and the event pipeline
+- **[Creatures & Combat](./combat.md)** — mobs, spawning, rounds
+- **[Debugging & Tracing](./debugging.md)** — the debug adapter and execution tracing
 - **[Observability & Logging](./observability.md)** — journal_d, audit_d, server info
 - **[Permissions & Roles](./permissions.md)** — RBAC system, role management, permission checks
 - **[File & System Access](./file-access.md)** — `read_file()`, `write_file()`, `list_dir()`, `os_time()`, `os_date()`, etc.
 - **[Sandboxing & Security](./sandboxing.md)** — What is and isn't available, and why.
+- **[Performance & the JIT Trade-off](./performance.md)** — What the compiler is worth, measured, and how to re-measure it
+- **[Compute — Off-Thread Lua](./compute.md)** — `compute()`: run a long computation on a worker thread without freezing the game
 
 ## Lua Version
 
@@ -38,8 +46,9 @@ Oxigeon uses **LuaJIT (API compatible with Lua 5.1)**. This means:
 | `math` | ✅ | All functions |
 | `coroutine` | ✅ | All functions |
 | `io` | ❌ | Use `read_file()`, `write_file()`, `list_dir()` instead |
-| `os` | ❌ | Use `os_time()`, `os_clock()`, `os_date()` instead |
-| `debug` | ❌ | Disabled for security |
+| `os` | ⚠️ Clocks only | `os.time`, `os.date`, `os.clock`, `os.difftime` are kept; everything else is removed. `os_time()`/`os_clock()`/`os_date()` are efun equivalents |
+| `debug` | ❌ | Can escape any sandbox. Loaded but hidden from `_G` when the debug adapter is enabled |
+| `jit` | ❌ | `jit.on()` would disarm the instruction limit |
 | `package.loadlib` | ❌ | No C extensions |
 | `require` | ✅ (jailed) | Limited to mudlib and game directories |
 
