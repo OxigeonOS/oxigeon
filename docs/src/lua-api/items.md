@@ -104,7 +104,7 @@ Armor{ id = "guards_mail", slot = "chest", defense = 8,
        required_level = 5, required_strength = 14 }
 ```
 
-One rule, in [`lib/requires.lua`](./object-hierarchy.md#requires), shared by
+One rule, in [`components/requires.lua`](./object-hierarchy.md#requires), shared by
 weapons and armour. Read through the entity rather than its stored stats, so a
 strength buff genuinely lets you lift the greatsword:
 
@@ -168,7 +168,7 @@ weakness and increases the number, which is the same arithmetic.
 ## Containers
 
 ```lua
-local Container = require('lib.container')
+local Container = require('components.container')
 
 Container{ id = "leather_backpack", short = "a battered leather backpack",
            slot = "back", capacity = 12, capacity_weight = 40 }
@@ -232,7 +232,7 @@ one level down would let them carry the world in a satchel.
 `lib/equipment.lua`: `equip`, `unequip`, `worn`, `all_worn`, `refresh_slot`,
 `refresh_all`, `slot_for`, `is_slot`, `encumbrance`, `SLOTS`.
 
-`lib/container.lua`: `is`, `is_closed`, `is_locked`, `set_closed`, `set_locked`,
+`components/container.lua`: `is`, `is_closed`, `is_locked`, `set_closed`, `set_locked`,
 `can_accept`, `total_weight`, `describe`.
 
 ## What it will not do

@@ -129,4 +129,32 @@ function M.dispatch(ev, handlers, on_error)
     return ev
 end
 
+-- ─── Writing definitions ─────────────────────────────────────────────────────
+
+--- An `on_apply` / `on_expire` that just tells the entity something.
+---
+--- Nearly every effect in the game had two of these, and every one of them was
+--- the same three lines around a single string:
+---
+---     on_apply = function(ctx)
+---         if ctx.entity.send then ctx.entity:send("Your thoughts sharpen.") end
+---     end,
+---
+--- Sixteen copies of that is sixteen chances to forget the `send` guard — a mob
+--- has no `send`, and effects land on mobs. Hoisting each to a named local
+--- would have produced sixteen names for one idea, so this is the shape worth
+--- having instead:
+---
+---     on_apply  = Effects.says("{cyan}Your thoughts sharpen.{/}"),
+---     on_expire = Effects.says("{cyan}Your thoughts dull again.{/}"),
+---
+--- @param message string
+--- @return function  suitable for on_apply, on_expire, or on_stack
+function M.says(message)
+    return function(ctx)
+        local entity = ctx and ctx.entity
+        if entity and entity.send then entity:send(message) end
+    end
+end
+
 return M

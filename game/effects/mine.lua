@@ -1,5 +1,14 @@
 -- game/effects/mine.lua — What the mine leaves on you.
 
+local Effects = require('lib.effects')
+
+--- delvers_regard: everything in the dark finds you more easily. A `mult`
+--- handler, so it scales the incoming number before any flat reduction comes
+--- off it — which is the ordering the phases exist to guarantee.
+local function delvers_regard_mult(ev)
+    ev.scale = ev.scale + 0.15
+end
+
 return {
     --- The boss's curse. `survives_death`, so dying does not shake it off, and
     --- long enough that the only real answer is to go back up.
@@ -11,22 +20,9 @@ return {
         persist = true,
         modifiers = { dexterity = -2, wisdom = -1 },
         hooks = {
-            -- Everything in the dark finds you more easily. A `mult` handler,
-            -- so it scales the incoming number before any flat reduction comes
-            -- off it — which is the ordering the phases exist to guarantee.
-            damage_taken = { phase = "mult", fn = function(ev)
-                ev.scale = ev.scale + 0.15
-            end },
+            damage_taken = { phase = "mult", fn = delvers_regard_mult },
         },
-        on_apply = function(ctx)
-            if ctx.entity.send then
-                ctx.entity:send("{red}It stops working and looks at you, and then goes back to work.{/}")
-            end
-        end,
-        on_expire = function(ctx)
-            if ctx.entity.send then
-                ctx.entity:send("{green}The feeling of being worked out goes away.{/}")
-            end
-        end,
+        on_apply = Effects.says("{red}It stops working and looks at you, and then goes back to work.{/}"),
+        on_expire = Effects.says("{green}The feeling of being worked out goes away.{/}"),
     },
 }

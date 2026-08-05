@@ -179,6 +179,79 @@ local function mine_ore(session_id, args_str, args)
     end
 end
 
+-- ─── Descriptions and gates that read the puzzle's state ─────────────────────
+--
+-- Hoisted for the same reason the actions above are: a room file should read as
+-- what the rooms *are*, not as prose with programs threaded through it. Each of
+-- these is a plain lfun, resolved by `Object.resolve` like a string would be.
+
+local SECOND_LEVEL = "collapsed_mine.second_level"
+local PUMP_HOUSE   = "collapsed_mine.pump_house"
+
+local function grille_is_up()
+    return get_object_state(SECOND_LEVEL, "door_open") and true or false
+end
+
+local function pump_is_running()
+    return get_object_state(PUMP_HOUSE, "pump_running") and true or false
+end
+
+local function second_level_description(room)
+    local base = [[
+The gallery widens into a junction with a cast-iron grille across the west
+passage, hung on runners and fitted with a lock somebody paid real money for.
+Pipes run along the ceiling toward the pump house.]]
+    if grille_is_up() then
+        return base .. "\r\n\r\nThe grille is up. Cold air comes through it."
+    end
+    return base .. "\r\n\r\nThe grille is down and the lock is engaged."
+end
+
+local function through_the_grille(player)
+    if grille_is_up() then return true end
+    return false, "The grille is down."
+end
+
+local function pump_house_sound()
+    if pump_is_running() then
+        return "The pump, working. It is enormously loud."
+    end
+    return "Nothing. The pump is stopped and the silence has weight."
+end
+
+local function pump_house_description(room)
+    local base = [[
+A chamber cut square around a beam engine three times the height of a person.
+Three levers stand in a rack by the wall, each as long as an arm, and each with
+a plate above it that the damp has taken.]]
+    local step = get_object_state(PUMP_HOUSE, "lever_step") or 0
+    if pump_is_running() then
+        return base .. "\r\n\r\nThe engine is working. The beam comes over "
+            .. "and goes back, and the floor moves with it."
+    elseif step > 0 then
+        return base .. "\r\n\r\n" .. step .. " of the levers are over and "
+            .. "holding. Something underneath is under tension."
+    end
+    return base .. "\r\n\r\nAll three levers stand upright."
+end
+
+local function deep_workings_description(room)
+    local base = [[
+Past the grille the workings stop following the seam and start following
+something else. The cut is rounder here and the tool marks are wrong — too
+broad, and angled as if made by something working with its whole arm.]]
+    if pump_is_running() then
+        return base .. "\r\n\r\nThe water has gone down. There is a shaft in "
+            .. "the floor that was not visible before, going further down."
+    end
+    return base .. "\r\n\r\nThe floor is under two feet of black water."
+end
+
+local function down_the_shaft(player)
+    if pump_is_running() then return true end
+    return false, "The shaft is under water."
+end
+
 return {
     _meta = {
         name   = "collapsed_mine",
@@ -256,28 +329,14 @@ props at knee height, all pointing back the way you came.]],
         smell = "Wet rock. It is warmer here than it should be.",
         sound = "The pipes overhead, which are dry and should not be.",
 
-        description = function(room)
-            local base = [[
-The gallery widens into a junction with a cast-iron grille across the west
-passage, hung on runners and fitted with a lock somebody paid real money for.
-Pipes run along the ceiling toward the pump house.]]
-            if get_object_state("collapsed_mine.second_level", "door_open") then
-                return base .. "\r\n\r\nThe grille is up. Cold air comes through it."
-            end
-            return base .. "\r\n\r\nThe grille is down and the lock is engaged."
-        end,
+        description = second_level_description,
 
         exits = {
             up   = "collapsed_mine.first_level",
             east = "collapsed_mine.pump_house",
             west = {
                 target = "collapsed_mine.deep_workings",
-                check = function(player)
-                    if get_object_state("collapsed_mine.second_level", "door_open") then
-                        return true
-                    end
-                    return false, "The grille is down."
-                end,
+                check = through_the_grille,
             },
         },
 
@@ -299,28 +358,9 @@ Pipes run along the ceiling toward the pump house.]]
         light = 1,
         tags  = { "indoor", "mine", "underground" },
         smell = "Grease, and the particular smell of cold cast iron.",
-        sound = function()
-            if get_object_state("collapsed_mine.pump_house", "pump_running") then
-                return "The pump, working. It is enormously loud."
-            end
-            return "Nothing. The pump is stopped and the silence has weight."
-        end,
+        sound = pump_house_sound,
 
-        description = function(room)
-            local base = [[
-A chamber cut square around a beam engine three times the height of a person.
-Three levers stand in a rack by the wall, each as long as an arm, and each with
-a plate above it that the damp has taken.]]
-            local step = get_object_state("collapsed_mine.pump_house", "lever_step") or 0
-            if get_object_state("collapsed_mine.pump_house", "pump_running") then
-                return base .. "\r\n\r\nThe engine is working. The beam comes over "
-                    .. "and goes back, and the floor moves with it."
-            elseif step > 0 then
-                return base .. "\r\n\r\n" .. step .. " of the levers are over and "
-                    .. "holding. Something underneath is under tension."
-            end
-            return base .. "\r\n\r\nAll three levers stand upright."
-        end,
+        description = pump_house_description,
 
         exits = { west = "collapsed_mine.second_level" },
 
@@ -347,28 +387,13 @@ a plate above it that the damp has taken.]]
         smell = "Water, and under the water something organic.",
         sound = "Dripping, and further in, something that is not dripping.",
 
-        description = function(room)
-            local base = [[
-Past the grille the workings stop following the seam and start following
-something else. The cut is rounder here and the tool marks are wrong — too
-broad, and angled as if made by something working with its whole arm.]]
-            if get_object_state("collapsed_mine.pump_house", "pump_running") then
-                return base .. "\r\n\r\nThe water has gone down. There is a shaft in "
-                    .. "the floor that was not visible before, going further down."
-            end
-            return base .. "\r\n\r\nThe floor is under two feet of black water."
-        end,
+        description = deep_workings_description,
 
         exits = {
             east = "collapsed_mine.second_level",
             down = {
                 target = "collapsed_mine.the_sump",
-                check = function(player)
-                    if get_object_state("collapsed_mine.pump_house", "pump_running") then
-                        return true
-                    end
-                    return false, "The shaft is under water."
-                end,
+                check = down_the_shaft,
             },
         },
 

@@ -107,7 +107,10 @@ mudlib/                  ← the driver's Lua half: reusable across games
 │   └── codegen_d.lua  olc_d.lua         ← online creation
 ├── compute/
 │   └── pathfind.lua     ← runs on a worker thread; no efuns
-├── cmds/                ← ~60 commands, auto-discovered
+├── cmds/                ← auto-discovered, and recursive
+│   ├── directions.lua   ← all twelve directions, one file
+│   ├── admin/           ← the gated ones
+│   └── building/        ← olc, dig
 └── tasks/
 
 game/                    ← this game: content, and policy the driver has no view on
@@ -151,8 +154,19 @@ end
 return M
 ```
 
-That's it — no registration required. The dispatcher lazy-loads `cmds/<verb>.lua`
-automatically the first time the verb is typed (based on the `game.command_paths` config).
+That's it — no registration required. On the first dispatch the loader walks
+every path in `game.command_paths`, **including subdirectories**, and registers
+what it finds by each module's `M.name`.
+
+Two consequences worth knowing:
+
+- **The filename is not the verb.** `cmds/admin/spawn.lua` is `spawn`, because
+  registration keys on `M.name`. Directories are for your benefit, not the
+  dispatcher's — and `M.category`, not the path, is what `help` sorts by.
+- **One file may declare several commands.** Return `M.commands = { ... }`
+  instead of a single module and each entry is registered separately. That is
+  what `cmds/directions.lua` is: twelve verbs that differ by one string, which
+  used to be twelve near-identical files.
 
 ### Creating Your First Room
 

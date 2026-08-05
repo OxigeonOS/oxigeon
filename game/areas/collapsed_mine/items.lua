@@ -1,8 +1,8 @@
 -- game/areas/collapsed_mine/items.lua
 
 local Item      = require('lib.item')
-local Weapon    = require('lib.weapon')
-local Container = require('lib.container')
+local Weapon    = require('components.weapon')
+local Container = require('components.container')
 
 local items = {}
 

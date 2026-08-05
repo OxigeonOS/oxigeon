@@ -4,7 +4,9 @@ local Quest = require('daemons.quest_d')
 
 local M = {}
 M.name = 'quests'
-M.aliases = { 'journal', 'qq' }
+-- Not `journal`: that is a canonical command of its own, and `lazy_load` checks
+-- the registry before the alias table, so this one never resolved to anything.
+M.aliases = { 'qlog', 'qq' }
 M.category = 'information'
 M.summary = 'List the tasks you have taken on.'
 M.permission = nil

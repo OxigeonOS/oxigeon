@@ -11,6 +11,13 @@
 --                bug `task_list.md` opens with, stated as a quest
 --   chain        gated on another quest's flag, which is a SAVE_FIELD
 
+local function what_is_down_there_complete(player)
+-- A flag another part of the game can read. The chain's own gate
+-- uses `quest.done.*`, which `quest_d` sets; this is a *world*
+-- fact rather than a quest fact, and worth its own name.
+player:set_quest_flag("mine_reopened", true)
+end
+
 return {
     --- FETCH. The counter is recomputed from the inventory rather than
     --- incremented, because an item picked up, dropped and picked up again is
@@ -93,11 +100,6 @@ return {
         },
         completion = "Bellow puts the hammer down, which she does not do.\r\n"
                   .. "\"Right,\" she says. \"Right.\"",
-        on_complete = function(player)
-            -- A flag another part of the game can read. The chain's own gate
-            -- uses `quest.done.*`, which `quest_d` sets; this is a *world*
-            -- fact rather than a quest fact, and worth its own name.
-            player:set_quest_flag("mine_reopened", true)
-        end,
+        on_complete = what_is_down_there_complete,
     },
 }

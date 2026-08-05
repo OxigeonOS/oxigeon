@@ -5,6 +5,22 @@
 local Item      = require('lib.item')
 local drinkable = require('components.drinkable')
 
+local function purple_potion_drunk(item, player)
+player:send("")
+player:send("...and you rematerialize in a place you've never seen before.")
+player:send("")
+player:move_to("wizard_workshop.treasure_vault")
+
+-- Arrival message for anyone already in the vault
+player:message_room(player.name .. " materializes from thin air in a burst of violet sparks!")
+end
+
+local function regen_draught_drunk(item, player)
+if DAEMON and DAEMON.effect then
+    DAEMON.effect.apply(player, "regeneration", { source = "potion:regen_draught" })
+end
+end
+
 local items = {}
 
 -- ─── Purple teleportation potion ─────────────────────────────────────────────
@@ -19,15 +35,7 @@ local purple_potion = Item:new({
 drinkable.apply(purple_potion, {
     drink_message      = "You uncork the glowing purple vial and drink deeply. The liquid is ice-cold and tastes of starlight and old magic. The world dissolves into a tunnel of swirling violet energy",
     drink_room_message = "{name} drinks a glowing potion and vanishes in a burst of purple light!",
-    on_drink = function(item, player)
-        player:send("")
-        player:send("...and you rematerialize in a place you've never seen before.")
-        player:send("")
-        player:move_to("wizard_workshop.treasure_vault")
-
-        -- Arrival message for anyone already in the vault
-        player:message_room(player.name .. " materializes from thin air in a burst of violet sparks!")
-    end,
+    on_drink = purple_potion_drunk,
 })
 items[#items + 1] = purple_potion
 
@@ -70,11 +78,7 @@ local regen_draught = Item:new({
 drinkable.apply(regen_draught, {
     drink_message      = "The draught tastes of moss and iron. A warm glow spreads outward from your chest.",
     drink_room_message = "{name} drinks a cloudy green draught.",
-    on_drink = function(item, player)
-        if DAEMON and DAEMON.effect then
-            DAEMON.effect.apply(player, "regeneration", { source = "potion:regen_draught" })
-        end
-    end,
+    on_drink = regen_draught_drunk,
 })
 items[#items + 1] = regen_draught
 

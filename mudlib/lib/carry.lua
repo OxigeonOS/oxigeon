@@ -31,8 +31,8 @@
 -- called**, because nothing could move an item. They fire from here, so every
 -- verb fires them the same way.
 
-local Container = require('lib.container')
-local Requires  = require('lib.requires')
+local Container = require('components.container')
+local Requires  = require('components.requires')
 
 local M = {}
 

@@ -8,6 +8,29 @@
 --   echoes       the drunk and the apprentice, weighted and lfun
 --   patrol       the watchman, who walks the town at night
 --   unique       the watchman: one of him, however often he is populated
+--
+-- The two lfuns below are named above the data, so the tables read as what the
+-- creatures *are* rather than as prose with programs in the middle of them.
+
+--- Bellow sizes up what you are carrying before answering about swords.
+local function smith_on_sword(mob, player)
+    if player and player.equipment and player.equipment.weapon then
+        return "Bellow glances at what you are carrying. \"That'll "
+            .. "do for what's out there. Just about.\""
+    end
+    return "\"Unarmed, going west? That's one way to find out how "
+        .. "deep it is.\""
+end
+
+--- An lfun echo: resolved through `Object.resolve` like any other property, so
+--- it can read the world. What the apprentice is doing depends on the forge.
+local function apprentice_at_the_forge(mob)
+    if get_object_state("thornhollow.smithy", "forge_lit") then
+        return "The apprentice bank the coals down and steps back "
+            .. "from the heat."
+    end
+    return "The apprentice looks at the banked forge and sighs."
+end
 
 return {
     -- ─── Shopkeepers ─────────────────────────────────────────────────────────
@@ -40,14 +63,7 @@ return {
             marsh    = "\"Don't. And if you do, stay on the stone. The stone is "
                     .. "there for a reason and the reason is still there.\"",
             -- The lfun form: an answer that depends on what you are carrying.
-            sword    = function(mob, player)
-                if player and player.equipment and player.equipment.weapon then
-                    return "Bellow glances at what you are carrying. \"That'll "
-                        .. "do for what's out there. Just about.\""
-                end
-                return "\"Unarmed, going west? That's one way to find out how "
-                    .. "deep it is.\""
-            end,
+            sword    = smith_on_sword,
         },
     },
 
@@ -197,15 +213,7 @@ return {
         echoes = {
             { text = "The apprentice pumps the bellows in a long, even rhythm.", weight = 4 },
             { text = "The apprentice drops something, and does not look up.", weight = 2 },
-            -- An lfun echo: resolved through `Object.resolve` like any other
-            -- property, so it can read the world.
-            { weight = 1, text = function(mob)
-                if get_object_state("thornhollow.smithy", "forge_lit") then
-                    return "The apprentice bank the coals down and steps back "
-                        .. "from the heat."
-                end
-                return "The apprentice looks at the banked forge and sighs."
-            end },
+            { text = apprentice_at_the_forge, weight = 1 },
         },
 
         dialogue = {

@@ -7,7 +7,7 @@
 
 local Carry     = require('lib.carry')
 local Equipment = require('lib.equipment')
-local Weapon    = require('lib.weapon')
+local Weapon    = require('components.weapon')
 
 local M = {}
 M.name = 'wear'

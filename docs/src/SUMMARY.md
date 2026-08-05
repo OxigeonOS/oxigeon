@@ -12,6 +12,7 @@
 - [Lua API Reference](./lua-api/README.md)
   - [Daemons — Service Layer](./lua-api/daemons.md)
   - [Object Hierarchy](./lua-api/object-hierarchy.md)
+  - [Components — Roles an Item Can Play](./lua-api/components.md)
   - [World Building — Rooms & Areas](./lua-api/world-building.md)
   - [Signals & Events (EVENT_D)](./lua-api/signals.md)
   - [Character Data & Persistence](./lua-api/character-data.md)

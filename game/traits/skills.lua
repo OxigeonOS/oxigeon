@@ -21,6 +21,12 @@
 -- ("skills advance by use"), that belongs on the spec as its own declared
 -- field, not implied by a string.
 
+--- Diminishing: the last ten points of skill are worth less than the first ten,
+--- which is the usual shape and needs no engine support.
+local function sword_mastery_formula(t)
+    return math.floor(t.swordsmanship * 0.6)
+end
+
 return {
     -- ─── Weapon skills ───────────────────────────────────────────────────────
     -- Counters: a number events change, clamped to its bounds. Practice raises
@@ -39,11 +45,7 @@ return {
     { id = "sword_mastery", label = "Sword Mastery", kind = "derived",
       category = "skill", group = "weapon", sets = false, depends = { "swordsmanship" },
       round = "floor", min = 0,
-      formula = function(t)
-          -- Diminishing: the last ten points of skill are worth less than the
-          -- first ten, which is the usual shape and needs no engine support.
-          return math.floor(t.swordsmanship * 0.6)
-      end },
+      formula = sword_mastery_formula },
 
     -- ─── Craft skills ────────────────────────────────────────────────────────
     { id = "herbalism", label = "Herbalism", kind = "counter",

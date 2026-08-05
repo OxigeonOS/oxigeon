@@ -189,7 +189,7 @@ M.permission = "dir.write.areas"   -- dispatcher checks this automatically
 Set `M.permission` in any command file. The dispatcher checks it automatically:
 
 ```lua
--- mudlib/cmds/dig.lua
+-- mudlib/cmds/building/dig.lua
 local M = {}
 M.name       = "dig"
 M.permission = "cmd.dig"    -- requires this permission to use the command

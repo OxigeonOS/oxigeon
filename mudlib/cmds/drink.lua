@@ -4,6 +4,8 @@
 --
 -- Requires: DAEMON.items (Item Registry), get_player() global
 
+local Drinkable = require('components.drinkable')
+
 local M = {}
 
 M.name = 'drink'
@@ -33,28 +35,18 @@ function M.execute(session_id, args_str, args)
         return
     end
 
-    if not item.drinkable then
+    if not Drinkable.is(item) then
         player:send("You can't drink that.")
         return
     end
 
-    -- Resolve template variables in drink messages
-    local name = player.name or "Someone"
-    local short = (type(item.short) == "string" and item.short) or item.id
-
-    local msg = (item.drink_message or "You drink {short}.")
-        :gsub("{name}", name):gsub("{short}", short)
-    local room_msg = (item.drink_room_message or "{name} drinks {short}.")
-        :gsub("{name}", name):gsub("{short}", short)
-
-    -- Send the drink message to the player
+    -- The wording belongs to the component, so anything else that can make a
+    -- character drink says it the same way.
+    local msg, room_msg = Drinkable.messages(item, player)
     player:send(msg)
-
-    -- Broadcast to the room
     player:message_room(room_msg)
 
-    -- Consume the item if configured to do so
-    if item.consumed then
+    if Drinkable.is_consumed(item) then
         player:remove_item(item_id)
     end
 

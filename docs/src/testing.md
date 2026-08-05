@@ -3,6 +3,40 @@
 Oxigeon uses **Rust integration tests** to verify both the driver and the Lua mudlib.
 All tests live in the `tests/` directory and run via `cargo test`.
 
+## The one rule about layout
+
+**A test of the mudlib must not depend on this game.**
+
+`game/` is content — "this game, and policy the driver has no view on" — so
+anyone building their own world deletes it. A suite that then fails about rooms
+they never wrote is a suite that has to be picked apart before it can be
+trusted. So:
+
+| | |
+|---|---|
+| `tests/*.rs` | the driver and the mudlib. Needs a world? Use `RealVm::boot_with_fixture_world`. |
+| `tests/demo_world/` | Thornhollow, the marsh, the mine, the workshop. **Deleted along with `game/`.** |
+
+`boot_with_fixture_world` writes a small self-contained game layer into a temp
+directory — three rooms, one creature, one item, a trait set, a role, and one
+game-layer command — and boots the real mudlib against it. Traits and roles are
+in there because both are game-layer by design: a world with no trait
+definitions has no `hp` for anything to lose.
+
+The check that keeps this honest, and the only one that proves it:
+
+```bash
+git stash push game tests/demo_world && cargo test && git stash pop
+```
+
+That must be green. If a test you are writing fails it, ask whether it is really
+asserting an authored value — a room's prose, a mob's hit points, a quest id. If
+so it belongs in `tests/demo_world/`. If not, it wants the fixture.
+
+`tests/fixture_world.rs` is the proof the fixture is a real world you can play
+in, and `boot_real_mudlib` now reads `start_room` out of `config/server.toml`
+rather than hardcoding one, so re-pointing the config re-points the harness.
+
 ## Quick Start
 
 ```bash

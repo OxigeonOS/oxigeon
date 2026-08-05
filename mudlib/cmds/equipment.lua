@@ -5,8 +5,8 @@
 -- and the second question is the one a player with a full pack is asking.
 
 local Equipment = require('lib.equipment')
-local Armor     = require('lib.armor')
-local Weapon    = require('lib.weapon')
+local Armor     = require('components.armor')
+local Weapon    = require('components.weapon')
 
 local M = {}
 M.name = 'equipment'

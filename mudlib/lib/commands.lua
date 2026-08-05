@@ -34,46 +34,110 @@ local function get_cmd_prefixes()
     return _cmd_prefixes
 end
 
+--- Take whatever a command module returned and register what is in it.
+---
+--- Two shapes. One table with an `execute` is the ordinary case — one file, one
+--- command. A table with a `commands` array is one file declaring several,
+--- which is what `cmds/directions.lua` is: twelve verbs that differ by one
+--- string each, and twelve near-identical files to maintain otherwise.
+--- @return number  how many were registered
+local function register_module(mod, module_path)
+    if type(mod) ~= "table" then return 0 end
+
+    if type(mod.execute) == "function" then
+        register(mod)
+        return 1
+    end
+
+    if type(mod.commands) == "table" then
+        local n = 0
+        for _, cmd in ipairs(mod.commands) do
+            if type(cmd) == "table" and type(cmd.execute) == "function"
+                and type(cmd.name) == "string" then
+                register(cmd)
+                n = n + 1
+            else
+                log("error", "COMMANDS: '" .. module_path
+                    .. "' has an entry with no name or execute")
+            end
+        end
+        return n
+    end
+
+    return 0
+end
+
 --- Eagerly load ALL command modules from configured paths.
 -- Called once on first dispatch (or after flush_cache).
--- Uses list_dir() efun to discover .lua files.
+-- Uses list_dir() efun to discover .lua files, and recurses into
+-- subdirectories so `cmds/admin/` is a category rather than a silence.
 local _loaded_all = false
-local function load_all_commands()
-    if _loaded_all then return end
-    _loaded_all = true
-    for _, prefix in ipairs(get_cmd_prefixes()) do
-        -- Convert dot prefix back to slash path for list_dir
-        local dir_path = prefix:gsub("%.", "/")
-        if type(list_dir) == "function" then
-            local ok, entries = pcall(list_dir, dir_path)
-            if ok and type(entries) == "table" then
-                -- `list_dir` returns { name, is_dir, size } entries and has
-                -- done for as long as the docs have described it. It used to
-                -- return bare module stems here, because a second, unjailed
-                -- copy of the efun was overwriting the real one — so this loop
-                -- was written against a contract that only existed by accident.
-                for _, entry in ipairs(entries) do
-                    local file = type(entry) == "table" and entry.name
-                    local name = (not (type(entry) == "table" and entry.is_dir))
-                        and file and file:match("^(.+)%.lua$")
-                    if name and not _registry[name] then
-                        local rok, mod = pcall(require, prefix .. "." .. name)
-                        if rok and type(mod) == "table" and type(mod.execute) == "function" then
-                            register(mod)
-                        elseif not rok then
-                            log("error", "COMMANDS: failed to load '" .. prefix .. "." .. name
+
+--- A symlink loop inside the jail would otherwise hang the game thread.
+local MAX_DEPTH = 8
+
+local function load_dir(prefix, dir_path, seen, depth)
+    if depth > MAX_DEPTH then
+        log("error", "COMMANDS: giving up at depth " .. depth .. " in '" .. dir_path .. "'")
+        return
+    end
+
+    local ok, entries = pcall(list_dir, dir_path)
+    if not ok then
+        log("error", "COMMANDS: list_dir('" .. dir_path .. "') failed: " .. tostring(entries))
+        return
+    end
+    if type(entries) ~= "table" then return end
+
+    -- `list_dir` returns { name, is_dir, size } entries and has done for as
+    -- long as the docs have described it. It used to return bare module stems
+    -- here, because a second, unjailed copy of the efun was overwriting the
+    -- real one — so this loop was written against a contract that only existed
+    -- by accident. It also merges the game and mudlib roots, so a game-layer
+    -- `cmds/admin/` is found by the same walk.
+    for _, entry in ipairs(entries) do
+        local file = type(entry) == "table" and entry.name or nil
+        if file then
+            if entry.is_dir then
+                load_dir(prefix .. "." .. file, dir_path .. "/" .. file, seen, depth + 1)
+            else
+                local name = file:match("^(.+)%.lua$")
+                -- `init.lua` is reachable as the directory itself; requiring it
+                -- again under its own name would load it twice.
+                if name and name ~= "init" then
+                    local module_path = prefix .. "." .. name
+                    -- Keyed on the module, not on the command name. The old
+                    -- guard used the *file stem*, which assumed the stem was
+                    -- the verb — false the moment one file declares twelve.
+                    if not seen[module_path] then
+                        seen[module_path] = true
+                        local rok, mod = pcall(require, module_path)
+                        if rok then
+                            register_module(mod, module_path)
+                        else
+                            log("error", "COMMANDS: failed to load '" .. module_path
                                 .. "': " .. tostring(mod))
                             if DAEMON and DAEMON.journal then
                                 pcall(DAEMON.journal.error, "COMMANDS: failed to load '"
-                                    .. prefix .. "." .. name .. "': " .. tostring(mod))
+                                    .. module_path .. "': " .. tostring(mod))
                             end
                         end
                     end
                 end
-            elseif not ok then
-                log("error", "COMMANDS: list_dir('" .. dir_path .. "') failed: " .. tostring(entries))
             end
         end
+    end
+end
+
+local function load_all_commands()
+    if _loaded_all then return end
+    _loaded_all = true
+    if type(list_dir) ~= "function" then return end
+
+    local seen = {}
+    for _, prefix in ipairs(get_cmd_prefixes()) do
+        -- Convert dot prefix back to slash path for list_dir
+        load_dir(prefix, prefix:gsub("%.", "/"), seen, 1)
     end
 end
 

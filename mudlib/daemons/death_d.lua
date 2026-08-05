@@ -44,13 +44,20 @@ function M.respawn_room()
     local configured = configured_respawn_room()
     if configured then return configured end
 
-    log("warn", "DEATH_D: neither game.respawn_room nor game.start_room is set; "
-        .. "falling back to wizard_workshop.entrance")
+    -- No fallback room id. There used to be one — `wizard_workshop.entrance` —
+    -- and it was a *mudlib* file naming a room in one particular game: a second
+    -- game inherited it, silently, and only found out when somebody died.
+    --
+    -- Returning nil is the honest answer to "where does this game respawn
+    -- people", and it is loud: the caller sends the player nowhere rather than
+    -- to a room that may not exist.
+    log("error", "DEATH_D: neither game.respawn_room nor game.start_room is set "
+        .. "in server.toml; there is nowhere to respawn")
     if DAEMON and DAEMON.journal then
-        pcall(DAEMON.journal.warn, "DEATH_D: no respawn room configured — "
-            .. "set game.respawn_room in server.toml")
+        pcall(DAEMON.journal.error, "DEATH_D: no respawn room configured — "
+            .. "set game.respawn_room or game.start_room in server.toml")
     end
-    return "wizard_workshop.entrance"
+    return nil
 end
 
 local function log_error(msg)
@@ -119,10 +126,16 @@ function M.handle_respawn(char_id, session_id)
         player.stats.hp = math.floor(player.stats.max_hp * M._config.hp_on_respawn)
     end
 
-    local move_ok, move_err = pcall(function()
-        player:move_to(M.respawn_room())
-    end)
-    if not move_ok then log_error("death_d move error: " .. tostring(move_err)) end
+    local room = M.respawn_room()
+    if room then
+        local move_ok, move_err = pcall(function() player:move_to(room) end)
+        if not move_ok then log_error("death_d move error: " .. tostring(move_err)) end
+    else
+        -- `respawn_room` has already said why, loudly. Leaving them where they
+        -- fell is wrong, but it is visibly wrong, which a guess at another
+        -- game's room id is not.
+        log_error("death_d: nowhere to respawn char " .. tostring(player.char_id))
+    end
 
     local send_ok = pcall(function()
         player:send("You have respawned.\r\n")

@@ -6,13 +6,10 @@
 -- through their own module, so a new component describes itself by existing
 -- rather than by editing this file.
 
-local Carry     = require('lib.carry')
-local Weapon    = require('lib.weapon')
-local Armor     = require('lib.armor')
-local Container = require('lib.container')
-local Requires  = require('lib.requires')
-local Object    = require('lib.object')
-local Light     = require('lib.light')
+local Carry      = require('lib.carry')
+local Components = require('components')
+local Object     = require('lib.object')
+local Light      = require('lib.light')
 
 local M = {}
 M.name = 'examine'
@@ -37,9 +34,13 @@ local function describe_item(player, entry, item, where)
     if (item.value or 0) > 0 then lines[#lines + 1] = "  Value: " .. item.value .. " coins" end
     if item.slot then lines[#lines + 1] = "  Worn on: " .. item.slot end
 
-    append(lines, Weapon.describe(item))
-    append(lines, Armor.describe(item))
-    append(lines, Container.describe(item, type(entry) == "table" and entry.id))
+    -- Every component on the item, in the order `components/init.lua` declares.
+    -- Nothing here names one: a component describes itself by existing, which
+    -- is what the header above has always claimed and now does.
+    append(lines, Components.describe(item, {
+        instance_id = type(entry) == "table" and entry.id or nil,
+        viewer      = player,
+    }))
 
     -- Traits in the `condition` category — durability, charges. Shown here
     -- rather than in `score`, because `score` names `stat` and an item is not
@@ -54,12 +55,6 @@ local function describe_item(player, entry, item, where)
                 end
             end
         end
-    end
-
-    local requirement = Requires.describe(item)
-    if requirement then
-        local met = Requires.met(item, player)
-        lines[#lines + 1] = (met and "  {green}" or "  {red}") .. requirement .. "{/}"
     end
 
     if where == "room" then

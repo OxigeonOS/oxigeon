@@ -373,7 +373,7 @@ The `verify` command compiles a Lua file through the runtime WITHOUT executing i
 This catches syntax errors and obvious runtime issues before you reload a file.
 
 ```
-> verify cmds/spawn.lua
+> verify cmds/admin/spawn.lua
   ✓ File compiles successfully.
 
 > verify cmds/broken.lua
@@ -388,7 +388,7 @@ This catches syntax errors and obvious runtime issues before you reload a file.
 The underlying efun can be called from Lua too:
 
 ```lua
-local ok, err = verify_file("cmds/spawn.lua")
+local ok, err = verify_file("cmds/admin/spawn.lua")
 if not ok then
     DAEMON.journal.error("Syntax error in spawn.lua: " .. err)
 end

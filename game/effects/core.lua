@@ -9,6 +9,52 @@
 -- and 21 if it does not, and no player should have to know which buff landed
 -- first to predict their own health. See mudlib/lib/effects.lua.
 
+local Effects = require('lib.effects')
+
+-- ─── Handlers ────────────────────────────────────────────────────────────────
+--
+-- Named above the data, so the table below reads as a list of what each effect
+-- *is* — how long, how it stacks, what it modifies — rather than as prose with
+-- programs in the middle of it.
+
+--- insight: 20% more experience per stack.
+local function insight_xp(ev, ctx)
+    ev.scale = ev.scale + 0.20 * (ctx.stacks or 1)
+end
+
+--- stoneskin: the percentage, applied to the incoming number.
+local function stoneskin_scale(ev)
+    ev.scale = ev.scale - 0.15
+end
+
+--- stoneskin: the flat negation, off whatever the percentage left.
+local function stoneskin_flat(ev, ctx)
+    ev.amount = math.max(0, ev.amount - (ctx.potency or 5))
+end
+
+--- regeneration: 2% of missing health per tick, through `heal` so the
+--- `heal_received` pipeline runs and an amplification buff composes for free.
+local function regeneration_tick(ev, ctx)
+    local e = ctx.entity
+    local missing = e:trait("max_hp") - e:trait("hp")
+    if missing <= 0 then return end
+    local amount = math.max(1, math.floor(missing * 0.02 * (ev.ticks or 1)))
+    e:heal(amount, { source = "effect:regeneration" })
+end
+
+--- wardskin: only on someone with the will for it. `spell_power` is derived
+--- from a derived trait, so this reaches two levels into the graph.
+local function wardskin_condition(entity)
+    if entity.trait and entity:trait("willpower") < 0 then
+        return false, "your will is not in it"
+    end
+    return true
+end
+
+local function wardskin_reduce(ev, ctx)
+    ev.amount = math.max(0, ev.amount - (ctx.potency or 2))
+end
+
 return {
     -- ─── The four worked examples ────────────────────────────────────────────
 
@@ -18,16 +64,10 @@ return {
         desc = "Everything you do teaches you a little more.",
         duration = 3600, stack = "stack", max_stacks = 3,
         hooks = {
-            xp_gained = { phase = "mult", fn = function(ev, ctx)
-                ev.scale = ev.scale + 0.20 * (ctx.stacks or 1)
-            end },
+            xp_gained = { phase = "mult", fn = insight_xp },
         },
-        on_apply = function(ctx)
-            if ctx.entity.send then ctx.entity:send("{cyan}Your thoughts sharpen.{/}") end
-        end,
-        on_expire = function(ctx)
-            if ctx.entity.send then ctx.entity:send("{cyan}Your thoughts dull again.{/}") end
-        end,
+        on_apply = Effects.says("{cyan}Your thoughts sharpen.{/}"),
+        on_expire = Effects.says("{cyan}Your thoughts dull again.{/}"),
     },
 
     --- "take 15% less damage" AND "negate 5 from each bit of damage" —
@@ -41,20 +81,12 @@ return {
         -- `add` phase. One mechanism, two ways to write it.
         modifiers = { constitution = 2 },
         hooks = {
-            damage_taken = { phase = "mult", fn = function(ev)
-                ev.scale = ev.scale - 0.15
-            end },
+            damage_taken = { phase = "mult", fn = stoneskin_scale },
             ["damage_taken#flat"] = { hook = "damage_taken", phase = "reduce",
-                fn = function(ev, ctx)
-                    ev.amount = math.max(0, ev.amount - (ctx.potency or 5))
-                end },
+                                      fn = stoneskin_flat },
         },
-        on_apply = function(ctx)
-            if ctx.entity.send then ctx.entity:send("{yellow}Your skin hardens to stone.{/}") end
-        end,
-        on_expire = function(ctx)
-            if ctx.entity.send then ctx.entity:send("{yellow}The stone sheen fades from your skin.{/}") end
-        end,
+        on_apply = Effects.says("{yellow}Your skin hardens to stone.{/}"),
+        on_expire = Effects.says("{yellow}The stone sheen fades from your skin.{/}"),
     },
 
     --- "heal 2% of missing HP every tick"
@@ -67,20 +99,10 @@ return {
         desc = "Your wounds are closing.",
         duration = 300, tick = 3, stack = "refresh",
         hooks = {
-            heartbeat = { phase = "post", fn = function(ev, ctx)
-                local e = ctx.entity
-                local missing = e:trait("max_hp") - e:trait("hp")
-                if missing <= 0 then return end
-                local amount = math.max(1, math.floor(missing * 0.02 * (ev.ticks or 1)))
-                e:heal(amount, { source = "effect:regeneration" })
-            end },
+            heartbeat = { phase = "post", fn = regeneration_tick },
         },
-        on_apply = function(ctx)
-            if ctx.entity.send then ctx.entity:send("{green}A warm glow suffuses you.{/}") end
-        end,
-        on_expire = function(ctx)
-            if ctx.entity.send then ctx.entity:send("{green}The warm glow fades.{/}") end
-        end,
+        on_apply = Effects.says("{green}A warm glow suffuses you.{/}"),
+        on_expire = Effects.says("{green}The warm glow fades.{/}"),
     },
 
     -- ─── A few more, to show the shape ───────────────────────────────────────
@@ -119,23 +141,12 @@ return {
         duration = 120, potency = 2, stack = "refresh",
         -- Only on someone with the will for it. `spell_power` is derived from
         -- a derived trait, so this reaches two levels into the graph.
-        condition = function(entity)
-            if entity.trait and entity:trait("willpower") < 0 then
-                return false, "your will is not in it"
-            end
-            return true
-        end,
+        condition = wardskin_condition,
         modifiers = { constitution = 1 },
         hooks = {
-            damage_taken = { phase = "reduce", fn = function(ev, ctx)
-                ev.amount = math.max(0, ev.amount - (ctx.potency or 2))
-            end },
+            damage_taken = { phase = "reduce", fn = wardskin_reduce },
         },
-        on_apply = function(ctx)
-            if ctx.entity.send then ctx.entity:send("{cyan}Your skin hardens and greys.{/}") end
-        end,
-        on_expire = function(ctx)
-            if ctx.entity.send then ctx.entity:send("{cyan}Your skin goes soft again.{/}") end
-        end,
+        on_apply = Effects.says("{cyan}Your skin hardens and greys.{/}"),
+        on_expire = Effects.says("{cyan}Your skin goes soft again.{/}"),
     },
 }

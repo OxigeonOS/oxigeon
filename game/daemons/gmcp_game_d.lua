@@ -46,28 +46,38 @@ function M.send_quests(session_id)
     return ok
 end
 
---- Inbound: a client asking for the quest list rather than waiting to be told.
+-- ─── Inbound handlers ────────────────────────────────────────────────────────
+
+--- A client asking for the quest list rather than waiting to be told.
 ---
 --- Worth supporting because a client that reconnects, or one whose user just
 --- opened the tracker panel, has no other way to ask.
-DAEMON.gmcp.on("Game.Quest.Request", function(session_id, data)
+local function on_quest_request(session_id, data)
     M.send_quests(session_id)
-end)
+end
 
---- Inbound: a client saying which quest the user has selected, so the game can
---- highlight it. Stored on the session rather than persisted — a UI selection
---- is memory-tier by any reading of the rule.
-DAEMON.gmcp.on("Game.Quest.Track", function(session_id, data)
+--- A client saying which quest the user has selected, so the game can highlight
+--- it. Stored on the session rather than persisted — a UI selection is
+--- memory-tier by any reading of the rule.
+---
+--- Answers either way. A client told nothing cannot tell "you are not tracking
+--- that" from "the message never arrived".
+local function on_quest_track(session_id, data)
     local id = type(data) == "table" and data.id or data
     if type(id) ~= "string" then return end
+
     if not DAEMON.quest.get(id) then
         pcall(send_gmcp, session_id, "Game.Quest.Track", { id = id, ok = false })
         return
     end
+
     M._tracking = M._tracking or {}
     M._tracking[session_id] = id
     pcall(send_gmcp, session_id, "Game.Quest.Track", { id = id, ok = true })
-end)
+end
+
+DAEMON.gmcp.on("Game.Quest.Request", on_quest_request)
+DAEMON.gmcp.on("Game.Quest.Track", on_quest_track)
 
 --- Push on the events that change what a tracker should show. The client is
 --- never asked to poll, which is the whole reason GMCP exists.

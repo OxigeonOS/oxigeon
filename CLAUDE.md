@@ -170,7 +170,20 @@ See `docs/src/lua-api/state-cache.md`.
 
 ## Testing
 
-Run `cargo test` before committing. All tests must pass. Current count: 775.
+Run `cargo test` before committing. All tests must pass. Current count: 816 (631 of them independent of `game/`).
+
+### A mudlib test must not depend on this game
+
+`tests/demo_world/` holds everything asserting the shipped content and is
+deleted along with `game/`. Everything else goes in `tests/` and, if it needs a
+world at all, uses `RealVm::boot_with_fixture_world` rather than Thornhollow.
+The check:
+
+```bash
+git stash push game tests/demo_world && cargo test && git stash pop
+```
+
+See `docs/src/testing.md`.
 
 ### Test the real VM, not a helper beside it
 

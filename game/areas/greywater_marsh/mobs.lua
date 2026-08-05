@@ -4,6 +4,24 @@
 -- The Wisp is the `unique` case *and* the `damage_type` case — it deals magic,
 -- which is what makes the warded cloak's resist table worth carrying.
 
+local function lurker_bite(mob, target)
+if DAEMON and DAEMON.effect and math.random(100) <= 25 then
+    DAEMON.effect.apply(target, "marsh_poison", {
+        source = "mob:" .. tostring(mob.id),
+    })
+end
+end
+
+local function wisp_mark_target(mob, target)
+-- `survives_death`, so respawning does not clear it. A curse you
+-- can remove by walking into a rat is not a curse.
+if DAEMON and DAEMON.effect and math.random(100) <= 30 then
+    DAEMON.effect.apply(target, "wisp_mark", {
+        source = "mob:" .. tostring(mob.id),
+    })
+end
+end
+
 return {
     {
         id          = "marsh_lurker",
@@ -32,13 +50,7 @@ return {
         -- hook rather than from combat, because "this creature's attacks
         -- poison" is the creature's business and combat should not grow a
         -- special case per monster.
-        on_combat = function(mob, target)
-            if DAEMON and DAEMON.effect and math.random(100) <= 25 then
-                DAEMON.effect.apply(target, "marsh_poison", {
-                    source = "mob:" .. tostring(mob.id),
-                })
-            end
-        end,
+        on_combat = lurker_bite,
     },
 
     {
@@ -91,15 +103,7 @@ return {
             { item_id = "silver_dagger", chance = 0.15 },
         },
 
-        on_combat = function(mob, target)
-            -- `survives_death`, so respawning does not clear it. A curse you
-            -- can remove by walking into a rat is not a curse.
-            if DAEMON and DAEMON.effect and math.random(100) <= 30 then
-                DAEMON.effect.apply(target, "wisp_mark", {
-                    source = "mob:" .. tostring(mob.id),
-                })
-            end
-        end,
+        on_combat = wisp_mark_target,
 
         dialogue = {
             greeting = "The light does not change. After a moment you realise "

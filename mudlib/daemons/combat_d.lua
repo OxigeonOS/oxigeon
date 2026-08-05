@@ -24,7 +24,7 @@
 --
 -- See docs/src/lua-api/combat.md.
 
-local weaponlib = require('lib.weapon')
+local weaponlib = require('components.weapon')
 
 local M = {}
 

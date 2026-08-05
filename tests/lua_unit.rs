@@ -958,7 +958,7 @@ fn test_trait_accessor_is_on_object_not_mobile() {
 #[test]
 fn test_objdump_formats_an_inventory_of_instance_tables() {
     let lua = make_test_lua();
-    lua.load("objdump = require('cmds.objdump')").exec().unwrap();
+    lua.load("objdump = require('cmds.admin.objdump')").exec().unwrap();
 
     // The regression: entries are `{ template = "id" }` tables. Counting the
     // entry itself put a table in the output list, and table.concat raised —
@@ -1006,7 +1006,7 @@ fn test_objdump_formats_an_inventory_of_instance_tables() {
 fn test_weapon_archetype_produces_an_item_with_a_component() {
     let lua = make_test_lua();
     lua.load(r#"
-        Weapon = require('lib.weapon')
+        Weapon = require('components.weapon')
         w = Weapon{ id = "t", short = "Sword", damage = 10, damage_type = "slash" }
     "#).exec().unwrap();
 
@@ -1056,7 +1056,7 @@ fn test_weapon_archetype_produces_an_item_with_a_component() {
 fn test_armor_archetype_produces_an_item_with_a_component() {
     let lua = make_test_lua();
     lua.load(r#"
-        Armor = require('lib.armor')
+        Armor = require('components.armor')
         a = Armor{ id = "t", short = "Plate", defense = 15, slot = "chest",
                    resist = { fire = 5, ice = -3 } }
     "#).exec().unwrap();
@@ -1092,9 +1092,9 @@ fn test_armor_archetype_produces_an_item_with_a_component() {
 fn test_requires_is_shared_by_weapon_and_armor() {
     let lua = make_test_lua();
     lua.load(r#"
-        Weapon   = require('lib.weapon')
-        Armor    = require('lib.armor')
-        Requires = require('lib.requires')
+        Weapon   = require('components.weapon')
+        Armor    = require('components.armor')
+        Requires = require('components.requires')
 
         greatsword = Weapon{ id = "gs", damage = {8, 14}, required_strength = 16 }
         mail       = Armor{ id = "mail", slot = "chest", defense = 8,
@@ -1709,7 +1709,7 @@ fn test_channel_d_join_leave() {
 #[test]
 fn test_trace_command_parse_args() {
     let lua = make_test_lua();
-    lua.load("trace = require('cmds.trace')").exec().unwrap();
+    lua.load("trace = require('cmds.admin.trace')").exec().unwrap();
 
     let check = |args: &str, want_sub: &str, want_count: &str, want_scope: &str| {
         let src = format!(
@@ -1732,7 +1732,7 @@ fn test_trace_command_parse_args() {
 #[test]
 fn test_trace_command_exposes_the_standard_command_shape() {
     let lua = make_test_lua();
-    lua.load("trace = require('cmds.trace')").exec().unwrap();
+    lua.load("trace = require('cmds.admin.trace')").exec().unwrap();
 
     assert!(eval_bool(&lua, "return trace.name == 'trace'"));
     assert!(eval_bool(&lua, "return trace.category == 'admin'"));

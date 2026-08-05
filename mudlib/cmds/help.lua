@@ -24,9 +24,13 @@ M.permission = nil
 -- Categories a player is most likely to want first. Anything a game invents is
 -- appended in alphabetical order after these, so a new category shows up
 -- without editing this file.
+--
+-- `navigation`, not `movement`: this said `movement`, which no command has ever
+-- used, so the thirteen commands a new player needs first fell into the
+-- alphabetical overflow and printed *after* the admin block.
 local CATEGORY_ORDER = {
-    "movement", "information", "communication", "items", "combat",
-    "general", "admin",
+    "navigation", "information", "communication", "items", "combat",
+    "settings", "general", "building", "admin",
 }
 
 --- Can this session run the command at all? A help list full of things that

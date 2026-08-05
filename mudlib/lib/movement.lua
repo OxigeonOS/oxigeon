@@ -1,4 +1,4 @@
--- game/lib/movement.lua — Movement library
+-- mudlib/lib/movement.lua — Movement library
 -- Handles player movement between rooms with exit checks,
 -- on_traverse hooks, and GMCP room updates.
 

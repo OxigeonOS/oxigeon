@@ -20,9 +20,9 @@
 --   oak_buckler         offhand — what a two-handed weapon displaces
 --   leather_backpack    a container, so `put` and `get from` have a subject
 
-local Weapon    = require('lib.weapon')
-local Armor     = require('lib.armor')
-local Container = require('lib.container')
+local Weapon    = require('components.weapon')
+local Armor     = require('components.armor')
+local Container = require('components.container')
 
 local gear = {}
 
@@ -58,7 +58,7 @@ gear[#gear + 1] = Weapon{
     speed       = 0.7,
     weapon_type = "sword",
     two_handed  = true,
-    -- The refusal path. One rule, in `lib/requires.lua`, shared with armour.
+    -- The refusal path. One rule, in `components/requires.lua`, shared with armour.
     required_strength = 16,
     hit_message = "You bring the greatsword down on {target} with both hands.",
     tags        = { "weapon" },

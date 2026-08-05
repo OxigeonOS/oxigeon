@@ -93,6 +93,54 @@ local function leave_the_stone(session_id, args_str, args)
     end
 end
 
+local function causeway_head_description(room)
+    local base = [[
+The laid stone begins here and runs west in a line so straight it is obviously
+older than the town. On both sides the reeds start immediately and go on until
+they stop being reeds and start being water. Somebody has stacked cairns at
+intervals, and somebody else has knocked several of them over.]]
+    if fogbound() then
+        base = base .. "\r\n\r\nThe next cairn is a suggestion. The one after it is not there."
+    end
+    return base .. sky()
+end
+
+local function causeway_mid_description(room)
+return [[
+Halfway. The stone here is wetter and the joints have opened, so there is water
+running *under* the causeway as well as beside it. A drowned willow leans out
+over the north side, its roots holding a raft of matter nobody wants to look at
+closely.]] .. sky()
+end
+
+local function herb_beds_description(room)
+local base = [[
+A shelf of firmer ground where the marshroot grows, which is the only reason
+anybody comes off the stone on purpose. The apothecary's people have cut a
+narrow path in and marked it with stakes; the stakes have been re-driven often
+enough that several are new.]]
+return base .. sky()
+end
+
+local function stilt_village_description(room)
+local base = [[
+Eleven houses on piles, and the water is up to the floor of nine of them. The
+walkways between are gone except for their posts. Nothing was taken when this
+was left — there are still pots on the shelves — which is the part that stops
+people coming out here twice.]]
+if fogbound() then
+    base = base .. "\r\n\r\nIn the fog the houses are shapes, and the shapes are not all houses."
+end
+return base .. sky()
+end
+
+local function deep_water_description(room)
+return [[
+The reeds stop. Past the last of the stilt houses the bottom goes away and the
+water turns from grey to a green so dark it reads as black. Something has laid a
+line of pale stones out into it, and the line goes further than the light does.]] .. sky()
+end
+
 return {
     _meta = {
         name   = "greywater_marsh",
@@ -112,17 +160,7 @@ return {
             and "Nothing. The fog takes the sound off the water."
             or "Reeds, and water moving in more than one direction." end,
 
-        description = function(room)
-            local base = [[
-The laid stone begins here and runs west in a line so straight it is obviously
-older than the town. On both sides the reeds start immediately and go on until
-they stop being reeds and start being water. Somebody has stacked cairns at
-intervals, and somebody else has knocked several of them over.]]
-            if fogbound() then
-                base = base .. "\r\n\r\nThe next cairn is a suggestion. The one after it is not there."
-            end
-            return base .. sky()
-        end,
+        description = causeway_head_description,
 
         exits = {
             east = "thornhollow.west_gate",
@@ -149,13 +187,7 @@ intervals, and somebody else has knocked several of them over.]]
         smell = "Rot, closer now.",
         sound = "Water under the stone, which should not be possible.",
 
-        description = function(room)
-            return [[
-Halfway. The stone here is wetter and the joints have opened, so there is water
-running *under* the causeway as well as beside it. A drowned willow leans out
-over the north side, its roots holding a raft of matter nobody wants to look at
-closely.]] .. sky()
-        end,
+        description = causeway_mid_description,
 
         exits = {
             east  = "greywater_marsh.causeway_head",
@@ -182,14 +214,7 @@ closely.]] .. sky()
         smell = "Green, and sharply medicinal.",
         sound = "Insects, in a marsh that has almost nothing else living in it.",
 
-        description = function(room)
-            local base = [[
-A shelf of firmer ground where the marshroot grows, which is the only reason
-anybody comes off the stone on purpose. The apothecary's people have cut a
-narrow path in and marked it with stakes; the stakes have been re-driven often
-enough that several are new.]]
-            return base .. sky()
-        end,
+        description = herb_beds_description,
 
         exits = { south = "greywater_marsh.causeway_mid" },
 
@@ -213,17 +238,7 @@ enough that several are new.]]
         smell = "Wet timber and old smoke.",
         sound = "Timber working against timber, all around, at no particular rate.",
 
-        description = function(room)
-            local base = [[
-Eleven houses on piles, and the water is up to the floor of nine of them. The
-walkways between are gone except for their posts. Nothing was taken when this
-was left — there are still pots on the shelves — which is the part that stops
-people coming out here twice.]]
-            if fogbound() then
-                base = base .. "\r\n\r\nIn the fog the houses are shapes, and the shapes are not all houses."
-            end
-            return base .. sky()
-        end,
+        description = stilt_village_description,
 
         exits = {
             east = "greywater_marsh.causeway_mid",
@@ -246,12 +261,7 @@ people coming out here twice.]]
         smell = "Cold. Only cold.",
         sound = "Nothing above the water at all.",
 
-        description = function(room)
-            return [[
-The reeds stop. Past the last of the stilt houses the bottom goes away and the
-water turns from grey to a green so dark it reads as black. Something has laid a
-line of pale stones out into it, and the line goes further than the light does.]] .. sky()
-        end,
+        description = deep_water_description,
 
         exits = { east = "greywater_marsh.stilt_village" },
 

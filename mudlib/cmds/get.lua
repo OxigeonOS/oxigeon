@@ -5,7 +5,7 @@
 --   get coin from backpack   out of a container, carried or on the floor
 
 local Carry     = require('lib.carry')
-local Container = require('lib.container')
+local Container = require('components.container')
 
 local M = {}
 M.name = 'get'

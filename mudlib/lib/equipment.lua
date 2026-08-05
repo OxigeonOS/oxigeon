@@ -33,10 +33,11 @@
 -- single hook whatever the damage type, so `equip_protection` reads the worn
 -- piece's defence and resist table out of its own instance state.
 
-local Armor     = require('lib.armor')
-local Weapon    = require('lib.weapon')
-local Container = require('lib.container')
-local Requires  = require('lib.requires')
+local Armor      = require('components.armor')
+local Weapon     = require('components.weapon')
+local Container  = require('components.container')
+local Requires   = require('components.requires')
+local Components = require('components')
 
 local M = {}
 
@@ -169,31 +170,16 @@ local function specs_for(item)
     local specs = {}
     if type(item) ~= "table" then return specs end
 
-    if Armor.is(item) then
-        local a = item.armour
-        for trait_id, amount in pairs(a.stat_bonus or {}) do
-            if type(amount) == "number" and amount ~= 0 then
-                local def_id = ensure_trait_effect(trait_id)
-                if def_id then
-                    specs[#specs + 1] = { def = def_id, state = { amount = amount } }
-                end
-            end
-        end
-
-        local defense = Armor.defense(item) or 0
-        local has_resist = false
-        for _, v in pairs(a.resist or {}) do
-            if type(v) == "number" and v ~= 0 then has_resist = true break end
-        end
-        if defense ~= 0 or has_resist then
-            local def_id = ensure_protection_effect()
-            if def_id then
-                specs[#specs + 1] = {
-                    def = def_id,
-                    state = { defense = defense, resist = a.resist or {} },
-                }
-            end
-        end
+    -- Whatever the item's components contribute. Nothing here names a
+    -- component: armour's mitigation lives in `components/armor.lua` where the
+    -- rest of armour does, and a component added later is picked up by
+    -- existing. The two effect definitions stay here because they are
+    -- equipment's to create, so they are handed over rather than reached for.
+    for _, spec in ipairs(Components.equip_specs(item, {
+        trait_effect      = ensure_trait_effect,
+        protection_effect = ensure_protection_effect,
+    })) do
+        specs[#specs + 1] = spec
     end
 
     -- A weapon may carry stat bonuses too — a sword of strength is an ordinary

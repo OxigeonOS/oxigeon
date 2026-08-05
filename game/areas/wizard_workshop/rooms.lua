@@ -326,6 +326,71 @@ local function take_manasteel(session_id, args_str, args)
     )
 end
 
+-- ─── The cauldron, seen two ways ─────────────────────────────────────────────
+--
+-- The room's description and the cauldron's own scenery line both branch on
+-- where the puzzle has got to, and both used to read the three state keys and
+-- reproduce the same four-way branch. Two copies of one rule is two rules: a
+-- fifth step would have had to be added twice, and the day somebody added it
+-- once is the day the room and the thing in it start disagreeing.
+
+local LAB_ID = "wizard_workshop.laboratory"
+
+--- Which of the four states the cauldron is in.
+--- @return string  "full" | "red" | "violet" | "empty"
+local function cauldron_state()
+    local complete = get_object_state(LAB_ID, "cauldron_complete")
+    local empty    = get_object_state(LAB_ID, "cauldron_empty")
+    local step     = get_object_state(LAB_ID, "cauldron_potions") or 0
+
+    if complete and not empty then return "full" end
+    if step == 1 then return "red" end
+    if step == 2 then return "violet" end
+    return "empty"
+end
+
+--- As it reads from the doorway, appended to the room description.
+local CAULDRON_IN_ROOM = {
+    full   = "\r\nA heavy iron cauldron sits near the workbench, filled with a luminous\r\npurple liquid. Tiny motes of starlight drift lazily from its surface.",
+    red    = "\r\nA heavy iron cauldron sits near the workbench. A faint red glow\r\nflickers from within.",
+    violet = "\r\nA heavy iron cauldron sits near the workbench. A deep violet swirl\r\nchurns inside it.",
+    empty  = "\r\nA heavy iron cauldron sits near the workbench, its interior blackened\r\nby centuries of alchemical experiments. It appears to be empty.",
+}
+
+--- As it reads when you go and look into it.
+local CAULDRON_CLOSE_UP = {
+    full   = "The iron cauldron brims with luminous purple liquid. Tiny motes of starlight drift from the surface, and the air around it tastes of ancient magic.",
+    red    = "The iron cauldron holds a small amount of glowing red liquid that slowly swirls on its own.",
+    violet = "The iron cauldron contains a churning violet mixture that gives off wisps of arcane energy.",
+    empty  = "A massive iron cauldron, its interior blackened by centuries of use. A faint residue of old magic clings to its walls.",
+}
+
+local function laboratory_description(room)
+    local base = [[
+A massive scarred workbench dominates the center of this grand chamber, cluttered
+with shattered bubbling alembics and crystallized reagent stains that shimmer in
+unnatural hues. A single, hovering magelight flickers intermittently near the
+ceiling, casting long, erratic shadows across the soot-stained walls.]]
+
+    return base .. CAULDRON_IN_ROOM[cauldron_state()]
+end
+
+local function cauldron_scenery(room)
+    return CAULDRON_CLOSE_UP[cauldron_state()]
+end
+
+--- Static, but an lfun so the vault stays the one room that can grow a
+--- condition later without the file changing shape around it.
+local function treasure_vault_description(room)
+    local base = [[
+You stand in a vaulted chamber carved from living rock, its walls veined with
+threads of luminous crystal that pulse with a slow, rhythmic blue light. The air
+is cold and still, untouched by time. This place has been sealed for centuries,
+waiting for someone clever enough to find it.]]
+
+    return base .. "\r\nAgainst the far wall, a stack of shimmering manasteel bars catches the\r\ncrystal-light, their surfaces rippling with captive energy. In the center of\r\nthe chamber, a crystalline orb hovers a foot above a stone pedestal, rotating\r\nslowly and casting prismatic reflections across the walls."
+end
+
 -- ─── Room data ───────────────────────────────────────────────────────────────
 
 return {
@@ -381,31 +446,7 @@ tarnished coat hooks hold the moth-eaten remains of heavy velvet robes.]],
         smell = "A sharp, acrid tang of sulfur and burnt sugar.",
         sound = "A slow, rhythmic bubbling from a sealed glass retort.",
 
-        description = function(room)
-            local base = [[
-A massive scarred workbench dominates the center of this grand chamber, cluttered
-with shattered bubbling alembics and crystallized reagent stains that shimmer in
-unnatural hues. A single, hovering magelight flickers intermittently near the
-ceiling, casting long, erratic shadows across the soot-stained walls.]]
-
-            -- Cauldron description changes based on puzzle state
-            local cauldron_desc
-            local complete = get_object_state("wizard_workshop.laboratory", "cauldron_complete")
-            local empty = get_object_state("wizard_workshop.laboratory", "cauldron_empty")
-            local step = get_object_state("wizard_workshop.laboratory", "cauldron_potions") or 0
-
-            if complete and not empty then
-                cauldron_desc = "\r\nA heavy iron cauldron sits near the workbench, filled with a luminous\r\npurple liquid. Tiny motes of starlight drift lazily from its surface."
-            elseif step == 1 then
-                cauldron_desc = "\r\nA heavy iron cauldron sits near the workbench. A faint red glow\r\nflickers from within."
-            elseif step == 2 then
-                cauldron_desc = "\r\nA heavy iron cauldron sits near the workbench. A deep violet swirl\r\nchurns inside it."
-            else
-                cauldron_desc = "\r\nA heavy iron cauldron sits near the workbench, its interior blackened\r\nby centuries of alchemical experiments. It appears to be empty."
-            end
-
-            return base .. cauldron_desc
-        end,
+        description = laboratory_description,
 
         exits = {
             south = "wizard_workshop.entrance",
@@ -417,21 +458,7 @@ ceiling, casting long, erratic shadows across the soot-stained walls.]]
         items = {
             workbench = "The oak workbench is deeply scarred by decades of acid spills and scorch marks. Crystallized reagent stains glitter across its surface like tiny gemstones.",
             magelight = "The hovering magelight is a pale sphere of bluish-white energy, flickering erratically. It seems to be running low on whatever power sustains it.",
-            cauldron  = function(room)
-                local complete = get_object_state("wizard_workshop.laboratory", "cauldron_complete")
-                local empty = get_object_state("wizard_workshop.laboratory", "cauldron_empty")
-                local step = get_object_state("wizard_workshop.laboratory", "cauldron_potions") or 0
-
-                if complete and not empty then
-                    return "The iron cauldron brims with luminous purple liquid. Tiny motes of starlight drift from the surface, and the air around it tastes of ancient magic."
-                elseif step == 1 then
-                    return "The iron cauldron holds a small amount of glowing red liquid that slowly swirls on its own."
-                elseif step == 2 then
-                    return "The iron cauldron contains a churning violet mixture that gives off wisps of arcane energy."
-                else
-                    return "A massive iron cauldron, its interior blackened by centuries of use. A faint residue of old magic clings to its walls."
-                end
-            end,
+            cauldron  = cauldron_scenery,
         },
 
         actions = {
@@ -543,17 +570,7 @@ a few inches off the shelves, trapped in localized gravity anomalies.]],
         smell = "Cold stone and the metallic tang of rare alloys.",
         sound = "A deep, resonant hum that seems to emanate from the metal itself.",
 
-        description = function(room)
-            local base = [[
-You stand in a vaulted chamber carved from living rock, its walls veined with
-threads of luminous crystal that pulse with a slow, rhythmic blue light. The air
-is cold and still, untouched by time. This place has been sealed for centuries,
-waiting for someone clever enough to find it.]]
-
-            local details = "\r\nAgainst the far wall, a stack of shimmering manasteel bars catches the\r\ncrystal-light, their surfaces rippling with captive energy. In the center of\r\nthe chamber, a crystalline orb hovers a foot above a stone pedestal, rotating\r\nslowly and casting prismatic reflections across the walls."
-
-            return base .. details
-        end,
+        description = treasure_vault_description,
 
         exits = {},  -- No conventional exits — orb teleports back
 

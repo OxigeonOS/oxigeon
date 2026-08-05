@@ -1,10 +1,44 @@
 -- game/areas/thornhollow/items.lua — What the town sells and keeps.
 
 local Item      = require('lib.item')
-local Container = require('lib.container')
+local Container = require('components.container')
 local drinkable = require('components.drinkable')
 
 local items = {}
+
+local function lantern_toggle(item, char_id)
+local player = DAEMON.character and DAEMON.character.get(char_id)
+if not player then return end
+-- The instance's id, not the template's: `item.id` on a resolved
+-- pristine item *is* the template's, so the caller passes nothing
+-- useful and this asks the inventory instead.
+local Carry = require('lib.carry')
+local entry = select(1, Carry.find(player, "lantern",
+    { inventory = true, room = false, equipped = true }))
+if not entry then return "You are not holding it." end
+
+local lit = get_object_state(entry.id, "lit") == true
+set_object_state(entry.id, "lit", not lit)
+return lit and "You slide the hood shut. The light goes out."
+    or "You open the hood. Warm yellow light fills the space around you."
+end
+
+local function healing_draught_drunk(item, player)
+if DAEMON and DAEMON.trait then
+    DAEMON.trait.adjust(player, "hp", 35)
+end
+end
+
+local function antidote_drunk(item, player)
+-- Named removal rather than a blanket clear: an antidote that also
+-- stripped your blessings would be a trap wearing a helpful label.
+if DAEMON and DAEMON.effect then
+    local n = DAEMON.effect.remove(player, "marsh_poison", { reason = "antidote" })
+    if n == 0 then
+        player:send("Nothing in you objects to it. Perhaps you were not poisoned.")
+    end
+end
+end
 
 -- ─── Provisions ──────────────────────────────────────────────────────────────
 
@@ -31,22 +65,7 @@ items[#items + 1] = Item:new{
     tags        = { "tool", "light" },
     -- `use` toggles it. The state is per instance, which is what makes two
     -- lanterns able to disagree about whether they are lit.
-    on_use = function(item, char_id)
-        local player = DAEMON.character and DAEMON.character.get(char_id)
-        if not player then return end
-        -- The instance's id, not the template's: `item.id` on a resolved
-        -- pristine item *is* the template's, so the caller passes nothing
-        -- useful and this asks the inventory instead.
-        local Carry = require('lib.carry')
-        local entry = select(1, Carry.find(player, "lantern",
-            { inventory = true, room = false, equipped = true }))
-        if not entry then return "You are not holding it." end
-
-        local lit = get_object_state(entry.id, "lit") == true
-        set_object_state(entry.id, "lit", not lit)
-        return lit and "You slide the hood shut. The light goes out."
-            or "You open the hood. Warm yellow light fills the space around you."
-    end,
+    on_use = lantern_toggle,
 }
 
 items[#items + 1] = Item:new{
@@ -84,11 +103,7 @@ drinkable.apply(healing_draught, {
     drink_message      = "You drink the draught. It is bitter, then warm, and the "
                       .. "warmth goes where it is needed",
     drink_room_message = "{name} drinks a dark red draught.",
-    on_drink = function(item, player)
-        if DAEMON and DAEMON.trait then
-            DAEMON.trait.adjust(player, "hp", 35)
-        end
-    end,
+    on_drink = healing_draught_drunk,
 })
 items[#items + 1] = healing_draught
 
@@ -105,16 +120,7 @@ drinkable.apply(marsh_antidote, {
     drink_message      = "You swallow the antidote. It tastes of the marsh, which "
                       .. "is somehow worse than the poison",
     drink_room_message = "{name} drinks something cloudy and green.",
-    on_drink = function(item, player)
-        -- Named removal rather than a blanket clear: an antidote that also
-        -- stripped your blessings would be a trap wearing a helpful label.
-        if DAEMON and DAEMON.effect then
-            local n = DAEMON.effect.remove(player, "marsh_poison", { reason = "antidote" })
-            if n == 0 then
-                player:send("Nothing in you objects to it. Perhaps you were not poisoned.")
-            end
-        end
-    end,
+    on_drink = antidote_drunk,
 })
 items[#items + 1] = marsh_antidote
 

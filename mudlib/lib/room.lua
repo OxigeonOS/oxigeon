@@ -1,4 +1,4 @@
--- game/lib/room.lua — Room class
+-- mudlib/lib/room.lua — Room class
 -- Inherits from Object. Adds exits, contents, actions, items, and appearance.
 -- Properties (short, long, smell, sound) support the lfun pattern via Object.resolve().
 

@@ -10,12 +10,14 @@
 -- `drinkable` component already knows how.
 
 local Carry     = require('lib.carry')
-local Container = require('lib.container')
+local Container = require('components.container')
 local Object    = require('lib.object')
 
 local M = {}
 M.name = 'use'
-M.aliases = { 'u' }
+-- No `u`. It belongs to `up`, and both used to claim it: which one you got
+-- depended on the order the filesystem happened to list the two files in.
+M.aliases = {}
 M.category = 'items'
 M.summary = 'Use an item.'
 M.usage = {

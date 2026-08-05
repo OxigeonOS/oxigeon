@@ -177,8 +177,20 @@ function M.enter_game(session_id, account)
 
         -- Step 3: place character in the world and show the room
         if DAEMON and DAEMON.world then
-            local start = config("game.start_room") or "wizard_workshop.entrance"
-            DAEMON.world.place_character(char.id, start)
+            -- No fallback room id. Naming one game's room in a mudlib file is
+            -- how a second game inherits it silently; `game.start_room` is
+            -- required, and a game that has not set it should find out here
+            -- rather than by putting everyone in a room that does not exist.
+            local start = config("game.start_room")
+            if start then
+                DAEMON.world.place_character(char.id, start)
+            else
+                log("error", "LOGIN: game.start_room is not set in server.toml")
+                if DAEMON.journal then
+                    pcall(DAEMON.journal.error,
+                        "LOGIN: game.start_room is not set — nobody can be placed")
+                end
+            end
 
             -- Step 4: load character into a Player object
             if DAEMON.character then

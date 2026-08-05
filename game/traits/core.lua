@@ -13,6 +13,41 @@
 -- Effects modify `attribute` and `derived` traits. They never modify a gauge
 -- or a counter: a buff raises max_hp, it does not edit your current health.
 
+-- ─── Formulas ────────────────────────────────────────────────────────────────
+--
+-- Named above the table, so the definitions below read as a list of what each
+-- trait *is* — kind, group, bounds, what it depends on — with the arithmetic
+-- one name away rather than in the middle of it.
+--
+-- The single-expression formulas further down stay inline deliberately: they
+-- sit in a block whose whole point is being read side by side, and the trait's
+-- id is already on the line above.
+
+local function max_hp_formula(t)
+    -- An authored value wins outright. Adding to the curve instead would put a
+    -- floor of 50 under every creature, which is the bug this exists to fix.
+    if t.max_hp_flat > 0 then return t.max_hp_flat end
+    return 50 + t.constitution * 5 + (t.level - 1) * 10
+end
+
+local function max_mp_formula(t)
+    return 20 + t.intelligence * 3 + (t.level - 1) * 5
+end
+
+local function willpower_formula(t)
+    return math.floor((t.wisdom - 10) / 2) + math.floor(t.level / 2)
+end
+
+local function max_stamina_formula(t)
+    -- Derived-of-derived: `carry_capacity` is itself derived, so this is a
+    -- two-level dependency chain and `seal` has to order all three.
+    return 40 + t.constitution * 3 + math.floor(t.carry_capacity / 10)
+end
+
+local function spell_power_formula(t)
+    return math.floor(t.intelligence / 2) + t.willpower
+end
+
 return {
     -- ─── Attributes ──────────────────────────────────────────────────────────
     { id = "strength",     label = "Strength",     kind = "attribute",
@@ -69,18 +104,11 @@ return {
 
     { id = "max_hp", label = "Max Health", kind = "derived", group = "derived",
       depends = { "constitution", "level", "max_hp_flat" }, min = 1, round = "floor",
-      formula = function(t)
-          -- An authored value wins outright. Adding to the curve instead would
-          -- put a floor of 50 under every creature, which is the bug.
-          if t.max_hp_flat > 0 then return t.max_hp_flat end
-          return 50 + t.constitution * 5 + (t.level - 1) * 10
-      end },
+      formula = max_hp_formula },
 
     { id = "max_mp", label = "Max Mana", kind = "derived", group = "derived",
       depends = { "intelligence", "level" }, min = 0, round = "floor",
-      formula = function(t)
-          return 20 + t.intelligence * 3 + (t.level - 1) * 5
-      end },
+      formula = max_mp_formula },
 
     -- The requirement, made concrete: a trait derived from another trait.
     -- Declaring `depends` is mandatory and enforced — reading a trait that is
@@ -88,9 +116,7 @@ return {
     -- the cycle detector truthful.
     { id = "willpower", label = "Willpower", kind = "derived", group = "derived",
       depends = { "wisdom", "level" }, round = "floor",
-      formula = function(t)
-          return math.floor((t.wisdom - 10) / 2) + math.floor(t.level / 2)
-      end },
+      formula = willpower_formula },
 
     -- ─── Gauges ──────────────────────────────────────────────────────────────
     -- Regeneration is computed from a timestamp when someone looks, not driven
@@ -117,11 +143,7 @@ return {
     --- two attributes, `max_stamina` from one and a *derived* trait.
     { id = "max_stamina", label = "Max Stamina", kind = "derived", group = "derived",
       depends = { "constitution", "carry_capacity" }, min = 1, round = "floor",
-      formula = function(t)
-          -- Derived-of-derived: `carry_capacity` is itself derived, so this is
-          -- a two-level dependency chain and `seal` has to order all three.
-          return 40 + t.constitution * 3 + math.floor(t.carry_capacity / 10)
-      end },
+      formula = max_stamina_formula },
 
     { id = "stamina", label = "Stamina", kind = "gauge", group = "vitals",
       max = "max_stamina", min = 0, round = "floor",
@@ -142,9 +164,7 @@ return {
     --- itself derived from wisdom and level.
     { id = "spell_power", label = "Spell Power", kind = "derived", group = "derived",
       depends = { "intelligence", "willpower" }, min = 0, round = "floor",
-      formula = function(t)
-          return math.floor(t.intelligence / 2) + t.willpower
-      end },
+      formula = spell_power_formula },
 
     --- One trait per `round` mode, so all four are exercised. They differ only
     --- in rounding, which makes the difference between them visible in `score`

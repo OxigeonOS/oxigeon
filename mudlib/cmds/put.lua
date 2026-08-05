@@ -6,7 +6,7 @@
 -- `in` and `into` both work, because both are what people type.
 
 local Carry     = require('lib.carry')
-local Container = require('lib.container')
+local Container = require('components.container')
 
 local M = {}
 M.name = 'put'

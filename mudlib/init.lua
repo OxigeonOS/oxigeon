@@ -496,4 +496,11 @@ function on_load(module_name)
     if commands and commands.flush_cache then
         commands.flush_cache()
     end
+
+    -- And the component index, for the same reason: a component added or
+    -- edited during a session should describe itself without a restart.
+    local components = package.loaded["components"]
+    if components and components.flush_cache then
+        components.flush_cache()
+    end
 end

@@ -132,6 +132,117 @@ pub struct RealVm {
 ///
 /// `on_shutdown` is *wrapped* rather than replaced, so the mudlib's real one
 /// still runs and the probe only observes that it did.
+/// Where the fixture world starts. Not a room in `game/`.
+pub const FIXTURE_START_ROOM: &str = "fixture.hall";
+
+/// A complete, self-contained game layer in one file.
+///
+/// Everything the mudlib needs a *game* to supply, and nothing else: a trait
+/// set (traits are game-layer by design, so without them nothing has hit
+/// points), three rooms in a line, one creature and one item. It is the answer
+/// to "what is the smallest world in which the mudlib still works" — which is
+/// exactly the question a test of mudlib mechanics should be asking.
+const FIXTURE_WORLD: &str = r#"
+DAEMON.trait.define_all({
+    { id = "strength",     label = "Strength",     kind = "attribute",
+      group = "attributes", default = 10, min = 1 },
+    { id = "dexterity",    label = "Dexterity",    kind = "attribute",
+      group = "attributes", default = 10, min = 1 },
+    { id = "constitution", label = "Constitution", kind = "attribute",
+      group = "attributes", default = 10, min = 1 },
+    { id = "intelligence", label = "Intelligence", kind = "attribute",
+      group = "attributes", default = 10, min = 1 },
+    { id = "wisdom",       label = "Wisdom",       kind = "attribute",
+      group = "attributes", default = 10, min = 1 },
+    { id = "level", label = "Level", kind = "counter",
+      group = "vitals", default = 1, min = 1 },
+
+    -- An authored maximum, so a fixture creature can be weak. Same shape as
+    -- the shipped game: `max_hp` is derived and stores nothing.
+    { id = "max_hp_flat", label = "Authored Max Health", kind = "attribute",
+      group = "derived", default = 0, min = 0, hidden = true },
+    { id = "max_hp", label = "Max Health", kind = "derived", group = "derived",
+      depends = { "constitution", "level", "max_hp_flat" }, min = 1, round = "floor",
+      formula = function(t)
+          if t.max_hp_flat > 0 then return t.max_hp_flat end
+          return 50 + t.constitution * 5 + (t.level - 1) * 10
+      end },
+    { id = "max_mp", label = "Max Mana", kind = "derived", group = "derived",
+      depends = { "intelligence", "level" }, min = 0, round = "floor",
+      formula = function(t) return 20 + t.intelligence * 3 end },
+
+    { id = "hp", label = "Health", kind = "gauge", group = "vitals",
+      max = "max_hp", min = 0, round = "floor",
+      regen = { rate = 1, per = 3, target = "max", offline = false } },
+    { id = "mp", label = "Mana", kind = "gauge", group = "vitals",
+      max = "max_mp", min = 0, round = "floor",
+      regen = { rate = 1, per = 5, target = "max", offline = false } },
+})
+DAEMON.trait.seal()
+
+DAEMON.items.register_all({
+    require('lib.item'):new{
+        id = "fixture_stone", short = "a smooth stone",
+        description = "A grey stone, worn smooth.", weight = 1, value = 1,
+        tags = { "junk" },
+    },
+})
+
+DAEMON.world.register_area(DAEMON.room.load_area({
+    _meta = { name = "fixture", title = "The Fixture", status = "live" },
+    {
+        id = "fixture.hall", short = "A Plain Hall",
+        description = "A plain hall with a door at each end.",
+        light = 3, tags = { "indoor" },
+        exits = { north = "fixture.store", south = "fixture.cellar" },
+        items = { door = "A plain door. There are two of them." },
+    },
+    {
+        id = "fixture.store", short = "A Store Room",
+        description = "Shelves, mostly empty.",
+        light = 2, tags = { "indoor" },
+        exits = { south = "fixture.hall" },
+    },
+    {
+        id = "fixture.cellar", short = "A Dark Cellar",
+        description = "Steps down into the dark.",
+        light = 0, tags = { "indoor", "dark" },
+        exits = { north = "fixture.hall" },
+    },
+}))
+
+DAEMON.mobs.register_all({
+    {
+        id = "fixture_mouse", name = "mouse", short = "a small mouse",
+        description = "A small brown mouse, entirely unbothered.",
+        stats = { hp = 12, max_hp_flat = 12, strength = 4, dexterity = 10,
+                  constitution = 6, intelligence = 2, wisdom = 4, level = 1 },
+        damage = { min = 1, max = 2 },
+        xp_award = 3,
+        spawn_room = "fixture.store", count = 1, respawn_time = 60,
+        tags = { "vermin" },
+    },
+})
+DAEMON.mobs.populate()
+
+function on_gmcp(session_id, package, data) end
+"#;
+
+/// A command in the fixture world's own `cmds/`, to prove the loader merges the
+/// game and mudlib roots without needing this repository's `game/cmds/`.
+const FIXTURE_COMMAND: &str = r#"
+local M = {}
+M.name = 'fixturecmd'
+M.aliases = { 'fx' }
+M.category = 'general'
+M.summary = 'Prove the game layer is searched for commands.'
+M.permission = nil
+function M.execute(session_id, args_str, args)
+    send(session_id, "\r\nthe fixture command ran\r\n")
+end
+return M
+"#;
+
 const PROBE_GAME_LAYER: &str = r#"
 package.path = "{game}/?.lua;{game}/?/init.lua;" .. package.path
 
@@ -161,6 +272,28 @@ function on_shutdown()
     if _shutdown_session then send(_shutdown_session, "OK	ran") end
 end
 "#;
+
+/// The start room the shipped `config/server.toml` declares.
+///
+/// Read rather than hardcoded, because a harness that hardcodes
+/// `wizard_workshop.entrance` silently assumes *this* game: point the config at
+/// another world and every `boot_real_mudlib` test fails at login, for a reason
+/// that has nothing to do with what it was testing.
+pub fn configured_start_room() -> String {
+    std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/server.toml"),
+    )
+    .expect("read config/server.toml")
+    .lines()
+    .find_map(|l| {
+        l.trim()
+            .strip_prefix("start_room")?
+            .split('"')
+            .nth(1)
+            .map(str::to_string)
+    })
+    .expect("config/server.toml declares no start_room")
+}
 
 impl RealVm {
     /// Boot the way `config/server.toml` ships: no instruction limit, so the
@@ -264,13 +397,53 @@ impl RealVm {
             TestCtx {
                 instruction_limit,
                 game_path: Some(root.join("game")),
-                start_room: Some("wizard_workshop.entrance".to_string()),
+                start_room: Some(configured_start_room()),
                 log_dir: Some(logs.path().to_path_buf()),
                 ..Default::default()
             },
         );
         vm._logs = Some(logs);
         vm.login_as("benchuser", "a good long benchmark password");
+        vm
+    }
+
+    /// Boot the real `mudlib/` against a **small self-contained world** written
+    /// into a temp directory, instead of the `game/` this repository ships.
+    ///
+    /// The reason this exists: `game/` is content — "this game, and policy the
+    /// driver has no view on" — and somebody who deletes it to build their own
+    /// world should not inherit a broken test suite. Anything asserting mudlib
+    /// *mechanics* should be able to say "given a world" without meaning "given
+    /// Thornhollow". Tests that genuinely assert the shipped content live in
+    /// `tests/demo_world/` and are deleted along with `game/`.
+    ///
+    /// The fixture is deliberately tiny — three rooms, one mob, one item, and
+    /// the trait definitions a creature needs to exist. Traits are game-layer by
+    /// design, so a world without them has no `hp` for anything to lose.
+    pub fn boot_with_fixture_world(instruction_limit: u64) -> Self {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let logs = TempDir::new().unwrap();
+        let game = TempDir::new().unwrap();
+        std::fs::write(game.path().join("init.lua"), FIXTURE_WORLD).unwrap();
+        // A game-layer command, so "discovery spans both roots" stays a claim
+        // about the loader rather than a claim about Thornhollow.
+        std::fs::create_dir_all(game.path().join("cmds")).unwrap();
+        std::fs::write(game.path().join("cmds/fixturecmd.lua"), FIXTURE_COMMAND).unwrap();
+
+        let mut vm = Self::boot_inner_at(
+            None,
+            root.join("mudlib"),
+            TestCtx {
+                instruction_limit,
+                game_path: Some(game.path().to_path_buf()),
+                start_room: Some(FIXTURE_START_ROOM.to_string()),
+                log_dir: Some(logs.path().to_path_buf()),
+                ..Default::default()
+            },
+        );
+        vm._logs = Some(logs);
+        vm._game = Some(game);
+        vm.login_as("fixtureuser", "a good long fixture password");
         vm
     }
 
@@ -287,11 +460,18 @@ impl RealVm {
     /// works against the fully-wired `DAEMON` table, the real `journal_d`, the
     /// real config and the real document store.
     ///
-    /// Two things it deliberately does not do: the real `game/` content is not
-    /// loaded (no rooms, no start room, nobody logs in), and the real command
-    /// dispatcher is not exercised — `boot_real_mudlib` already covers that.
-    /// Use this to ask what mudlib code does; use that one to ask what a player
-    /// experiences.
+    /// Two things it deliberately does not do: there is **no start room and
+    /// nobody logs in**, and the real command dispatcher is not exercised —
+    /// `boot_real_mudlib` already covers that. Use this to ask what mudlib code
+    /// does; use that one to ask what a player experiences.
+    ///
+    /// The real `game/` content *is* loaded: `PROBE_GAME_LAYER` puts it on
+    /// `package.path` and `require`s `init`, so areas, mobs, items, traits,
+    /// effects and quests are all registered. (This comment used to claim
+    /// otherwise, which is why several tests assert on shipped content through
+    /// a boot that supposedly had none.) The `require` is inside a `pcall` that
+    /// only logs, so a missing `game/` does not fail the boot — it fails the
+    /// assertions that name content, which is the right place for it to hurt.
     pub fn boot_real_mudlib_with_probe() -> Self {
         Self::boot_real_mudlib_with_probe_opts(TestCtx::default())
     }

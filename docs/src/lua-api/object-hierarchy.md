@@ -9,7 +9,7 @@ Object (mudlib/lib/object.lua)
 │   Base for all MUD objects. Provides id, short, description,
 │   the lfun resolve() pattern, and driver state access.
 │
-├── Room (game/lib/room.lua)
+├── Room (mudlib/lib/room.lua)
 │       Exits, contents, actions, scenery items, appearance rendering.
 │
 ├── Item (mudlib/lib/item.lua)
@@ -30,7 +30,7 @@ Object (mudlib/lib/object.lua)
 > functions that build a plain `Item` carrying data-only components:
 >
 > ```lua
-> local Weapon = require('lib.weapon')
+> local Weapon = require('components.weapon')
 > local dagger = Weapon{ id = "silver_dagger", damage = {2, 8},
 >                        damage_type = "magic", required_level = 3 }
 >
@@ -49,7 +49,7 @@ Object (mudlib/lib/object.lua)
 > |---|---|---|
 > | **Archetype** `Weapon{...}` | construction | flat authoring data in, an `Item` out |
 > | **Component** `item.weapon` | data | no functions, no metatables; its presence is the has-component test |
-> | **System** `lib/weapon.lua` | behaviour | module functions taking the item — never installed on the instance |
+> | **System** `components/weapon.lua` | behaviour | module functions taking the item — never installed on the instance |
 >
 > This is the rule [`effect_d`](./effects.md) already follows for definitions
 > versus instances, applied to the object model. Authoring does not change: an
@@ -100,7 +100,7 @@ The root base class. Every entity inherits these fields and methods.
 
 ## Room
 
-**File:** [`game/lib/room.lua`](file:///c:/Code/oxigeon/game/lib/room.lua) — Inherits from **Object**
+**File:** [`mudlib/lib/room.lua`](file:///c:/Code/oxigeon/mudlib/lib/room.lua) — Inherits from **Object**
 
 Represents a location in the game world.
 
@@ -182,10 +182,10 @@ Base class for all tangible things: weapons, armor, potions, keys, treasure.
 
 ## Weapon — archetype, component, system
 
-**File:** [`mudlib/lib/weapon.lua`](file:///c:/Code/oxigeon/mudlib/lib/weapon.lua) — **not a class.** Produces an `Item`.
+**File:** [`mudlib/components/weapon.lua`](file:///c:/Code/oxigeon/mudlib/components/weapon.lua) — **not a class.** Produces an `Item`.
 
 ```lua
-local Weapon = require('lib.weapon')
+local Weapon = require('components.weapon')
 
 local dagger = Weapon{ id = "silver_dagger", short = "a silver dagger",
                        damage = {2, 8}, speed = 1.2, damage_type = "magic",
@@ -237,10 +237,10 @@ There is deliberately no `Weapon:new(...)`; the colon form would suggest a class
 
 ## Armor — archetype, component, system
 
-**File:** [`mudlib/lib/armor.lua`](file:///c:/Code/oxigeon/mudlib/lib/armor.lua) — **not a class.** Produces an `Item`.
+**File:** [`mudlib/components/armor.lua`](file:///c:/Code/oxigeon/mudlib/components/armor.lua) — **not a class.** Produces an `Item`.
 
 ```lua
-local Armor = require('lib.armor')
+local Armor = require('components.armor')
 
 local cloak = Armor{ id = "warded_cloak", short = "a warded cloak", slot = "back",
                      defense = 4, armor_type = "cloth", resist = { magic = 6 } }
@@ -284,7 +284,7 @@ Omitting `slot` logs a warning and defaults to `"chest"`.
 
 ## Requires
 
-**File:** [`mudlib/lib/requires.lua`](file:///c:/Code/oxigeon/mudlib/lib/requires.lua)
+**File:** [`mudlib/components/requires.lua`](file:///c:/Code/oxigeon/mudlib/components/requires.lua)
 
 One requirement check, shared by every kind of item. `Weapon` and `Armor` each
 carried their own near-identical `meets_requirements`; Armor tested dexterity
@@ -336,14 +336,19 @@ Base class for all living entities: monsters, NPCs, shopkeepers, quest givers.
 | `respawn_time` | number \| nil | — | Seconds to respawn after death. |
 | `spawn_room` | string \| nil | — | Room to respawn in. |
 | `dialogue` | table | `{}` | Keyword → response (string or function). |
-| `skills` | table | `{}` | Skill name → level mapping. |
 | `tags` | table | `{}` | Array of strings (e.g. `"boss"`, `"merchant"`). |
-| `on_death` | function \| nil | — | `function(mob, killer_id)` |
-| `on_combat` | function \| nil | — | `function(mob, target_id)` |
+| `on_death` | function \| nil | — | `function(mob)`. Who did it is `mob._killed_by`, an identity table `{char_id, id}` — not the entity, which would make two fighters a reference cycle. |
+| `on_combat` | function \| nil | — | `function(mob, target)` — the target entity, not an id |
 | `on_interact` | function \| nil | — | `function(mob, user_id, verb)` |
 | `on_spawn` | function \| nil | — | `function(mob, room_id)` |
 
-**Default stats:** `hp=10, max_hp=10, mp=0, strength=5, dexterity=5, intelligence=5, constitution=5, level=1`
+**Default stats:** `hp=10, mp=0, strength=5, dexterity=5, intelligence=5, constitution=5, level=1`
+
+> [!NOTE]
+> There is no `max_hp` default, and authoring one does nothing: `max_hp` is a
+> [derived trait](./traits.md) and `attach` deletes any value stored under one.
+> A creature that needs a specific maximum sets **`max_hp_flat`** — see
+> [Creatures & Combat](./combat.md#authored-health--max_hp_flat).
 
 ### Methods (own)
 

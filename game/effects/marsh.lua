@@ -14,6 +14,28 @@
 -- health would have to be unapplied symmetrically, which is the exact mistake
 -- the whole design avoids. It deals damage, which is an event.
 
+local Effects = require('lib.effects')
+
+-- ─── Handlers ────────────────────────────────────────────────────────────────
+
+--- marsh_poison: damage per tick, through `take_damage` so armour and
+--- resistances get their say. A poison that bypassed the pipeline would be the
+--- one damage source a warded cloak cannot touch, for no reason anyone wrote
+--- down.
+local function poison_tick(ev, ctx)
+    local per_tick = ctx.potency or 3
+    ctx.entity:take_damage(per_tick * (ev.ticks or 1),
+        { damage_type = "poison", source = "marsh_poison" })
+end
+
+--- wisp_mark: everything magical finds you more easily. A `mult` handler, so it
+--- scales the number before any reduction is taken off it.
+local function wisp_mark_magic(ev)
+    if ev.damage_type == "magic" then
+        ev.scale = ev.scale + 0.25
+    end
+end
+
 local checks = require('lib.checks')
 
 return {
@@ -29,27 +51,10 @@ return {
         duration = 180, tick = 5, stack = "refresh",
         potency = 3,
         hooks = {
-            heartbeat = { phase = "post", fn = function(ev, ctx)
-                local e = ctx.entity
-                local per_tick = ctx.potency or 3
-                local damage = per_tick * (ev.ticks or 1)
-                -- Through `take_damage`, so armour and resistances get their
-                -- say. A poison that bypassed the pipeline would be the one
-                -- damage source in the game that a warded cloak cannot touch,
-                -- for no reason anyone wrote down.
-                e:take_damage(damage, { damage_type = "poison", source = "marsh_poison" })
-            end },
+            heartbeat = { phase = "post", fn = poison_tick },
         },
-        on_apply = function(ctx)
-            if ctx.entity.send then
-                ctx.entity:send("{green}Your skin goes cold and your mouth fills with the taste of the water.{/}")
-            end
-        end,
-        on_expire = function(ctx)
-            if ctx.entity.send then
-                ctx.entity:send("{green}The fever breaks. You can taste your own mouth again.{/}")
-            end
-        end,
+        on_apply = Effects.says("{green}Your skin goes cold and your mouth fills with the taste of the water.{/}"),
+        on_expire = Effects.says("{green}The fever breaks. You can taste your own mouth again.{/}"),
     },
 
     --- A `condition`, which is checked when the effect is applied and refuses
@@ -70,16 +75,8 @@ return {
             checks.has_level(1)
         ),
         modifiers = { dexterity = -2 },
-        on_apply = function(ctx)
-            if ctx.entity.send then
-                ctx.entity:send("{cyan}The cold works into your hands. They are slow to answer.{/}")
-            end
-        end,
-        on_expire = function(ctx)
-            if ctx.entity.send then
-                ctx.entity:send("{cyan}Feeling comes back into your hands.{/}")
-            end
-        end,
+        on_apply = Effects.says("{cyan}The cold works into your hands. They are slow to answer.{/}"),
+        on_expire = Effects.says("{cyan}Feeling comes back into your hands.{/}"),
     },
 
     --- `survives_death`. Dying clears your effects — except the ones that say
@@ -93,23 +90,9 @@ return {
         persist = true,
         modifiers = { wisdom = -1 },
         hooks = {
-            -- Everything magical finds you more easily. A `pre`-phase handler,
-            -- so it scales the number before any reduction is taken off it.
-            damage_taken = { phase = "mult", fn = function(ev)
-                if ev.damage_type == "magic" then
-                    ev.scale = ev.scale + 0.25
-                end
-            end },
+            damage_taken = { phase = "mult", fn = wisp_mark_magic },
         },
-        on_apply = function(ctx)
-            if ctx.entity.send then
-                ctx.entity:send("{cyan}The light turns towards you, and stays turned.{/}")
-            end
-        end,
-        on_expire = function(ctx)
-            if ctx.entity.send then
-                ctx.entity:send("{cyan}Whatever was watching you stops.{/}")
-            end
-        end,
+        on_apply = Effects.says("{cyan}The light turns towards you, and stays turned.{/}"),
+        on_expire = Effects.says("{cyan}Whatever was watching you stops.{/}"),
     },
 }
