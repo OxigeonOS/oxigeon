@@ -159,15 +159,35 @@ function Mobile:take_damage(amount, opts)
 
     -- Who did it, for the death hook. `on_death` takes no arguments — it is
     -- called from here and from `heal`'s neighbours and from anything that
-    -- moves hit points — so the attacker rides on the entity instead. Set
-    -- before the hook so the hook can read it, and only when there was one.
-    if opts and opts.attacker then self._killed_by = opts.attacker end
+    -- moves hit points — so the killer rides on the entity instead.
+    --
+    -- Two things this deliberately is not:
+    --
+    -- **Not set on every hit.** It used to be, which made `_killed_by` really
+    -- `_last_damaged_by`: trade blows with a rat and the rat is recorded as
+    -- having been killed by you while it is still alive and biting. The last
+    -- attacker is still tracked, because a poison tick carries no attacker and
+    -- the player who applied it should still get the credit — but it is only
+    -- promoted to `_killed_by` by a blow that actually kills.
+    --
+    -- **Not the entity.** Storing the attacker itself made two fighters point
+    -- at each other, so the pair was a reference cycle: anything walking the
+    -- object graph had to defend against it, and a mob kept a whole live
+    -- `Player` alive past its own despawn. Every consumer only ever wanted the
+    -- identity, so that is what is kept.
+    if opts and opts.attacker then
+        local a = opts.attacker
+        self._last_attacker = { char_id = a.char_id, id = a.id }
+    end
 
     -- Fire death hook when transitioning from alive to dead
-    if was_alive and self:trait("hp") <= 0 and self.on_death then
-        local ok, err = pcall(self.on_death, self)
-        if not ok then
-            log("error", "MOBILE: on_death hook failed: " .. tostring(err))
+    if was_alive and self:trait("hp") <= 0 then
+        self._killed_by = self._last_attacker
+        if self.on_death then
+            local ok, err = pcall(self.on_death, self)
+            if not ok then
+                log("error", "MOBILE: on_death hook failed: " .. tostring(err))
+            end
         end
     end
 

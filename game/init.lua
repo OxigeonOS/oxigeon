@@ -62,6 +62,12 @@ if not ok then log("error", "Failed to load board_d: " .. tostring(err)) end
 ok, err = pcall(function() DAEMON.weather = require('daemons.weather_d') end)
 if not ok then log("error", "Failed to load weather_d: " .. tostring(err)) end
 
+-- Experience into levels. The mudlib owns `award_xp` and the `xp_gained`
+-- pipeline; the *curve* is this game's, so it listens to `player.xp_gained`
+-- exactly as `aggro_d` listens to `room.entered`.
+ok, err = pcall(function() DAEMON.level = require('daemons.level_d') end)
+if not ok then log("error", "Failed to load level_d: " .. tostring(err)) end
+
 ok, err = pcall(function() DAEMON.quest = require('daemons.quest_d') end)
 if not ok then log("error", "Failed to load quest_d: " .. tostring(err)) end
 

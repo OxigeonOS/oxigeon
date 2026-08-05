@@ -151,6 +151,10 @@ reads DO NOT LEAVE THE STONE in letters that have been repainted.]],
 
         exits = {
             east = "thornhollow.square",
+            -- Out onto the causeway. The marsh linked back here from the
+            -- beginning and this side was missing, which made the whole area
+            -- unreachable on foot — visible only by walking it.
+            west = "greywater_marsh.causeway_head",
         },
 
         items = {

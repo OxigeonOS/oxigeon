@@ -17,7 +17,7 @@ return {
         short       = "Bellow the smith",
         description = "A wide, unhurried woman with forearms like ship's rope "
                    .. "and a burn scar over one eye that she does not explain.",
-        stats       = { hp = 90, max_hp = 90, strength = 18, dexterity = 11,
+        stats       = { hp = 90, max_hp_flat = 90, strength = 18, dexterity = 11,
                         constitution = 16, level = 8 },
         xp_award    = 0,
         stationary  = true,
@@ -57,7 +57,7 @@ return {
         short       = "Hobb, who keeps the store",
         description = "A narrow man with a ledger he never writes in and an "
                    .. "expression of permanent, mild disappointment.",
-        stats       = { hp = 40, max_hp = 40, strength = 8, dexterity = 10,
+        stats       = { hp = 40, max_hp_flat = 40, strength = 8, dexterity = 10,
                         constitution = 9, level = 3 },
         xp_award    = 0,
         stationary  = true,
@@ -84,7 +84,7 @@ return {
         short       = "the apothecary",
         description = "Stooped from twenty years of a ceiling six inches too "
                    .. "low, with green under every fingernail.",
-        stats       = { hp = 35, max_hp = 35, strength = 7, dexterity = 12,
+        stats       = { hp = 35, max_hp_flat = 35, strength = 7, dexterity = 12,
                         intelligence = 16, wisdom = 15, constitution = 8, level = 4 },
         xp_award    = 0,
         stationary  = true,
@@ -120,7 +120,7 @@ return {
         description = "Boiled leather, a spear held like a walking stick, and "
                    .. "the particular boredom of someone who has watched this "
                    .. "gate for six years without incident.",
-        stats       = { hp = 70, max_hp = 70, strength = 14, dexterity = 12,
+        stats       = { hp = 70, max_hp_flat = 70, strength = 14, dexterity = 12,
                         constitution = 13, level = 6 },
         damage      = { min = 5, max = 10 },
         xp_award    = 45,
@@ -151,7 +151,7 @@ return {
         short       = "a man asleep in his own coat",
         description = "Face down on the table with one arm hanging. He has been "
                    .. "described as 'about to leave' for several years.",
-        stats       = { hp = 20, max_hp = 20, strength = 9, dexterity = 4,
+        stats       = { hp = 20, max_hp_flat = 20, strength = 9, dexterity = 4,
                         constitution = 11, level = 2 },
         xp_award    = 5,
         stationary  = true,
@@ -183,7 +183,7 @@ return {
         short       = "a soot-streaked apprentice",
         description = "Perhaps fifteen, entirely covered in soot except for two "
                    .. "clean circles where goggles were.",
-        stats       = { hp = 25, max_hp = 25, strength = 11, dexterity = 13,
+        stats       = { hp = 25, max_hp_flat = 25, strength = 11, dexterity = 13,
                         constitution = 10, level = 2 },
         xp_award    = 8,
         stationary  = true,
@@ -225,7 +225,7 @@ return {
         description = "An old man with a staff, a horn he has never blown, and "
                    .. "a route he has walked so long that the town sets its "
                    .. "clocks by where he is.",
-        stats       = { hp = 55, max_hp = 55, strength = 12, dexterity = 10,
+        stats       = { hp = 55, max_hp_flat = 55, strength = 12, dexterity = 10,
                         constitution = 12, level = 5 },
         damage      = { min = 3, max = 7 },
         xp_award    = 30,

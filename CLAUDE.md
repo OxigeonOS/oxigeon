@@ -170,7 +170,7 @@ See `docs/src/lua-api/state-cache.md`.
 
 ## Testing
 
-Run `cargo test` before committing. All tests must pass. Current count: 687.
+Run `cargo test` before committing. All tests must pass. Current count: 775.
 
 ### Test the real VM, not a helper beside it
 

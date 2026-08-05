@@ -338,6 +338,7 @@ fn register_io_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
         game_root.as_deref(),
         ctx.permission_config.clone(),
         ctx.session_handler.clone(),
+        ctx.debug_state.clone(),
     )?;
 
     Ok(())

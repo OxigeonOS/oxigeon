@@ -28,7 +28,12 @@ function M.execute(session_id, args_str, args)
         local tasks = DAEMON.task.list and DAEMON.task.list() or {}
         for _, t in ipairs(tasks) do
             local status = t.paused and "PAUSED" or "ACTIVE"
-            table.insert(lines, string.format("  %-20s | Int: %-5s | Last: %-10s | Runs: %-5s | %s", t.id, tostring(t.interval), format_ago(t.last_run), tostring(t.run_count), status))
+            -- The label, not just the id. `task_d` carries one precisely so
+            -- this reads as a list of jobs rather than a list of identifiers,
+            -- and it was being thrown away here.
+            table.insert(lines, string.format("  %-18s %-26s every %-6s %-10s runs %-5s %s",
+                t.id, t.label or "", tostring(t.interval) .. "s",
+                format_ago(t.last_run), tostring(t.run_count), status))
         end
         if #tasks == 0 then table.insert(lines, "  (none)") end
         

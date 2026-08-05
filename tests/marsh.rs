@@ -353,6 +353,11 @@ fn a_creatures_on_combat_hook_fires() {
     )
     .unwrap();
     vm.eval("setmetatable(_t, { __index = require('lib.mobile') }) return 'ok'").unwrap();
+    // Seed it, the way `lib/player.lua` and `mob_d.spawn` do. A hand-built
+    // combatant that skips this is missing whatever `max_hp` reads, and a
+    // derived trait with an absent dependency takes the `hp` gauge down with
+    // it — leaving a fighter that `is_alive()` says is already dead.
+    vm.eval("DAEMON.trait.seed(_t, 'character') return 'seeded'").unwrap();
 
     vm.eval("_real = DAEMON.combat._roll DAEMON.combat._roll = function() return 1 end").unwrap();
     vm.eval("DAEMON.combat.attack_once(_m, _t) return 'swung'").unwrap();

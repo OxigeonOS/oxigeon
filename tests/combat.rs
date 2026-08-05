@@ -277,3 +277,141 @@ fn the_combat_ticker_is_registered() {
         "the round did not resolve through the engine's timer dispatch"
     );
 }
+
+// ─── Who killed it ───────────────────────────────────────────────────────────
+//
+// `_killed_by` was set by `take_damage` on every hit, so it was really
+// `_last_damaged_by`: trade blows with a rat and the rat was recorded as
+// having been killed by you while it was still alive and biting back. And
+// because it held the attacking *entity*, two fighters ended up pointing at
+// each other — a reference cycle in the object graph, and a mob keeping a whole
+// live `Player` alive past its own despawn.
+
+#[test]
+fn a_survivable_hit_does_not_record_a_killer() {
+    let mut vm = arena();
+    vm.eval("DAEMON.trait.set_cur(rat, 'hp', 50) \
+             DAEMON.combat.attack_once(p, rat) return 'ok'")
+        .unwrap();
+
+    assert_eq!(
+        vm.eval("return tostring(rat:trait('hp') > 0)").unwrap(),
+        "true",
+        "this test is meaningless if the blow was fatal"
+    );
+    assert_eq!(
+        vm.eval("return tostring(rat._killed_by)").unwrap(),
+        "nil",
+        "a creature that is still alive has not been killed by anyone"
+    );
+}
+
+#[test]
+fn the_killing_blow_records_the_killer_by_identity_not_by_reference() {
+    let mut vm = arena();
+    vm.eval("DAEMON.trait.set_cur(rat, 'hp', 1) \
+             DAEMON.combat.attack_once(p, rat) return 'ok'")
+        .unwrap();
+
+    assert_eq!(vm.eval("return tostring(rat:trait('hp') <= 0)").unwrap(), "true");
+    assert_eq!(
+        vm.eval("return tostring(rat._killed_by and rat._killed_by.char_id)").unwrap(),
+        "1",
+        "the death payload reads char_id"
+    );
+    // Identity, not the entity: no cycle to walk and no Player kept alive by a
+    // corpse. `mob.died` only ever wanted `char_id` and `id`.
+    assert_eq!(
+        vm.eval("return tostring(rat._killed_by == p)").unwrap(),
+        "false"
+    );
+    assert_eq!(
+        vm.eval("return tostring(rat._killed_by.send)").unwrap(),
+        "nil",
+        "an identity table carries no methods and no reference back"
+    );
+}
+
+#[test]
+fn two_fighters_do_not_form_a_reference_cycle() {
+    // The shape as seen in the debugger: you hit the rat, the rat hits you, and
+    // each holds the other.
+    let mut vm = arena();
+    vm.eval("DAEMON.trait.set_cur(rat, 'hp', 500) DAEMON.trait.set_cur(p, 'hp', 500) \
+             DAEMON.combat.attack_once(p, rat) \
+             DAEMON.combat.attack_once(rat, p) return 'ok'")
+        .unwrap();
+
+    assert_eq!(
+        vm.eval("return tostring(rat._killed_by == nil and p._killed_by == nil)").unwrap(),
+        "true",
+        "neither is dead, so neither has a killer"
+    );
+    assert_eq!(
+        vm.eval("return tostring(rat._last_attacker.char_id)").unwrap(),
+        "1",
+        "the last attacker is still tracked — a poison tick carries no attacker"
+    );
+    assert_eq!(
+        vm.eval("return tostring(type(p._last_attacker) == 'table' \
+                 and p._last_attacker.id ~= nil and p._last_attacker.send == nil)").unwrap(),
+        "true",
+        "and it is an identity too, so there is no cycle either way"
+    );
+}
+
+#[test]
+fn a_kill_by_something_with_no_attacker_still_credits_the_last_one() {
+    // Damage-over-time carries no attacker. The player who applied the poison
+    // should still get the kill, which is why the last attacker is tracked
+    // separately rather than `_killed_by` simply moving to the fatal blow.
+    let mut vm = arena();
+    vm.eval("DAEMON.trait.set_cur(rat, 'hp', 40) \
+             DAEMON.combat.attack_once(p, rat) return 'ok'")
+        .unwrap();
+    assert_eq!(vm.eval("return tostring(rat._killed_by)").unwrap(), "nil");
+
+    // Now finish it with anonymous damage, as a tick would.
+    vm.eval("rat:take_damage(1000, { damage_type = 'poison' }) return 'ok'").unwrap();
+
+    assert_eq!(
+        vm.eval("return tostring(rat._killed_by and rat._killed_by.char_id)").unwrap(),
+        "1",
+        "the poisoner keeps the credit"
+    );
+}
+
+/// A wounded creature does not heal while the debugger has the world frozen.
+///
+/// Regeneration is a function of the clock — `trait_d.touch()` settles `hp`
+/// against `os_time()` on every read — and stopping the VM at a breakpoint does
+/// not stop the clock. A rat beaten down to 5 hit points came back to 20 across
+/// a few `continue`s, and the fight looked endless.
+///
+/// The driver banks the frozen interval and `os_time()` subtracts it, so this
+/// asserts the game-visible half of that: the anchor moving back by 45 seconds
+/// of *game* time regenerates 15 points, and the same 45 seconds of frozen wall
+/// time regenerates none.
+#[test]
+fn a_wounded_creature_regenerates_on_game_time_not_wall_time() {
+    let mut vm = arena();
+    vm.eval("DAEMON.trait.set_cur(rat, 'hp', 5) return 'ok'").unwrap();
+    assert_eq!(vm.eval("return tostring(rat:trait('hp'))").unwrap(), "5");
+
+    // 45 seconds of game time: 1 point per 3 seconds is 15 points.
+    vm.eval("rat.stats._at.hp = rat.stats._at.hp - 45 DAEMON.trait.bump(rat) return 'ok'")
+        .unwrap();
+    assert_eq!(
+        vm.eval("return tostring(rat:trait('hp'))").unwrap(),
+        "20",
+        "this is the regeneration rate the bug report measured"
+    );
+
+    // The rat is alive throughout — it never died and respawned, which was the
+    // other candidate explanation for health going back up.
+    assert_eq!(
+        vm.eval("return tostring(#DAEMON.mobs.in_room('wizard_workshop.pantry'))").unwrap(),
+        "2"
+    );
+    assert_eq!(vm.eval("return tostring(rat._killed_by)").unwrap(), "nil");
+}

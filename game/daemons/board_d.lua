@@ -169,6 +169,43 @@ function M.count(category)
     return ok and n or 0
 end
 
+--- Resolve a possibly-abbreviated id to a whole one.
+---
+--- Ids are uuids, and asking somebody to retype thirty-six characters to read a
+--- notice is asking them not to. The listing shows the first eight; this takes
+--- either that or the whole thing.
+---
+--- An **ambiguous** prefix is refused rather than guessed. Two notices whose
+--- ids share a prefix is unlikely and picking one of them silently is the kind
+--- of wrong that only shows up as somebody deleting the wrong notice.
+--- @param prefix string
+--- @return string|nil id, string|nil why
+function M.resolve_id(prefix)
+    if type(prefix) ~= "string" or #prefix == 0 then return nil, "Which notice?" end
+    if not available() then return nil, "The board is not working." end
+
+    -- The whole thing, most of the time.
+    if type(db_exists) == "function" then
+        local ok, there = pcall(db_exists, NOTICES, prefix)
+        if ok and there then return prefix end
+    end
+
+    -- Otherwise scan. The board is bounded by its own sweep, and this only
+    -- happens when somebody typed an abbreviation.
+    local ok, rows = pcall(db_find, NOTICES, {}, { limit = 500 })
+    if not ok then return nil, "The board is not working." end
+
+    local found
+    for _, rec in ipairs(rows) do
+        if type(rec.id) == "string" and rec.id:sub(1, #prefix) == prefix then
+            if found then return nil, "That could be more than one notice." end
+            found = rec.id
+        end
+    end
+    if not found then return nil, "There is no such notice." end
+    return found
+end
+
 --- One notice, and a view counted for it.
 ---
 --- `db_incr` rather than read-modify-write: two people opening the same notice

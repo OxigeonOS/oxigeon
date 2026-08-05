@@ -244,6 +244,47 @@ function M.get_instance(instance_id)
     return root().instances[instance_id]
 end
 
+--- Every live mob in the world, in a stable order.
+---
+--- `in_room` answers "what is here", which is what the game needs. Admin
+--- tooling needs "where is that thing" — `objdump rat` should find the rat
+--- whether or not you are standing next to it — and there was no way to ask.
+--- @return table  array of Mobiles, ordered by instance id
+function M.instances()
+    local out = {}
+    for _, mob in pairs(root().instances) do out[#out + 1] = mob end
+    table.sort(out, function(a, b) return tostring(a.id) < tostring(b.id) end)
+    return out
+end
+
+--- Find a live mob anywhere by name, keyword, template or instance id.
+--- Prefers an exact instance id, then the room the searcher is standing in,
+--- so `objdump rat` means the rat in front of you when there is one.
+--- @param name string
+--- @param near_room_id string|nil  searched first, if given
+--- @return table|nil
+function M.find_anywhere(name, near_room_id)
+    if type(name) ~= "string" or #name == 0 then return nil end
+
+    local exact = root().instances[name]
+    if exact then return exact end
+
+    if near_room_id then
+        local here = M.find_in_room(near_room_id, name)
+        if here then return here end
+    end
+
+    local needle = name:lower()
+    for _, mob in ipairs(M.instances()) do
+        for _, field in ipairs({ mob.name, mob.short, mob.template_id }) do
+            if type(field) == "string" and field:lower():find(needle, 1, true) then
+                return mob
+            end
+        end
+    end
+    return nil
+end
+
 --- Every live mob in a room, in a stable order.
 function M.in_room(room_id)
     local r = root()

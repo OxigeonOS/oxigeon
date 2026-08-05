@@ -104,6 +104,14 @@ impl Client {
             }
         }
     }
+
+    /// As [`wait_event`], but gives up rather than hanging — for a stop that
+    /// may legitimately never come because the chunk has already finished.
+    ///
+    /// [`wait_event`]: Client::wait_event
+    async fn try_wait_event(&mut self, name: &str, within: Duration) -> Option<Value> {
+        tokio::time::timeout(within, self.wait_event(name)).await.ok()
+    }
 }
 
 // ─── the Lua side ────────────────────────────────────────────────────────────
@@ -757,3 +765,97 @@ async fn tables_preview_their_contents_instead_of_an_address() {
 
 
 
+
+// ─── Game time ───────────────────────────────────────────────────────────────
+
+/// Freezing the world freezes the clock the mudlib reads.
+///
+/// The VM blocks inside the hook while stopped, but `SystemTime` does not care.
+/// Everything the game knows about time is `os_time()` — regeneration settles
+/// against it, cooldowns and effects expire against it — so a minute spent
+/// reading a stack trace was a minute of regeneration for the monster you were
+/// fighting. A rat beaten down to 5 hit points came back to 20 across a few
+/// steps, and combat looked endless for no visible reason.
+///
+/// This is the quiet sibling of the documented "repeating timers accumulate and
+/// fire as a burst on resume": nothing accumulates, the clock has simply moved.
+#[tokio::test]
+async fn game_time_excludes_time_the_world_was_frozen() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = write_chunk(&dir);
+    let st = DebugState::from_config(&DebugServerConfig::default(), 0);
+    let addr = debugger::dap::serve("127.0.0.1", 0, st.clone()).await.unwrap();
+    let (go, done, _h) = spawn_vm(st.clone(), path.clone());
+
+    let mut c = Client::connect(addr).await;
+    handshake(&mut c, &path, &[4]).await;
+
+    assert_eq!(st.paused_secs(), 0.0, "nothing has stopped yet");
+
+    go.send(()).unwrap();
+    c.wait_event("stopped").await;
+
+    // Sit at the breakpoint, as a person reading a stack trace does.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    c.request("continue", json!({"threadId": 1})).await;
+    c.response("continue").await;
+    c.wait_event("continued").await;
+
+    let banked = st.paused_secs();
+    assert!(
+        banked >= 0.4,
+        "the stop lasted at least 400ms; game time banked {banked}s"
+    );
+    // Loose upper bound: this is measuring a real sleep, not arithmetic.
+    assert!(banked < 5.0, "banked {banked}s is not a 400ms pause");
+
+    // Two more stops (the loop calls `work` three times), each adding to the
+    // total rather than replacing it.
+    for _ in 0..2 {
+        if c.try_wait_event("stopped", Duration::from_millis(500)).await.is_none() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        c.request("continue", json!({"threadId": 1})).await;
+        c.response("continue").await;
+    }
+    assert!(
+        st.paused_secs() > banked,
+        "each stop must add to the total, not overwrite it"
+    );
+
+    let _ = done.recv_timeout(Duration::from_secs(5));
+}
+
+/// Stepping is many short stops, and a per-stop truncation to whole seconds
+/// would have discarded every one of them.
+#[tokio::test]
+async fn many_short_stops_are_not_rounded_away() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = write_chunk(&dir);
+    let st = DebugState::from_config(&DebugServerConfig::default(), 0);
+    let addr = debugger::dap::serve("127.0.0.1", 0, st.clone()).await.unwrap();
+    let (go, _done, _h) = spawn_vm(st.clone(), path.clone());
+
+    let mut c = Client::connect(addr).await;
+    handshake(&mut c, &path, &[4]).await;
+    go.send(()).unwrap();
+    c.wait_event("stopped").await;
+
+    // Four steps, each well under a second.
+    for _ in 0..4 {
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        c.request("next", json!({"threadId": 1})).await;
+        c.response("next").await;
+        if c.try_wait_event("stopped", Duration::from_secs(5)).await.is_none() {
+            break;
+        }
+    }
+
+    assert!(
+        st.paused_secs() > 0.3,
+        "sub-second stops must accumulate; got {}s",
+        st.paused_secs()
+    );
+}

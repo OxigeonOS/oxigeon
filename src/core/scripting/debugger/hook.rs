@@ -306,6 +306,14 @@ fn enter_pause(lua: &Lua, st: &SharedDebugState, hl: &mut HookLocal, reason: Sto
     st.stopped.store(true, Ordering::Release);
     st.emit(DebugEventMsg::Stopped(reason));
 
+    // Game time does not pass while the world is frozen. Everything the mudlib
+    // knows about time is `os_time()` — regeneration settles against it,
+    // cooldowns and effects expire against it — and the clock does not care
+    // that the VM is blocked in this function. Without this, a minute spent
+    // reading a stack trace heals the monster you are fighting by twenty hit
+    // points, and combat looks endless for no visible reason.
+    let frozen_at = Instant::now();
+
     let deadline = Instant::now() + st.auto_continue;
     let mut next_step = StepState::None;
 
@@ -352,6 +360,10 @@ fn enter_pause(lua: &Lua, st: &SharedDebugState, hl: &mut HookLocal, reason: Sto
     // Handles must not outlive the stop that created them — otherwise the
     // variables pane would show values from a frame that no longer exists.
     super::introspect::reset(lua);
+
+    // Banked before the VM runs again, so the first `os_time()` after a resume
+    // already excludes this stop rather than seeing the clock jump.
+    st.add_paused(frozen_at.elapsed());
 
     hl.step = next_step;
     hl.vm_rx = Some(rx);

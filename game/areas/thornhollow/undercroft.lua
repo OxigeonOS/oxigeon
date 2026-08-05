@@ -76,6 +76,10 @@ lantern. An arch east leads to the older part, where the crypt is.]],
         exits = {
             up   = "thornhollow.undercroft_stair",
             east = "thornhollow.crypt",
+            -- The wizard's door. The town has always known it was there and has
+            -- always left it alone, which is why the lantern in the bracket is
+            -- lit and nobody admits to lighting it.
+            west = "wizard_workshop.entrance",
         },
 
         items = {
@@ -83,6 +87,9 @@ lantern. An arch east leads to the older part, where the crypt is.]],
                    .. "dragged on and off it.",
             lantern = "A lantern in a bracket, lit. Somebody comes down to see "
                    .. "to it, and nobody has ever said who.",
+            door    = "An oak door in the west wall, banded with iron and "
+                   .. "covered in silver runes that have stopped meaning "
+                   .. "anything. It stands ajar. It has stood ajar for years.",
         },
     },
 

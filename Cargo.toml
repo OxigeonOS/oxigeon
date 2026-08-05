@@ -7,6 +7,12 @@ edition = "2021"
 name = "oxigeon"
 path = "src/main.rs"
 
+# The development cockpit: telnet + GMCP in one pane, the DAP adapter in another.
+# See docs/src/tui.md. Nothing in the server depends on it.
+[[bin]]
+name = "oxigeon-tui"
+path = "src/bin/tui/main.rs"
+
 [dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -44,6 +50,10 @@ chrono = { version = "0.4", features = ["serde"] }
 bytes = "1"
 anyhow = "1"
 tracing-appender = "0.2.5"
+
+# Terminal UI for the `oxigeon-tui` binary only. crossterm is reached through
+# `ratatui::crossterm` rather than depended on directly, so the two cannot skew.
+ratatui = "0.30"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

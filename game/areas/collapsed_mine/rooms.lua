@@ -203,8 +203,11 @@ about thirty feet and then gives up entirely, which is where the first level
 starts.]],
 
         exits = {
-            north = "thornhollow.smithy",
-            down  = "collapsed_mine.first_level",
+            -- `up`, not `north`: the smithy comes down to here, so this goes
+            -- back up. A pair of exits that disagree about which way they are
+            -- is a pair a player cannot retrace.
+            up   = "thornhollow.smithy",
+            down = "collapsed_mine.first_level",
         },
 
         items = {

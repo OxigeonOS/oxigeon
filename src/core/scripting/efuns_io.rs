@@ -81,6 +81,7 @@ pub fn register_io_file_efuns(
     game_path: Option<&std::path::Path>,
     perm_config: Arc<PermissionConfig>,
     sh: Arc<std::sync::RwLock<SessionHandler>>,
+    debug_state: crate::core::scripting::debugger::SharedDebugState,
 ) -> mlua::Result<()> {
     let globals = lua.globals();
     let root = mudlib_path.to_path_buf();
@@ -331,13 +332,25 @@ pub fn register_io_file_efuns(
     }
 
     // os_time() -> number  (Unix timestamp as float seconds)
+    //
+    // This is *game* time, not wall time: it excludes any period the debugger
+    // had the world frozen. The mudlib's entire sense of time runs through
+    // here — regeneration settles against it, cooldowns and effects expire
+    // against it — and freezing the VM at a breakpoint does not freeze the
+    // clock. Without the subtraction, a minute spent reading a stack trace
+    // healed the monster you were fighting by twenty hit points.
+    //
+    // With `[servers.debug]` absent or disabled — the default — nothing ever
+    // pauses, the counter stays zero, and this is the wall clock exactly as it
+    // was. See `DebugState::paused_ms`.
     {
-        let f = lua.create_function(|_, ()| {
+        let st = debug_state.clone();
+        let f = lua.create_function(move |_, ()| {
             let secs = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs_f64();
-            Ok(secs)
+            Ok(secs - st.paused_secs())
         })?;
         globals.set("os_time", f)?;
     }

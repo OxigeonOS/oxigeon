@@ -67,7 +67,7 @@ gear[#gear + 1] = Weapon{
 gear[#gear + 1] = Weapon{
     id          = "silver_dagger",
     short       = "a silver ritual dagger",
-    description = "The blade is silver rather than steel — too soft to hold an "
+    description = "The blade is silver rather than steel, too soft to hold an "
                .. "edge and far too cold to be only metal. It hums faintly near "
                .. "anything that should not exist.",
     slot        = "weapon",

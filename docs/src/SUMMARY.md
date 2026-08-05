@@ -8,6 +8,7 @@
 
 - [Getting Started](./getting-started.md)
 - [Architecture Overview](./architecture.md)
+- [oxigeon-tui — The Development Cockpit](./tui.md)
 - [Lua API Reference](./lua-api/README.md)
   - [Daemons — Service Layer](./lua-api/daemons.md)
   - [Object Hierarchy](./lua-api/object-hierarchy.md)

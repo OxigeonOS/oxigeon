@@ -1,8 +1,30 @@
+-- mudlib/cmds/objdump.lua — Everything known about one thing.
+--
+-- `stat` is the readable summary; this is the dump. It answers "what is
+-- actually in that table", which is the question you have when something is
+-- behaving as though a field you set is not there.
+--
+-- It knew about online players and rooms and nothing else, so `objdump rat`
+-- said "Player or room not found" about a creature standing in front of you.
+-- Creatures, item instances and both template registries are dumpable now, and
+-- every dump ends with the raw fields — a curated view can only show what
+-- somebody thought to list, and the reason you are running objdump is usually
+-- that the interesting field is not one of them.
+
 local M = {}
 M.name = 'objdump'
 M.aliases = {'@objdump'}
 M.category = 'admin'
-M.summary = 'Show detailed information dump for a player or room.'
+M.summary = 'Dump everything known about a player, room, creature or item.'
+M.usage = {
+    "objdump                    — the room you are standing in",
+    "objdump <name>             — player, room, creature or item, in that order",
+    "objdump player:<name>      — force one kind when a name is ambiguous",
+    "objdump room:<area.room>",
+    "objdump mob:<name|id>",
+    "objdump item:<name|uuid>",
+    "objdump template:<id>      — a mob or item template, unspawned",
+}
 M.permission = 'admin'
 
 -- Sorted, not `pairs` order: a dump you cannot diff against the last one is
@@ -65,35 +87,364 @@ function M._format_inventory(inventory)
     return table.concat(parts, ", ")
 end
 
+-- ─── The generic dump ────────────────────────────────────────────────────────
+
+local MAX_DEPTH = 2
+
+local function opaque(v)
+    local t = type(v)
+    if t == "function" then return "<function>" end
+    if t == "userdata" then return "<userdata>" end
+    if t == "thread"   then return "<thread>"   end
+    return nil
+end
+
+local function is_array(t)
+    local n = 0
+    for k in pairs(t) do
+        if type(k) ~= "number" then return false end
+        n = n + 1
+    end
+    return n == #t
+end
+
+local function sorted_keys(t)
+    local keys = {}
+    for k in pairs(t or {}) do keys[#keys + 1] = tostring(k) end
+    table.sort(keys)
+    return keys
+end
+
+--- Append every field of `tbl` to `lines`, sorted, nesting expanded to `depth`.
+---
+--- Sorted for the same reason `format_dict` is: a dump you cannot diff against
+--- the last one is most of the way to useless. Cycles are marked rather than
+--- followed — an Object's metatable chain and a container's parent pointer both
+--- close a loop, and a stack overflow inside an admin command takes the game
+--- thread with it.
+local function dump_fields(lines, tbl, indent, depth, seen)
+    seen = seen or {}
+    if seen[tbl] then
+        lines[#lines + 1] = indent .. "(cycle)"
+        return
+    end
+    seen[tbl] = true
+
+    local keys = {}
+    for k in pairs(tbl) do keys[#keys + 1] = k end
+    table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+
+    for _, k in ipairs(keys) do
+        local v, label = tbl[k], indent .. tostring(k)
+        local tag = opaque(v)
+        if tag then
+            lines[#lines + 1] = label .. " = " .. tag
+        elseif type(v) ~= "table" then
+            lines[#lines + 1] = label .. " = " .. tostring(v)
+        elseif next(v) == nil then
+            lines[#lines + 1] = label .. " = (empty)"
+        elseif depth <= 0 then
+            lines[#lines + 1] = label .. " = "
+                .. (is_array(v) and ("<" .. #v .. " entries>") or "<table>")
+        elseif is_array(v) then
+            local parts = {}
+            for i, item in ipairs(v) do
+                parts[i] = opaque(item) or (type(item) == "table" and "<table>" or tostring(item))
+            end
+            lines[#lines + 1] = label .. " = [" .. table.concat(parts, ", ") .. "]"
+        else
+            lines[#lines + 1] = label .. ":"
+            dump_fields(lines, v, indent .. "  ", depth - 1, seen)
+        end
+    end
+
+    seen[tbl] = nil
+end
+
+-- Exposed for testing, as `_format_inventory` is. The cycle guard is the part
+-- worth a test: it is invisible until the day a dump takes the game thread
+-- down with a stack overflow.
+M._dump_fields = dump_fields
+
+--- The raw view, appended to every curated one.
+---
+--- A curated dump can only show the fields somebody thought to list, and the
+--- reason you are running objdump is usually that the field you care about is
+--- not one of them.
+local function dump_raw(lines, tbl)
+    if type(tbl) ~= "table" then return end
+    lines[#lines + 1] = "  {yellow}Raw fields:{/}"
+    dump_fields(lines, tbl, "    ", MAX_DEPTH, nil)
+end
+
+--- Present traits, read through the trait daemon rather than off `stats`.
+---
+--- `stats` is the *stored* table: a derived trait stores nothing at all and a
+--- buffed one stores the unbuffed number, so dumping `stats` alone reports
+--- neither. Base and effective are shown side by side when they differ, since
+--- "why is this 12 when I set 10" is the question that brings you here.
+local function dump_traits(lines, entity)
+    if not (DAEMON and DAEMON.trait and DAEMON.trait.all) then return end
+    local ok, traits = pcall(DAEMON.trait.all, entity)
+    if not ok or type(traits) ~= "table" or #traits == 0 then return end
+
+    lines[#lines + 1] = "  Traits:"
+    for _, t in ipairs(traits) do
+        local line = string.format("    %-20s %s", tostring(t.id), tostring(t.value))
+        if t.max then line = line .. " / " .. tostring(t.max) end
+        if t.base ~= nil and t.base ~= t.value then
+            line = line .. "  (base " .. tostring(t.base) .. ")"
+        end
+        line = line .. string.format("  [%s/%s]", tostring(t.kind), tostring(t.category))
+        if t.failed then line = line .. "  {red}FAILED: " .. tostring(t.failed) .. "{/}" end
+        lines[#lines + 1] = line
+    end
+end
+
+local function dump_effects(lines, entity)
+    if not (DAEMON and DAEMON.effect and DAEMON.effect.active) then return end
+    local ok, active = pcall(DAEMON.effect.active, entity)
+    if not ok or type(active) ~= "table" or #active == 0 then return end
+
+    lines[#lines + 1] = "  Effects:"
+    for _, e in ipairs(active) do
+        local inst = e.inst or {}
+        lines[#lines + 1] = string.format("    %-20s source=%s  stacks=%s  expires=%s",
+            tostring(inst.def), tostring(inst.source or "-"),
+            tostring(inst.stacks or 1), tostring(inst.expires or "never"))
+    end
+end
+
+-- ─── Resolution ──────────────────────────────────────────────────────────────
+
+local KINDS = { player = true, room = true, mob = true, item = true, template = true }
+
+local function find_online_player(name)
+    local want = name:lower()
+    local prefix_match
+    for _, sid in ipairs(all_sessions()) do
+        -- `get_session` raises on an id that has gone away rather than
+        -- returning nil, and a session can close while we are iterating.
+        local ok, s = pcall(get_session, sid)
+        if ok and s and s.state == "playing" and s.character_id then
+            local p = DAEMON.character and DAEMON.character.get(s.character_id)
+            if p and type(p.name) == "string" then
+                local n = p.name:lower()
+                if n == want then return p end
+                if not prefix_match and n:find(want, 1, true) == 1 then prefix_match = p end
+            end
+        end
+    end
+    return prefix_match
+end
+
+--- An item instance, wherever it is: by uuid, in your hands, or on the floor.
+--- @return table|nil instance, table|nil resolved
+local function find_item(player, name, room_id)
+    local ID = DAEMON and DAEMON.items
+    if not ID then return nil end
+
+    if ID.get_instance then
+        local inst = ID.get_instance(name)
+        if inst then return inst, ID.resolve and ID.resolve(inst) or inst end
+    end
+
+    if ID.find_by_name and type(player.inventory) == "table" then
+        local _, resolved, idx = ID.find_by_name(name, player.inventory)
+        if resolved then return player.inventory[idx], resolved end
+    end
+
+    if room_id and ID.find_in_room then
+        local inst, resolved = ID.find_in_room(room_id, name)
+        if inst then return inst, resolved end
+    end
+
+    return nil
+end
+
+--- Work out what the admin meant. Returns a kind and the thing.
+---
+--- Order is player → room → creature → item → template, and it is the order it
+--- is because that is roughly how specific the names are: a room id is unique,
+--- a creature keyword is not, and a template id is the fallback that always
+--- matches something.
+local function resolve(player, spec, forced, room_id)
+    local function want(kind) return forced == nil or forced == kind end
+
+    if want("player") then
+        local p = find_online_player(spec)
+        if p then return "player", p end
+    end
+
+    if want("room") and DAEMON.world and DAEMON.world.get_room then
+        local room = DAEMON.world.get_room(spec)
+        if room then return "room", room end
+    end
+
+    if want("mob") and DAEMON.mobs then
+        local finder = DAEMON.mobs.find_anywhere
+        local ok, mob = pcall(finder or function() end, spec, room_id)
+        if ok and mob then return "mob", mob end
+    end
+
+    if want("item") then
+        local inst, resolved = find_item(player, spec, room_id)
+        if inst then return "item", inst, resolved end
+    end
+
+    if want("template") then
+        if DAEMON.mobs and DAEMON.mobs.get then
+            local t = DAEMON.mobs.get(spec)
+            if t then return "mob_template", t end
+        end
+        if DAEMON.items and DAEMON.items.get then
+            local t = DAEMON.items.get(spec)
+            if t then return "item_template", t end
+        end
+    end
+
+    return nil
+end
+
+-- ─── Dumps ───────────────────────────────────────────────────────────────────
+
+local function dump_mob(mob)
+    local lines = {}
+    table.insert(lines, string.format("─── {green}Creature{/}: %s ─────────────────────────────",
+        tostring(mob.short or mob.name or mob.id)))
+    table.insert(lines, string.format("  Instance: %s | Template: %s | Room: %s",
+        tostring(mob.id), tostring(mob.template_id), tostring(mob.room_id)))
+    table.insert(lines, string.format("  Name: %s | Level: %s | XP award: %s",
+        tostring(mob.name), tostring(mob.level or "?"), tostring(mob.xp_award or 0)))
+
+    local flags = {}
+    for _, f in ipairs({ "aggressive", "stationary", "unique", "sentinel", "hidden" }) do
+        if mob[f] then flags[#flags + 1] = f end
+    end
+    if mob.faction then flags[#flags + 1] = "faction=" .. tostring(mob.faction) end
+    table.insert(lines, "  Flags: " .. (#flags > 0 and table.concat(flags, ", ") or "(none)"))
+
+    if type(mob.patrol) == "table" then
+        table.insert(lines, "  Patrol: " .. format_array(mob.patrol))
+    end
+    table.insert(lines, "  Dialogue: " .. (type(mob.dialogue) == "table"
+        and format_array(sorted_keys(mob.dialogue)) or "(none)"))
+    table.insert(lines, "  Inventory: " .. M._format_inventory(mob.inventory))
+
+    dump_traits(lines, mob)
+    dump_effects(lines, mob)
+    dump_raw(lines, mob)
+    return lines
+end
+
+local function dump_item(instance, resolved)
+    local item = resolved or instance
+    local lines = {}
+    table.insert(lines, string.format("─── {green}Item{/}: %s ─────────────────────────────",
+        tostring(item.short or item.id)))
+    table.insert(lines, string.format("  Instance: %s | Template: %s | Location: %s",
+        tostring(instance.id), tostring(instance.template or item.id),
+        tostring(instance.location or "(nowhere)")))
+    table.insert(lines, string.format("  Weight: %s | Value: %s | Slot: %s",
+        tostring(item.weight or 0), tostring(item.value or 0), tostring(item.slot or "-")))
+
+    if DAEMON.items and DAEMON.items.contents and instance.id then
+        local ok, contents = pcall(DAEMON.items.contents, instance.id)
+        if ok and type(contents) == "table" and #contents > 0 then
+            local names = {}
+            for i, c in ipairs(contents) do names[i] = tostring(c.id or c.template) end
+            table.insert(lines, "  Contains: " .. table.concat(names, ", "))
+        end
+    end
+
+    dump_traits(lines, item)
+    dump_effects(lines, item)
+
+    table.insert(lines, "  Object state:")
+    local ok, state = pcall(get_all_object_state, instance.id)
+    if ok and type(state) == "table" and next(state) then
+        local keys = {}
+        for k in pairs(state) do keys[#keys + 1] = k end
+        table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+        for _, k in ipairs(keys) do
+            table.insert(lines, string.format("    %s = %s", tostring(k), tostring(state[k])))
+        end
+    else
+        table.insert(lines, "    (none)")
+    end
+
+    -- The instance, not the resolved overlay: the resolved view is the template
+    -- with overrides merged in, and "what does this one actually override" is a
+    -- different question from "what is it like".
+    dump_raw(lines, instance)
+    return lines
+end
+
+local function dump_template(kind, t)
+    local lines = {}
+    table.insert(lines, string.format("─── {cyan}%s template{/}: %s ─────────────",
+        kind, tostring(t.id)))
+    table.insert(lines, "  Short: " .. tostring(t.short or "(none)"))
+    table.insert(lines, "  {yellow}Not spawned — this is the shared template, not an instance.{/}")
+    dump_raw(lines, t)
+    return lines
+end
+
 function M.execute(session_id, args_str, args)
     local player = get_player(session_id)
     if not player then return end
 
-    if not args_str or args_str == "" then
-        player:send("Usage: objdump <player_name> | <room_id>\r\n")
+    local room_id = DAEMON.world and DAEMON.world.get_character_room
+        and DAEMON.world.get_character_room(player.char_id)
+
+    local spec = (args_str or ""):gsub("^%s+", ""):gsub("%s+$", "")
+
+    -- No argument dumps where you are standing. That is what you wanted nine
+    -- times in ten, and reciting the usage line at somebody who typed the
+    -- command correctly is not help.
+    if spec == "" then
+        if not room_id then
+            local lines = { "Usage:" }
+            for _, u in ipairs(M.usage) do lines[#lines + 1] = "  " .. u end
+            player:send(table.concat(lines, "\r\n") .. "\r\n")
+            return
+        end
+        spec = room_id
+    end
+
+    -- `kind:rest` forces one branch, for when a creature and a room share a
+    -- word. Room ids are dotted and instance ids are uuids, so neither can be
+    -- mistaken for a prefix.
+    local forced = nil
+    local head, rest = spec:match("^(%a+):(.+)$")
+    if head and KINDS[head:lower()] then
+        forced, spec = head:lower(), rest
+    end
+
+    local kind, thing, extra = resolve(player, spec, forced, room_id)
+
+    if kind == "mob" then
+        player:send(table.concat(dump_mob(thing), "\r\n") .. "\r\n")
+        return
+    elseif kind == "item" then
+        player:send(table.concat(dump_item(thing, extra), "\r\n") .. "\r\n")
+        return
+    elseif kind == "mob_template" then
+        player:send(table.concat(dump_template("Creature", thing), "\r\n") .. "\r\n")
+        return
+    elseif kind == "item_template" then
+        player:send(table.concat(dump_template("Item", thing), "\r\n") .. "\r\n")
         return
     end
 
-    local target_player = nil
-    for _, sid in ipairs(all_sessions()) do
-        local s = get_session(sid)
-        if s and s.state == "playing" and s.character_id then
-            local p = DAEMON.character and DAEMON.character.get(s.character_id)
-            if p and p.name:lower() == args_str:lower() then
-                target_player = p
-                break
-            end
-        end
-    end
-
-    if target_player then
-        local p = target_player
+    if kind == "player" then
+        local p = thing
         local lines = {}
         table.insert(lines, string.format("─── {green}Player{/}: %s ─────────────────────────────", p.name))
         table.insert(lines, string.format("  Char ID: %s | Account: %s | Session: %s", tostring(p.char_id), tostring(p.account_id), tostring(p.session_id)))
         
-        local room_id = DAEMON.world and DAEMON.world.get_character_room(p.char_id) or "Unknown"
-        table.insert(lines, string.format("  Room: %s", room_id))
+        local where = DAEMON.world and DAEMON.world.get_character_room(p.char_id) or "Unknown"
+        table.insert(lines, string.format("  Room: %s", where))
         
         -- Through `:trait()` rather than `p.stats`. A derived trait stores
         -- nothing at all, so reading `stats.max_hp` reported 0 for every
@@ -128,12 +479,16 @@ function M.execute(session_id, args_str, args)
         table.insert(lines, "  Tags: " .. format_array(p.tags))
         table.insert(lines, "  Custom: " .. format_dict(p.custom))
 
+        dump_traits(lines, p)
+        dump_effects(lines, p)
+        dump_raw(lines, p)
+
         player:send(table.concat(lines, "\r\n") .. "\r\n")
         return
     end
 
-    local room = DAEMON.world and DAEMON.world.get_room(args_str)
-    if room then
+    if kind == "room" then
+        local room = thing
         local lines = {}
         table.insert(lines, string.format("─── {cyan}Room{/}: %s ─────────────", room.id))
         table.insert(lines, string.format("  Short: %s", room.short or "(none)"))
@@ -189,21 +544,57 @@ function M.execute(session_id, args_str, args)
         end
         table.insert(lines, "  Actions: " .. (#action_parts > 0 and table.concat(action_parts, ", ") or "(none)"))
         
+        -- Live creatures and loose items, which the room table does not hold:
+        -- both live in their daemon's location index, and a room dump that
+        -- omits them is why "there is nothing here" and `look` disagree.
+        local mob_parts = {}
+        if DAEMON.mobs and DAEMON.mobs.in_room then
+            local ok, mobs = pcall(DAEMON.mobs.in_room, room.id)
+            for _, mob in ipairs(ok and mobs or {}) do
+                mob_parts[#mob_parts + 1] = string.format("%s (%s)",
+                    tostring(mob.template_id), tostring(mob.id))
+            end
+        end
+        table.insert(lines, "  Creatures: " .. (#mob_parts > 0 and table.concat(mob_parts, ", ") or "(none)"))
+
+        local ground_parts = {}
+        if DAEMON.items and DAEMON.items.in_room then
+            local ok, items = pcall(DAEMON.items.in_room, room.id)
+            for _, inst in ipairs(ok and items or {}) do
+                ground_parts[#ground_parts + 1] = string.format("%s (%s)",
+                    tostring(inst.template), tostring(inst.id))
+            end
+        end
+        table.insert(lines, "  Ground items: " .. (#ground_parts > 0 and table.concat(ground_parts, ", ") or "(none)"))
+
         table.insert(lines, "  Object state:")
-        local state = get_all_object_state(room.id)
-        if state and next(state) then
-            for k, v in pairs(state) do
-                table.insert(lines, string.format("    %s = %s", tostring(k), tostring(v)))
+        local ok_state, state = pcall(get_all_object_state, room.id)
+        if ok_state and type(state) == "table" and next(state) then
+            local keys = {}
+            for k in pairs(state) do keys[#keys + 1] = k end
+            table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+            for _, k in ipairs(keys) do
+                table.insert(lines, string.format("    %s = %s", tostring(k), tostring(state[k])))
             end
         else
             table.insert(lines, "    (none)")
         end
-        
+
+        dump_raw(lines, room)
+
         player:send(table.concat(lines, "\r\n") .. "\r\n")
         return
     end
 
-    player:send("Player or room not found.\r\n")
+    -- Name what was searched. "Not found" on its own leaves you unable to tell
+    -- a typo from a thing that is genuinely not loaded, which is the whole
+    -- question an admin command exists to answer.
+    player:send(string.format(
+        "{red}Nothing called '%s' found.{/}\r\n" ..
+        "Searched: online players, rooms, live creatures, items you can reach, " ..
+        "and both template registries.\r\n" ..
+        "Try a `kind:` prefix to force one — %s",
+        spec, table.concat({ "player:", "room:", "mob:", "item:", "template:" }, " ")))
 end
 
 return M

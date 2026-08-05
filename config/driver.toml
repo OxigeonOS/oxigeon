@@ -37,7 +37,9 @@ port = 4000
 # FREEZE-THE-WORLD: hitting a breakpoint stops the entire Lua VM. Every player
 # is frozen until you continue — connections stay alive and input queues, but no
 # game logic runs. Repeating timers accumulate during the pause and fire as a
-# burst on resume. This is a development tool.
+# burst on resume. Game time does not pass: `os_time()` excludes the frozen
+# interval, so regeneration, cooldowns and effects are where you left them.
+# This is a development tool.
 #
 # While a client is attached the hook stays installed, which forces LuaJIT onto
 # the interpreter. Detach when you are done.

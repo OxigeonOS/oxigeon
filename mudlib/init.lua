@@ -193,6 +193,18 @@ function on_disconnect(session_id)
     if session and session.character_id then
         local char_id = session.character_id
 
+        -- The counterpart to `player.login`, emitted first so a listener sees
+        -- the character while they still exist — after `character.unload` there
+        -- is no Player left to ask anything about.
+        if DAEMON and DAEMON.event then
+            local ok, err = pcall(DAEMON.event.emit, "player.logout", {
+                char_id = char_id, session_id = session_id,
+            })
+            if not ok then
+                log("error", "a player.logout listener raised: " .. tostring(err))
+            end
+        end
+
         -- Remove from channel subscriber lists (in-memory only; saved list is preserved)
         if DAEMON and DAEMON.channel then
             local ok, err = pcall(DAEMON.channel.leave_all, char_id)

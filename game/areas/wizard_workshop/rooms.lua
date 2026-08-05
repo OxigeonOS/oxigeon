@@ -347,13 +347,20 @@ return {
 
         description = [[
 You stand in a circular foyer choked with decades of dust. A heavy oak door,
-banded with iron and etched with faded protective wards, is sealed tight behind
-you. The air is still, yet motes of dust dance as if caught in invisible currents
-of residual magic. Along the curved walls, tarnished coat hooks hold the
-moth-eaten remains of heavy velvet robes.]],
+banded with iron and etched with faded protective wards, stands ajar to the
+east — the wards on it went out a long time ago, and beyond it is the cold
+stone of the town undercroft. The air is still, yet motes of dust dance as if
+caught in invisible currents of residual magic. Along the curved walls,
+tarnished coat hooks hold the moth-eaten remains of heavy velvet robes.]],
 
         exits = {
             north = "wizard_workshop.laboratory",
+            -- The side door from town. Without it the workshop is a sealed
+            -- pocket: the start room is here, and a player could not walk to
+            -- any other area in the game. The workshop stays otherwise
+            -- untouched — it is the regression fixture the real-mudlib tests
+            -- lean on, and this adds an exit rather than changing a puzzle.
+            east = "thornhollow.undercroft",
         },
 
         items = {

@@ -4,6 +4,17 @@
 
 It provides the infrastructure — networking, protocol handling, sessions, databases — so you can focus on writing the game in Lua.
 
+> [!TIP]
+> **There is a second book.** `demo-world/` is a guided tour of the game this
+> driver ships with — five areas, walked room by room, with each one annotated
+> by the driver feature it exists to exercise. If you learn better from a worked
+> example than from a reference, start there.
+>
+> ```bash
+> cd demo-world && mdbook serve
+> ```
+
+
 ## Quick Start
 
 ```bash

@@ -36,9 +36,43 @@ return {
     -- ─── Derived ─────────────────────────────────────────────────────────────
     -- A gauge's maximum is an ordinary trait, which is what makes "+10% max
     -- health" expressible without any special case anywhere.
+
+    --- An authored maximum, for a creature that is not a level-1 player.
+    ---
+    --- `max_hp`'s formula starts at 50, so the weakest thing it can describe is
+    --- a 55-hit-point creature. That is a fine baseline for a character and a
+    --- poor one for a rat: every mob template in the game authored a `max_hp`
+    --- and every one of them was silently discarded, because a derived trait
+    --- stores nothing and `attach` clears any value found under one. A scrawny
+    --- rat came out at 90.
+    ---
+    --- Zero means "no override, use the curve".
+    ---
+    --- `max_hp` *depends* on it, which is the part worth reading twice: a
+    --- derived trait is absent unless everything it reads is present, and an
+    --- absent `max_hp` takes `hp` with it — a gauge whose ceiling is missing is
+    --- not the trait that was defined. So an entity needs this stored to have
+    --- hit points at all, exactly as it already needed `constitution` and
+    --- `level`. It is in the `character` set (the default), and seeding is what
+    --- puts it there: `lib/player.lua` seeds on every load, so a character
+    --- saved before this trait existed gets its 0 and keeps the curve, and
+    --- `mob_d.spawn` seeds every spawn.
+    ---
+    --- `always = true` would have removed that requirement, and would also have
+    --- put a hit-point knob on every sword, cloak and door in the game. The
+    --- presence rule is worth more than the convenience.
+    ---
+    --- It is an attribute rather than a constant, so "+20% health" on a boss is
+    --- an ordinary effect on an ordinary trait.
+    { id = "max_hp_flat", label = "Authored Max Health", kind = "attribute",
+      group = "derived", default = 0, min = 0, hidden = true },
+
     { id = "max_hp", label = "Max Health", kind = "derived", group = "derived",
-      depends = { "constitution", "level" }, min = 1, round = "floor",
+      depends = { "constitution", "level", "max_hp_flat" }, min = 1, round = "floor",
       formula = function(t)
+          -- An authored value wins outright. Adding to the curve instead would
+          -- put a floor of 50 under every creature, which is the bug.
+          if t.max_hp_flat > 0 then return t.max_hp_flat end
           return 50 + t.constitution * 5 + (t.level - 1) * 10
       end },
 

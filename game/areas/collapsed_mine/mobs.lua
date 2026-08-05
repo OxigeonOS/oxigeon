@@ -11,7 +11,7 @@ return {
         short       = "a pale mine crawler",
         description = "The same shape as the reed crawlers in the marsh and half "
                    .. "again the size, and this one has no colour at all.",
-        stats       = { hp = 55, max_hp = 55, strength = 14, dexterity = 12,
+        stats       = { hp = 55, max_hp_flat = 55, strength = 14, dexterity = 12,
                         constitution = 13, level = 7 },
         damage      = { min = 5, max = 11 },
         xp_award    = 90,
@@ -33,7 +33,7 @@ return {
         short       = "something under the shale",
         description = "You can see where it is by where the floor is not level. "
                    .. "That is all you can see of it.",
-        stats       = { hp = 70, max_hp = 70, strength = 16, dexterity = 15,
+        stats       = { hp = 70, max_hp_flat = 70, strength = 16, dexterity = 15,
                         constitution = 14, level = 9 },
         damage      = { min = 7, max = 13 },
         xp_award    = 130,
@@ -53,7 +53,7 @@ return {
                    .. "long-armed, working from the elbow, and much too "
                    .. "deliberate. It stops when you look at it and starts again "
                    .. "when you do not.",
-        stats       = { hp = 260, max_hp = 260, strength = 22, dexterity = 14,
+        stats       = { hp = 260, max_hp_flat = 260, strength = 22, dexterity = 14,
                         constitution = 20, intelligence = 12, wisdom = 14,
                         level = 15 },
         damage      = { min = 12, max = 22 },

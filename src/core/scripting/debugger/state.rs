@@ -228,6 +228,23 @@ pub struct DebugState {
     pub stopped: AtomicBool,
     /// A `pause` request from the client, consumed by the next line event.
     pub pause_req: AtomicBool,
+    /// Milliseconds the world has spent frozen at a breakpoint, cumulative.
+    ///
+    /// Freezing the VM does not freeze the clock, and the game's sense of time
+    /// is entirely `os_time()`: regeneration settles against it, cooldowns
+    /// expire against it, effects end against it. So a minute spent reading a
+    /// stack trace healed the monster you were fighting by twenty hit points,
+    /// silently — the loud sibling of the documented "repeating timers
+    /// accumulate and fire as a burst on resume".
+    ///
+    /// `os_time()` subtracts this, so game time excludes time the game was not
+    /// running. Milliseconds rather than seconds because stepping is many short
+    /// pauses, and a per-pause truncation to whole seconds would discard all of
+    /// them.
+    ///
+    /// On a server without `[servers.debug]` this is always zero, so nothing
+    /// about production timekeeping changes.
+    pub paused_ms: AtomicU64,
 
     // ── cold: locked only when something changes ─────────────────────────
     cfg: Mutex<TraceConfig>,
@@ -287,6 +304,7 @@ impl DebugState {
             clients: AtomicU64::new(0),
             stopped: AtomicBool::new(false),
             pause_req: AtomicBool::new(false),
+            paused_ms: AtomicU64::new(0),
             cfg: Mutex::new(TraceConfig::default()),
             breakpoints: Mutex::new(BreakpointTable::default()),
             evt_tx: Mutex::new(None),
@@ -413,6 +431,20 @@ impl DebugState {
         if let Some(tx) = self.evt_tx.lock_recover().as_ref() {
             let _ = tx.send(msg);
         }
+    }
+
+    /// Record that the world was frozen for `elapsed`. See [`paused_ms`].
+    ///
+    /// [`paused_ms`]: DebugState::paused_ms
+    pub fn add_paused(&self, elapsed: std::time::Duration) {
+        self.paused_ms
+            .fetch_add(elapsed.as_millis() as u64, Ordering::Relaxed);
+    }
+
+    /// Seconds the world has spent frozen, as a float, for subtracting from a
+    /// wall-clock reading to get game time.
+    pub fn paused_secs(&self) -> f64 {
+        self.paused_ms.load(Ordering::Relaxed) as f64 / 1000.0
     }
 
     /// Queue a request for the Lua thread. Fails if nothing is listening.

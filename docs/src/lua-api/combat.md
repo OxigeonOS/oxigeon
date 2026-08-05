@@ -40,7 +40,9 @@ return {
         name        = "rat",
         short       = "a grey rat",
         description = "A scrawny grey rat with matted fur and clever, wary eyes.",
-        stats       = { hp = 24, max_hp = 24, strength = 6, dexterity = 12, level = 1 },
+        -- `max_hp_flat`, not `max_hp`: see "Authored health" below.
+        stats       = { hp = 24, max_hp_flat = 24, strength = 6, dexterity = 12,
+                        constitution = 8, level = 1 },
         damage      = { min = 2, max = 5 },
         xp_award    = 12,
         spawn_room  = "wizard_workshop.pantry",
@@ -69,6 +71,49 @@ so it is safe to call on an area reset without the world filling up with rats.
 > **Mobs are never saved.** If the server restarts, the rat is a new rat. That
 > is the [durability rule](./state-cache.md) applied rather than an oversight,
 > and it is why nothing in `mob_d` touches the database.
+
+### Authored health — `max_hp_flat`, not `max_hp`
+
+A creature's maximum health goes in **`max_hp_flat`**. Writing `max_hp` does
+nothing at all, and used to do nothing silently.
+
+`max_hp` is [derived](./traits.md): `50 + constitution * 5 + (level - 1) * 10`.
+A derived trait stores nothing, and `attach` deletes any value it finds under
+one — a real migration, because `max_hp` used to be stored and a saved number
+would shadow the formula forever. So a template that said `max_hp = 24` had that
+value erased at spawn, and the rat came out at 90. Every mob in the game was
+between 1.1× and 5.8× the toughness its own file claimed.
+
+The numbers were not reachable by tuning either. The formula starts at 50, so
+the weakest creature the curve can describe has **55** hit points — a 24-point
+rat could not be expressed at all. The curve is shaped for a character, and a
+rat is not a level-1 player.
+
+```lua
+stats = { hp = 24, max_hp_flat = 24, constitution = 8, level = 1 }
+--> max_hp = 24, and the rat spawns at 24/24
+```
+
+Leave it out and the curve applies, which is what every player does:
+
+```lua
+stats = { hp = 40, constitution = 12, level = 3 }
+--> max_hp = 130, from the formula
+```
+
+`max_hp_flat` is an ordinary attribute, so a boss buff is an ordinary effect:
+
+```lua
+{ id = "swollen", modifiers = { max_hp_flat = 50 } }
+```
+
+> [!IMPORTANT]
+> Because `max_hp` *depends* on `max_hp_flat`, an entity needs it present to
+> have `max_hp` — and a gauge whose ceiling is absent is itself absent, so it
+> would have no `hp` either and `is_alive()` would say it is already dead.
+> `DAEMON.trait.seed(entity, "character")` is what puts it there. Both real
+> paths already do this (`lib/player.lua` on load, `mob_d.spawn` on spawn); a
+> hand-built combatant in a test needs to do it too.
 
 | Function | |
 |---|---|

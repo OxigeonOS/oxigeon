@@ -6,8 +6,8 @@ M.category = 'navigation'
 M.summary = 'Look at your surroundings or examine an item.'
 M.permission = nil
 
-local Object = require('lib.object')
-local Light  = require('lib.light')
+local Light   = require('lib.light')
+local Examine = require('cmds.examine')
 
 function M.execute(session_id, args_str, args)
     local player = get_player(session_id)
@@ -54,36 +54,14 @@ function M.execute(session_id, args_str, args)
         return
     end
 
-    -- look <keyword> — check room items (scenery)
-    local keyword = args[1]:lower()
-    local item_desc = room:get_item(keyword)
-    if item_desc then
-        -- Resolve lfun: item descriptions can be strings or functions
-        local resolved = Object.resolve(item_desc, room)
-        if resolved then
-            player:send(resolved)
-        else
-            player:send("You see nothing special.")
-        end
-        return
+    -- `look <target>` and `examine <target>` resolve through the same function,
+    -- so they cannot disagree about what is in front of you. They used to: this
+    -- command knew about scenery and exact player names only, which meant
+    -- `look mephit` failed on a creature named in the room description directly
+    -- above it, and `look sword` failed on a sword lying on the floor.
+    if not Examine.describe_target(player, args_str) then
+        player:send("You don't see that here.")
     end
-
-    -- look <player_name> — check players in the room
-    for _, cid in ipairs(room:get_characters()) do
-        local char_data = get_character(cid)
-        if char_data and char_data.name:lower() == keyword then
-            -- Try to get the Player object for a richer examine
-            local player_obj = DAEMON.character.get(cid)
-            if player_obj and player_obj.examine then
-                player:send(player_obj:examine())
-            else
-                player:send(char_data.name .. " is here.")
-            end
-            return
-        end
-    end
-
-    player:send("You don't see that here.")
 end
 
 return M

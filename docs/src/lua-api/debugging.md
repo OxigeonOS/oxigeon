@@ -17,6 +17,8 @@ They share a single Lua hook, because a `lua_State` has exactly one hook slot.
 | See every line executed | `trace lines` then `trace show` |
 | Stop on a line and inspect variables | VS Code + `[servers.debug]` |
 | Stop for one player only | A [conditional breakpoint](#conditional-breakpoints) |
+| Play and debug in one window | [`oxigeon-tui`](../tui.md) |
+| See what a *derived* trait actually resolves to | [`oxigeon-tui`](../tui.md), Inspect tab |
 
 ---
 
@@ -313,6 +315,16 @@ What that means in practice:
 - Connections stay alive and player input queues; nothing is dropped.
 - Output already queued still flushes.
 - **Repeating timers accumulate** during the pause and fire as a burst on resume.
+- **Game time does not pass.** `os_time()` excludes every interval the world
+  spent frozen, so regeneration, cooldowns and effect durations are where you
+  left them. Without that they ran on the wall clock while the VM sat blocked in
+  the hook: a rat beaten down to 5 hit points came back to 20 over a few steps —
+  1 hit point per 3 seconds of *reading a stack trace* — and combat looked
+  endless for no visible reason. The counter is only ever non-zero on a server
+  with the adapter enabled, so nothing about production timekeeping changes.
+  One consequence worth knowing: an expiry written *during* a debugging session
+  is stamped on the shifted clock, so after a restart it sits slightly in the
+  future. On a development server that is not worth correcting.
 - `auto_continue_secs` (default 300) resumes the VM if the editor stops
   responding, so a crashed VS Code cannot wedge the server permanently.
 

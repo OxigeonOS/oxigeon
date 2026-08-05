@@ -17,7 +17,7 @@ return {
                    .. "about the way it moves suggests that was not without cost.",
 
         stats = {
-            hp = 24, max_hp = 24,
+            hp = 24, max_hp_flat = 24,
             strength = 6, dexterity = 12, constitution = 8,
             intelligence = 2, wisdom = 4,
             level = 1,
@@ -46,7 +46,7 @@ return {
                    .. "sullen resentment of something that would rather be a cloud.",
 
         stats = {
-            hp = 40, max_hp = 40,
+            hp = 40, max_hp_flat = 40,
             strength = 10, dexterity = 9, constitution = 12,
             intelligence = 6, wisdom = 8,
             level = 3,

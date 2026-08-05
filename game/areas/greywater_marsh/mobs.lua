@@ -12,7 +12,7 @@ return {
         description = "Long, flat and the colour of the bottom, with a mouth "
                    .. "that opens further back than a mouth should. It is only "
                    .. "visible when it moves, and it does not often move.",
-        stats       = { hp = 45, max_hp = 45, strength = 13, dexterity = 14,
+        stats       = { hp = 45, max_hp_flat = 45, strength = 13, dexterity = 14,
                         constitution = 11, level = 5 },
         damage      = { min = 4, max = 9 },
         xp_award    = 60,
@@ -48,7 +48,7 @@ return {
         description = "Waist high, many-legged, and it walks on the reeds "
                    .. "rather than through them. It has no eyes anyone has "
                    .. "found.",
-        stats       = { hp = 30, max_hp = 30, strength = 10, dexterity = 16,
+        stats       = { hp = 30, max_hp_flat = 30, strength = 10, dexterity = 16,
                         constitution = 9, level = 3 },
         damage      = { min = 2, max = 6 },
         xp_award    = 30,
@@ -67,7 +67,7 @@ return {
         description = "A hand-sized light with nothing holding it up, the colour "
                    .. "of a candle seen through water. It keeps exactly the "
                    .. "distance it wants and no other.",
-        stats       = { hp = 80, max_hp = 80, strength = 8, dexterity = 20,
+        stats       = { hp = 80, max_hp_flat = 80, strength = 8, dexterity = 20,
                         constitution = 14, intelligence = 18, wisdom = 16,
                         level = 10 },
         damage      = { min = 8, max = 14 },

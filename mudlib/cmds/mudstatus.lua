@@ -93,7 +93,11 @@ function M.execute(session_id, args_str, args)
     
     local area_str = table.concat(area_names, ", ")
     if area_str ~= "" then
-        table.insert(lines, string.format(" Areas:       %d loaded (%s)", areas, area_str))
+        table.insert(lines, string.format(" Areas:       %d loaded", areas))
+        -- On its own line: four area names on the same line as the count blew
+        -- past the wrap width and came out ragged, which made the one column
+        -- somebody actually reads hard to scan.
+        table.insert(lines, string.format("              %s", area_str))
     else
         table.insert(lines, string.format(" Areas:       %d loaded", areas))
     end

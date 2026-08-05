@@ -219,6 +219,29 @@ function M.enter_game(session_id, account)
             send(session_id, "Type 'help' for a list of commands.\r\n")
         end
 
+        -- Announce the arrival. `player.login` is a documented event name that
+        -- nothing emitted, which is the same shape `room.entered` had: the
+        -- convention existed and the event did not, so a game daemon wanting to
+        -- do something once per login had nothing to listen to.
+        --
+        -- Last, and after the room has been shown: a listener that writes to
+        -- the player should appear below the room description rather than above
+        -- it, and one that raises must not have prevented them arriving.
+        if DAEMON and DAEMON.event then
+            local ok, err = pcall(DAEMON.event.emit, "player.login", {
+                char_id    = char.id,
+                session_id = session_id,
+                account_id = account.id,
+                name       = char.name,
+            })
+            if not ok then
+                log("error", "LOGIN: a player.login listener raised: " .. tostring(err))
+                if DAEMON.journal then
+                    pcall(DAEMON.journal.error, "player.login listener raised: " .. tostring(err))
+                end
+            end
+        end
+
         if DAEMON and DAEMON.prompt then
             DAEMON.prompt.render(session_id)
         else

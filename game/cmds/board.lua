@@ -40,11 +40,15 @@ local function show_list(player, rows, heading)
     end
 
     local lines = { "{cyan}" .. heading .. "{/} (" .. #rows .. ")", "" }
-    lines[#lines + 1] = string.format("  {yellow}%-14s %-8s %-30s %-12s %5s{/}",
+    -- Ids are uuids, so a 14-wide column blew every other column off the
+    -- line. Shown as the first eight characters, which is enough to pick one
+    -- out and short enough to keep the table a table.
+    lines[#lines + 1] = string.format("  {yellow}%-8s %-6s %-32s %-12s %8s{/}",
         "id", "cat", "subject", "by", "when")
     for _, row in ipairs(rows) do
-        lines[#lines + 1] = string.format("  %-14s %-8s %-30s %-12s %5s",
-            row.id, row.category or "?", (row.subject or ""):sub(1, 30),
+        lines[#lines + 1] = string.format("  %-8s %-6s %-32s %-12s %8s",
+            tostring(row.id):sub(1, 8), row.category or "?",
+            (row.subject or ""):sub(1, 32),
             (row.author or "?"):sub(1, 12), ago(row.posted))
     end
     lines[#lines + 1] = ""
@@ -88,7 +92,12 @@ function M.execute(session_id, args_str, args)
 
     if verb == "read" or verb == "r" then
         if not args[2] then player:send("{cyan}Read which notice?{/}") return end
-        show_one(player, args[2])
+        -- The listing shows eight characters of a uuid, so this takes eight or
+        -- thirty-six. Asking somebody to retype the whole thing is asking them
+        -- not to read the notice.
+        local id, why = Board.resolve_id(args[2])
+        if not id then player:send("{red}" .. (why or "No such notice.") .. "{/}") return end
+        show_one(player, id)
         return
     end
 
@@ -138,7 +147,9 @@ function M.execute(session_id, args_str, args)
         if not args[2] then player:send("{cyan}Remove which notice?{/}") return end
         local is_staff = type(has_permission) == "function"
             and has_permission(session_id, "board.moderate")
-        local ok, why = Board.remove(player, args[2], is_staff)
+        local id, rwhy = Board.resolve_id(args[2])
+        if not id then player:send("{red}" .. (rwhy or "No such notice.") .. "{/}") return end
+        local ok, why = Board.remove(player, id, is_staff)
         player:send(ok and "{green}Taken down.{/}"
             or ("{red}" .. (why or "It would not come down.") .. "{/}"))
         return
@@ -146,11 +157,13 @@ function M.execute(session_id, args_str, args)
 
     if verb == "edit" then
         local rest = args_str:gsub("^%s*edit%s+", "")
-        local id, remainder = rest:match("^(%S+)%s+(.+)$")
-        if not id then
+        local given, remainder = rest:match("^(%S+)%s+(.+)$")
+        if not given then
             player:send("{cyan}Usage: board edit <id> <subject> | <body>{/}")
             return
         end
+        local id, ewhy = Board.resolve_id(given)
+        if not id then player:send("{red}" .. (ewhy or "No such notice.") .. "{/}") return end
         local subject, body = remainder:match("^(.-)%s*|%s*(.+)$")
         local ok, why = Board.edit(player, id, subject or remainder, body)
         player:send(ok and "{green}Changed.{/}"
