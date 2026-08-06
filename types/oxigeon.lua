@@ -240,40 +240,73 @@ function journal_read(limit, level) end
 function audit_read(limit) end
 
 -- ═══════════════════════════════════════════════════════════════════════════════
--- File I/O — Sandboxed file operations within mudlib/
+-- File I/O — Sandboxed file operations within mudlib/ and game/
+--
+-- Paths are jailed to two roots. A `game:` or `mudlib:` prefix names one;
+-- unprefixed, a READ searches game-then-mudlib (as `require` does) and a WRITE
+-- stays in the mudlib. A file a daemon owns should name its root:
+--
+--     write_file("game:areas/crypt/rooms.lua", source)
+--     write_file("mudlib:logs/audit_watch.json", json)
+--
+-- These efuns RETURN failure; they do not raise it. `pcall(write_file, ...)`
+-- yields `ok = true, err = false` — the call succeeded, and the refusal is in a
+-- return value the pcall discarded. Call them directly.
+--
+-- See docs/src/lua-api/file-access.md.
 -- ═══════════════════════════════════════════════════════════════════════════════
 
---- Read a file's contents. Path is relative to the mudlib root.
----@param path string
----@return string|nil contents
----@return string|nil error
+--- Read a file's contents.
+---@param path string  `game:`/`mudlib:` prefixed, or unprefixed (game first)
+---@return string|nil contents  nil if missing, jailed out, or refused
 function read_file(path) end
 
---- Write content to a file (creates or overwrites). Path is jailed to mudlib.
+--- Write content to a file (creates or overwrites, making parent directories).
 ---@param path string
 ---@param content string
 ---@return boolean success
----@return string|nil error
+---@return string|nil error  names the permission that would allow it, when refused
 function write_file(path, content) end
 
---- Append content to a file (creates if missing). Path is jailed to mudlib.
+--- Append content to a file (creates if missing).
 ---@param path string
 ---@param content string
 ---@return boolean success
 ---@return string|nil error
 function append_file(path, content) end
 
---- Check if a file exists. Path is relative to the mudlib root.
+--- Check if a file exists in either root. Agrees with `read_file` by construction.
 ---@param path string
 ---@return boolean
 function file_exists(path) end
 
---- List files in a directory. Returns basenames without extensions.
----@param path string  Directory path relative to mudlib root
----@return string[]    Array of file/directory names
+--- Which root a read of this path would land in.
+---
+--- The only way to ask *which* file you got: without it, two files with the same
+--- relative path in the two layers are indistinguishable.
+---@param path string
+---@return "game"|"mudlib"|nil  nil if it exists in neither
+function file_root(path) end
+
+--- The permission a directory rule demands here, or nil if unrestricted.
+---
+--- Answers about the RULE, not about you — combine with `has_permission`.
+--- Ungated: `permissions.toml` is not a secret, and probing by attempting the
+--- operation conflates "denied" with "does not exist".
+---@param path string  a virtual path, e.g. "/mudlib/admin"
+---@param op "read"|"write"
+---@return string|nil permission
+function dir_permission(path, op) end
+
+--- List a directory's entries.
+---
+--- Unprefixed, both roots are merged (game first, deduplicated by name), which
+--- is what command and area discovery want. Prefixed, exactly one root.
+---@param path string
+---@return { name: string, is_dir: boolean, size: integer, root: string }[]|nil
 function list_dir(path) end
 
---- Delete a file. Path is jailed to mudlib.
+--- Delete a file. Resolved like a READ — to whichever root holds it.
 ---@param path string
 ---@return boolean success
 ---@return string|nil error
@@ -576,9 +609,14 @@ function get_permissions(role_name) end
 function reload(module_path) end
 
 --- Compile-check a Lua file without executing it.
----@param path string  Path relative to mudlib root
+---
+--- Jailed exactly as `read_file` is, so a file you can read is a file you can
+--- compile-check. It used to have a jail of its own that knew only the mudlib
+--- and refused any path containing `..`, so `verify` and `read_file` disagreed
+--- about which paths existed and no game-layer file could be checked at all.
+---@param path string  `game:`/`mudlib:` prefixed, or unprefixed (game first)
 ---@return boolean ok
----@return string|nil error
+---@return string|nil error  positions refer to the virtual path
 function verify_file(path) end
 
 -- ═══════════════════════════════════════════════════════════════════════════════

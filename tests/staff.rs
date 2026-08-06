@@ -53,23 +53,37 @@ fn a_denial_is_audited() {
     assert_eq!(recent, "true", "the audit trail should be readable back");
 }
 
-/// The permission rule for `/areas` is live rather than commented out, so the
-/// builder role is a boundary rather than a label.
+/// The repository's own `permissions.toml`, not the harness default.
 ///
-/// Booted with the **repository's own** `permissions.toml` rather than the
-/// harness default. That matters: the default has no rules at all, so a test
-/// against it would pass whether the rule were commented out or not — which is
-/// precisely the shape of bug this file exists to catch.
-#[test]
-fn the_areas_directory_is_permission_gated() {
-    let permissions = oxigeon::config::PermissionConfig::load_from_file(
+/// That distinction is the point of this file: the default has no rules at all,
+/// so a test against it would pass whether a rule were present or commented out
+/// — precisely the shape of bug these assertions exist to catch.
+fn shipped_permissions() -> oxigeon::config::PermissionConfig {
+    oxigeon::config::PermissionConfig::load_from_file(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("config/permissions.toml")
             .as_path(),
+    )
+}
+
+/// The permission rule for the area tree is live rather than commented out, so
+/// the builder role is a boundary rather than a label.
+#[test]
+fn the_areas_directory_is_permission_gated() {
+    let permissions = shipped_permissions();
+
+    // Every rule names its root. One that does not is dropped — it would be
+    // ambiguous about which of the two trees it guards — so a config that
+    // regressed to `/areas` would leave the game tree world-writable while
+    // still *looking* protected.
+    assert!(
+        permissions.invalid_directory_keys.is_empty(),
+        "directory rules naming no root are not in effect: {:?}",
+        permissions.invalid_directory_keys
     );
     assert!(
-        permissions.dir_permission("/areas", "write").is_some(),
-        "the /areas rule is commented out again — the builder role is a label"
+        permissions.dir_permission("/game/areas", "write").is_some(),
+        "the /game/areas rule is commented out again — the builder role is a label"
     );
 
     let mut vm = RealVm::boot_real_mudlib_with_probe_opts(common::TestCtx {
@@ -78,32 +92,41 @@ fn the_areas_directory_is_permission_gated() {
     });
 
     // The probe session is not playing, so it holds nothing and is not the
-    // superuser — which is exactly the case the rule is for.
+    // superuser — which is exactly the case the rule is for. Named with an
+    // explicit root, because that is how OLC writes and therefore the path that
+    // has to be gated.
     assert_eq!(
-        vm.eval("return tostring(write_file('areas/probe_should_fail.lua', 'x'))").unwrap(),
+        vm.eval("return tostring(write_file('game:areas/probe_should_fail.lua', 'x'))")
+            .unwrap(),
         "false",
-        "/areas is world-writable — the rule in permissions.toml is a no-op"
+        "/game/areas is world-writable — the rule in permissions.toml is a no-op"
+    );
+
+    // The refusal says which permission would have allowed it. "Permission
+    // denied" alone is not something a builder can act on.
+    let why = vm
+        .eval("local ok, err = write_file('game:areas/probe_should_fail.lua', 'x') \
+               return tostring(err)")
+        .unwrap();
+    assert!(
+        why.contains("dir.write.game.areas"),
+        "the refusal should name the permission that would allow it: {why}"
     );
 
     // The write was refused, so nothing was created — a test that leaves a file
     // in the repository it is testing is a test that passes on its own litter.
-    assert!(
-        !std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("mudlib/areas/probe_should_fail.lua")
-            .exists(),
-        "the refused write reached disk anyway"
-    );
+    for stray in ["game/areas/probe_should_fail.lua", "mudlib/areas/probe_should_fail.lua"] {
+        assert!(
+            !std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(stray).exists(),
+            "the refused write reached disk anyway: {stray}"
+        );
+    }
 
     // Reading is the other half of the rule, and it is checked against the
     // configuration rather than against a directory listing: the rule names
     // `write` and says nothing about `read`, which is the whole design.
-    let permissions = oxigeon::config::PermissionConfig::load_from_file(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("config/permissions.toml")
-            .as_path(),
-    );
     assert!(
-        permissions.dir_permission("/areas", "read").is_none(),
+        shipped_permissions().dir_permission("/game/areas", "read").is_none(),
         "builders write areas; everyone reads them"
     );
 

@@ -3,7 +3,7 @@ M.name = 'tasks'
 M.aliases = {'@tasks'}
 M.category = 'admin'
 M.summary = 'Manage background tasks and tickers.'
-M.permission = 'admin'
+M.permission = "cmd.tasks"
 
 local function format_ago(t)
     if not t or t == 0 then return "never" end

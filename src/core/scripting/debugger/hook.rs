@@ -66,6 +66,15 @@ pub struct HookLocal {
     /// always share one — this keeps normalization off the hot path.
     last_src: Option<(String, Option<super::paths::NormPath>)>,
     step: StepState,
+    /// The stop id `park_and_yield` just allocated, for the engine to pair with
+    /// the coroutine it gets back. Taken, not read: it belongs to exactly one
+    /// suspension.
+    parked_id: Option<super::state::StopId>,
+    /// Logpoint lines emitted in the current dispatch, against
+    /// [`MAX_LOGPOINTS_PER_DISPATCH`]. Per dispatch rather than per second, so
+    /// the bound is on the thing a client actually experiences: one command
+    /// producing an unreadable wall of console output.
+    logpoints: u32,
     /// The request channel, claimed from `DebugState` at startup.
     vm_rx: Option<std::sync::mpsc::Receiver<VmRequest>>,
 
@@ -109,6 +118,8 @@ impl HookLocal {
             hits: HashMap::new(),
             last_src: None,
             step: StepState::None,
+            parked_id: None,
+            logpoints: 0,
             vm_rx: None,
             instr_used: 0,
         }
@@ -164,6 +175,7 @@ impl HookLocal {
         self.depth = 0;
         self.base_depth = None;
         self.max_depth = 0;
+        self.logpoints = 0;
     }
 }
 
@@ -178,7 +190,10 @@ impl Default for HookLocal {
 /// Bounded so a runaway recursion cannot make the hook itself pathological.
 fn stack_depth(lua: &Lua) -> u16 {
     let mut n = 0u16;
-    while n < 256 && lua.inspect_stack(n as usize).is_some() {
+    // mlua 0.11 hands the frame to a callback rather than returning it, so the
+    // borrow cannot outlive the frame it describes. Nothing is needed from it
+    // here — only whether the level exists.
+    while n < 256 && lua.inspect_stack(n as usize, |_| ()).is_some() {
         n += 1;
     }
     n
@@ -196,30 +211,47 @@ fn step_satisfied(lua: &Lua, step: StepState) -> bool {
     }
 }
 
-/// Whether the current line should stop the VM.
+/// What a breakpoint on the current line wants to happen.
+#[derive(Debug, PartialEq)]
+enum BpOutcome {
+    /// No breakpoint here, or its gates said no.
+    Pass,
+    Stop,
+    /// A logpoint: report this and keep running.
+    Log(String),
+}
+
+/// What the breakpoint on the current line, if any, wants to happen.
 ///
 /// Resolving the chunk name is the expensive part, so this bails on the cheap
 /// checks first. Conditions are only compiled and run once a line has actually
 /// matched, which keeps them off the hot path entirely.
-fn at_breakpoint(lua: &Lua, st: &SharedDebugState, hl: &mut HookLocal, dbg: &LuaDebug) -> bool {
+fn at_breakpoint(
+    lua: &Lua,
+    st: &SharedDebugState,
+    hl: &mut HookLocal,
+    dbg: &LuaDebug,
+) -> BpOutcome {
     if hl.bps.is_empty() {
-        return false;
+        return BpOutcome::Pass;
     }
     let source = dbg.source();
     if source.what == "C" {
-        return false;
+        return BpOutcome::Pass;
     }
-    let line = dbg.curr_line();
-    if line <= 0 {
-        return false;
-    }
-    let Some(chunk) = source.source.as_deref() else { return false };
-    let Some(key) = hl.key_for(chunk) else { return false };
+    // mlua 0.11 returns `Option<usize>`: `None` is "no line information",
+    // which is the same answer as the old `<= 0` and means no breakpoint can
+    // apply here.
+    let Some(line) = dbg.current_line().filter(|l| *l > 0) else {
+        return BpOutcome::Pass;
+    };
+    let Some(chunk) = source.source.as_deref() else { return BpOutcome::Pass };
+    let Some(key) = hl.key_for(chunk) else { return BpOutcome::Pass };
     let Some(spec) = hl.bps.get(&key).and_then(|m| m.get(&(line as u32))).cloned() else {
-        return false;
+        return BpOutcome::Pass;
     };
     if spec.is_plain() {
-        return true;
+        return BpOutcome::Stop;
     }
 
     // `hitCondition` counts *reached* lines, not stops, so it composes with a
@@ -229,29 +261,104 @@ fn at_breakpoint(lua: &Lua, st: &SharedDebugState, hl: &mut HookLocal, dbg: &Lua
     let hits = *counter;
     if let Some(needed) = spec.hit_condition {
         if hits < needed {
-            return false;
+            return BpOutcome::Pass;
         }
     }
 
+    // A logpoint passes the same gates and then reports instead of stopping.
+    let fire = |lua: &Lua| match spec.log_message.as_deref() {
+        Some(msg) => BpOutcome::Log(render_log_message(lua, msg)),
+        None => BpOutcome::Stop,
+    };
+
     match spec.condition.as_deref() {
-        None => true,
+        None => fire(lua),
         Some(expr) => match super::introspect::eval_condition(lua, 0, expr) {
-            Condition::Met => true,
-            Condition::NotMet => false,
+            Condition::Met => fire(lua),
+            Condition::NotMet => BpOutcome::Pass,
             // Stop and say why. Never stopping would be indistinguishable from
             // a broken breakpoint; always stopping silently is just as opaque.
             Condition::Failed(err) => {
-                st.emit(DebugEventMsg::Output(format!(
+                st.emit(DebugEventMsg::problem(format!(
                     "Breakpoint condition failed at {}:{} — {}\r\n  condition: {}\r\n",
                     super::paths::short(chunk),
                     line,
                     err,
                     expr
                 )));
-                true
+                fire(lua)
             }
         },
     }
+}
+
+/// The stop id of the suspension that just happened, if one did.
+pub fn take_parked_id(hl: &Rc<RefCell<HookLocal>>) -> Option<super::state::StopId> {
+    hl.try_borrow_mut().ok().and_then(|mut hl| hl.parked_id.take())
+}
+
+/// Logpoint lines one dispatch may emit before the rest are counted instead.
+///
+/// A logpoint on a hot line is easy to write by accident — one inside a loop is
+/// thousands of console events for a single command, which drowns the client and
+/// the thing you were looking for with it. Same bargain as `compute_log`'s
+/// `MAX_LOG_LINES`: report a bounded number, then say how many were dropped.
+const MAX_LOGPOINTS_PER_DISPATCH: u32 = 200;
+
+/// Send a logpoint's line, or count it against the cap.
+fn emit_logpoint(st: &SharedDebugState, hl: &mut HookLocal, text: String) {
+    hl.logpoints = hl.logpoints.saturating_add(1);
+    match hl.logpoints.cmp(&MAX_LOGPOINTS_PER_DISPATCH) {
+        std::cmp::Ordering::Less => st.emit(DebugEventMsg::output(text)),
+        // The one that hits the cap says so, so the silence afterwards is
+        // explained rather than looking like the logpoint stopped working.
+        // Marked as a problem, because losing lines is one.
+        std::cmp::Ordering::Equal => st.emit(DebugEventMsg::problem(format!(
+            "{text}\r\n[logpoint limit of {MAX_LOGPOINTS_PER_DISPATCH} reached for this \
+             dispatch; further lines suppressed]"
+        ))),
+        std::cmp::Ordering::Greater => {}
+    }
+}
+
+/// Substitute every `{expr}` in a logpoint message with what it evaluates to in
+/// the current frame.
+///
+/// Braces are the DAP's own syntax, so a message written for VS Code works here
+/// unchanged. An expression that fails renders as `expr=<error>` in place rather
+/// than failing the whole line: a logpoint that quietly stopped reporting
+/// because one field went nil would be worse than useless on the line it is
+/// watching.
+fn render_log_message(lua: &Lua, template: &str) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('}') else {
+            // An unmatched brace is a literal, not an error.
+            out.push('{');
+            rest = after;
+            continue;
+        };
+        let expr = after[..close].trim();
+        if expr.is_empty() {
+            out.push_str("{}");
+        } else {
+            match super::introspect::evaluate(lua, 0, expr) {
+                Ok(v) => out.push_str(&v.value),
+                Err(e) => {
+                    out.push_str(expr);
+                    out.push_str("=<");
+                    out.push_str(&e);
+                    out.push('>');
+                }
+            }
+        }
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Build a DAP stack trace by walking the live VM stack.
@@ -261,34 +368,150 @@ fn at_breakpoint(lua: &Lua, st: &SharedDebugState, hl: &mut HookLocal, dbg: &Lua
 fn build_stack(lua: &Lua, levels: usize) -> Vec<Frame> {
     let mut frames = Vec::new();
     for level in 0..levels.min(256) {
-        let Some(d) = lua.inspect_stack(level) else { break };
-        let source = d.source();
-        let is_c = source.what == "C";
-        let chunk = source.source.as_deref().unwrap_or("").to_string();
-        // A function invoked through `pcall` — which is how the mudlib calls
-        // every command (`commands.lua:205`) — has no name the VM can report,
-        // so fall back to where it was defined rather than a bare "?".
-        let name = d.names().name.map(|n| n.to_string()).unwrap_or_else(|| {
-            if source.what == "main" {
-                "main chunk".to_string()
-            } else if let Some(def) = source.line_defined {
-                format!("{}:{}", super::paths::short(&chunk), def)
-            } else {
-                "?".to_string()
+        // The frame is only valid inside the callback (mlua 0.11), so build the
+        // owned `Frame` in there and hand it back out.
+        let frame = lua.inspect_stack(level, |d| {
+            let source = d.source();
+            let is_c = source.what == "C";
+            let chunk = source.source.as_deref().unwrap_or("").to_string();
+            // A function invoked through `pcall` — which is how the mudlib calls
+            // every command (`commands.lua:205`) — has no name the VM can report,
+            // so fall back to where it was defined rather than a bare "?".
+            let name = d.names().name.map(|n| n.to_string()).unwrap_or_else(|| {
+                if source.what == "main" {
+                    "main chunk".to_string()
+                } else if let Some(def) = source.line_defined {
+                    format!("{}:{}", super::paths::short(&chunk), def)
+                } else {
+                    "?".to_string()
+                }
+            });
+
+            Frame {
+                id: level as i64,
+                name,
+                path: if is_c { None } else { super::paths::display_path(&chunk) },
+                line: d.current_line().unwrap_or(0) as u32,
             }
         });
 
-        frames.push(Frame {
-            id: level as i64,
-            name,
-            path: if is_c { None } else { super::paths::display_path(&chunk) },
-            line: d.curr_line().max(0) as u32,
-        });
+        match frame {
+            Some(f) => frames.push(f),
+            None => break,
+        }
     }
     frames
 }
 
+/// Borrow the DAP request channel off the Lua thread's hook state.
+///
+/// Taken rather than borrowed in place: the caller services requests that call
+/// back into the hook state, and holding a `RefCell` borrow across that would
+/// panic. Put it back with [`put_channel`].
+#[cfg(not(feature = "luajit"))]
+pub fn take_channel(
+    hl: &Rc<RefCell<HookLocal>>,
+) -> Option<std::sync::mpsc::Receiver<VmRequest>> {
+    hl.try_borrow_mut().ok()?.vm_rx.take()
+}
+
+#[cfg(not(feature = "luajit"))]
+pub fn put_channel(hl: &Rc<RefCell<HookLocal>>, rx: std::sync::mpsc::Receiver<VmRequest>) {
+    if let Ok(mut h) = hl.try_borrow_mut() {
+        h.vm_rx = Some(rx);
+    }
+}
+
+/// Arm the step a resume asked for, against the depth the stop recorded.
+#[cfg(not(feature = "luajit"))]
+pub fn arm_step(hl: &Rc<RefCell<HookLocal>>, kind: ResumeKind, depth: u16) {
+    if let Ok(mut h) = hl.try_borrow_mut() {
+        h.step = match kind {
+            ResumeKind::Continue => StepState::None,
+            ResumeKind::StepIn => StepState::In,
+            ResumeKind::Next => StepState::Over(depth),
+            ResumeKind::StepOut => StepState::Out(depth),
+        };
+    }
+}
+
+/// Suspend *this dispatch* and let the rest of the game carry on.
+///
+/// The Lua 5.3+ path. Returning `VmState::Yield` from a hook suspends the
+/// coroutine the dispatch is running on; `engine.rs` parks it and goes back to
+/// serving other players, so a breakpoint costs one player their turn instead
+/// of costing everyone the server.
+///
+/// The frames are captured here, before yielding, because this is the last
+/// moment they are the *current* stack. Everything the client asks for
+/// afterwards — scopes, variables, evaluate — is answered from that capture on
+/// whatever thread happens to be running by then. That works because the
+/// evaluator was already snapshot-based: `frame_env` has always built an eager
+/// copy rather than a live proxy, for its own reasons.
+#[cfg(not(feature = "luajit"))]
+fn park_and_yield(lua: &Lua, st: &SharedDebugState, hl: &mut HookLocal, reason: StopReason) {
+    // Frames first: `build_stack` walks the live stack and must run here.
+    let frames = build_stack(lua, 64);
+    let capture = super::introspect::capture(lua, 64);
+
+    let session = super::current_dispatch_session().unwrap_or_default();
+    let id = st.next_stop_id();
+    st.park(
+        id,
+        super::state::ParkedStop {
+            session: session.clone(),
+            what: super::current_dispatch_label(),
+            reason,
+            frames,
+            capture,
+            depth: stack_depth(lua),
+            since: Instant::now(),
+        },
+    );
+    hl.parked_id = Some(id);
+
+    // Clear any pending step so the resume decides afresh; the engine sets the
+    // new one when the client says which kind of resume it wants.
+    hl.step = StepState::None;
+
+    // `stopped` is deliberately *not* set: the world is not stopped, this one
+    // dispatch is. Anything asking "is the game frozen" must keep getting the
+    // right answer while an admin debugs a server people are playing on.
+    st.emit(DebugEventMsg::Stopped { stop: id, reason, world: false });
+}
+
+/// Whether the running Lua code can actually be suspended right now.
+///
+/// "Is this a coroutine" is *not* the question, and answering that one instead
+/// is the bug this exists to avoid. A breakpoint inside a `gsub` replacement
+/// function, a `table.sort` comparator or an `__index` metamethod is on the
+/// dispatch coroutine and still cannot yield, because a C frame sits between it
+/// and the resume. `lua_isyieldable` is the complete answer: it is false on the
+/// main thread *and* across any such frame.
+///
+/// Getting it wrong is quiet rather than loud, which is why it is worth an
+/// `unsafe` call. mlua ignores a `VmState::Yield` it cannot honour — see
+/// `process_status` in its `state/raw.rs`; execution simply continues — so the
+/// stop would leave `DebugState::parked` describing a suspension that never
+/// happened and `stopped` true for the rest of the process, with every later
+/// debug request refused on those grounds.
+#[cfg(not(feature = "luajit"))]
+fn can_yield_here(lua: &Lua) -> bool {
+    // `lua_topointer` of a thread value is its `lua_State *`, and inside a hook
+    // callback `current_thread` is whichever thread ran the hook.
+    let state = lua.current_thread().to_pointer() as *mut mlua::lua_State;
+    // SAFETY: `state` is the running thread, alive for the duration of this
+    // callback, and `lua_isyieldable` only reads a counter on it.
+    unsafe { mlua::ffi::lua_isyieldable(state) != 0 }
+}
+
 /// Block the Lua thread, and with it the whole game, until the client resumes.
+///
+/// Always the LuaJIT path — `VmState::Yield` raises there, so there is nowhere
+/// to suspend to and blocking is the only way to hold execution. On the
+/// yielding runtimes it is the fallback for code that is *not* on a coroutine:
+/// timers, connects, GMCP, hot reloads. Yielding from a hook on the main thread
+/// raises, so the choice there is block or do not stop at all.
 ///
 /// Every VM-touching DAP request is serviced from right here, because this
 /// thread is the only one that may touch the VM and it is not going anywhere
@@ -303,8 +526,13 @@ fn enter_pause(lua: &Lua, st: &SharedDebugState, hl: &mut HookLocal, reason: Sto
         return;
     };
 
+    // The world really is frozen here, which is what `stopped` now means.
     st.stopped.store(true, Ordering::Release);
-    st.emit(DebugEventMsg::Stopped(reason));
+    st.emit(DebugEventMsg::Stopped {
+        stop: super::state::WORLD_STOP,
+        reason,
+        world: true,
+    });
 
     // Game time does not pass while the world is frozen. Everything the mudlib
     // knows about time is `os_time()` — regeneration settles against it,
@@ -327,19 +555,21 @@ fn enter_pause(lua: &Lua, st: &SharedDebugState, hl: &mut HookLocal, reason: Sto
             break;
         }
         match rx.recv_timeout(remaining) {
-            Ok(VmRequest::StackTrace { levels, reply }) => {
+            // The stop id is ignored on this path: the world is frozen, so
+            // there is exactly one stop and it is this one.
+            Ok(VmRequest::StackTrace { levels, reply, .. }) => {
                 let _ = reply.send(build_stack(lua, levels));
             }
-            Ok(VmRequest::Scopes { frame, reply }) => {
+            Ok(VmRequest::Scopes { frame, reply, .. }) => {
                 let _ = reply.send(super::introspect::scopes(lua, frame));
             }
             Ok(VmRequest::Variables { var_ref, reply }) => {
                 let _ = reply.send(super::introspect::variables(lua, var_ref));
             }
-            Ok(VmRequest::Evaluate { frame, expr, reply }) => {
+            Ok(VmRequest::Evaluate { frame, expr, reply, .. }) => {
                 let _ = reply.send(super::introspect::evaluate(lua, frame, &expr));
             }
-            Ok(VmRequest::Resume(kind)) => {
+            Ok(VmRequest::Resume { kind, .. }) => {
                 next_step = match kind {
                     ResumeKind::Continue => StepState::None,
                     ResumeKind::StepIn => StepState::In,
@@ -368,13 +598,18 @@ fn enter_pause(lua: &Lua, st: &SharedDebugState, hl: &mut HookLocal, reason: Sto
     hl.step = next_step;
     hl.vm_rx = Some(rx);
     st.stopped.store(false, Ordering::Release);
-    st.emit(DebugEventMsg::Continued);
+    st.emit(DebugEventMsg::Continued {
+        stop: super::state::WORLD_STOP,
+        world: true,
+    });
 }
 
 /// The hook callback. Runs on the Lua thread for every call, return, and line.
 pub fn on_event(
     lua: &Lua,
-    dbg: LuaDebug,
+    // Borrowed, not owned: mlua 0.11 lends the frame for the duration of the
+    // callback rather than handing it over.
+    dbg: &LuaDebug,
     st: &SharedDebugState,
     hl: &Rc<RefCell<HookLocal>>,
 ) -> LuaResult<VmState> {
@@ -448,27 +683,42 @@ pub fn on_event(
     };
     hl.refresh(st);
 
-    let kind = match event {
-        DebugEvent::Call => {
-            hl.calls = hl.calls.saturating_add(1);
-            // One stack walk per call — calls are far rarer than lines, and this
-            // is the only way to get a depth that survives tail calls.
-            let abs = stack_depth(lua);
-            let base = *hl.base_depth.get_or_insert(abs.saturating_sub(1));
-            hl.depth = abs.saturating_sub(base);
-            hl.max_depth = hl.max_depth.max(hl.depth);
-            TraceKind::Call
-        }
-        // Lua 5.1 reports a tail-call return as TailCall; treat it as a return.
-        DebugEvent::Ret | DebugEvent::TailCall => {
-            hl.depth = hl.depth.saturating_sub(1);
-            TraceKind::Ret
-        }
-        DebugEvent::Line => {
-            hl.lines = hl.lines.saturating_add(1);
-            TraceKind::Line
-        }
-        _ => return Ok(VmState::Continue),
+    // `TailCall` means opposite things on the two runtimes, and getting it
+    // wrong is silent: a tail-recursive function reports either one call or
+    // hundreds of unmatched returns.
+    //
+    //   5.1 / LuaJIT  LUA_HOOKTAILRET — the frame is *leaving*
+    //   5.4+          LUA_HOOKTAILCALL — the frame is being *entered*
+    //
+    // Depth is measured from the real VM stack either way, so only the counter
+    // and the trace glyph depend on this.
+    #[cfg(feature = "luajit")]
+    let tail_is_a_call = false;
+    #[cfg(not(feature = "luajit"))]
+    let tail_is_a_call = true;
+
+    let is_call = matches!(event, DebugEvent::Call)
+        || (tail_is_a_call && matches!(event, DebugEvent::TailCall));
+    let is_ret = matches!(event, DebugEvent::Ret)
+        || (!tail_is_a_call && matches!(event, DebugEvent::TailCall));
+
+    let kind = if is_call {
+        hl.calls = hl.calls.saturating_add(1);
+        // One stack walk per call — calls are far rarer than lines, and this
+        // is the only way to get a depth that survives tail calls.
+        let abs = stack_depth(lua);
+        let base = *hl.base_depth.get_or_insert(abs.saturating_sub(1));
+        hl.depth = abs.saturating_sub(base);
+        hl.max_depth = hl.max_depth.max(hl.depth);
+        TraceKind::Call
+    } else if is_ret {
+        hl.depth = hl.depth.saturating_sub(1);
+        TraceKind::Ret
+    } else if matches!(event, DebugEvent::Line) {
+        hl.lines = hl.lines.saturating_add(1);
+        TraceKind::Line
+    } else {
+        return Ok(VmState::Continue);
     };
 
     // ── breakpoints, stepping, and explicit pause ────────────────────────
@@ -479,14 +729,40 @@ pub fn on_event(
             Some(StopReason::Pause)
         } else if hl.step != StepState::None && step_satisfied(lua, hl.step) {
             Some(StopReason::Step)
-        } else if st.bp_count.load(Ordering::Relaxed) > 0 && at_breakpoint(lua, st, &mut hl, &dbg) {
-            Some(StopReason::Breakpoint)
+        } else if st.bp_count.load(Ordering::Relaxed) > 0 {
+            match at_breakpoint(lua, st, &mut hl, dbg) {
+                BpOutcome::Stop => Some(StopReason::Breakpoint),
+                // A logpoint. Report and carry on — the point of it is that the
+                // line it watches is one execution reaches over and over.
+                BpOutcome::Log(text) => {
+                    emit_logpoint(st, &mut hl, text);
+                    None
+                }
+                BpOutcome::Pass => None,
+            }
         } else {
             None
         };
 
         if let Some(reason) = stop {
+            #[cfg(feature = "luajit")]
             enter_pause(lua, st, &mut hl, reason);
+
+            // Suspend only when asked to *and* able to. `stop_the_world` is the
+            // policy — freeze like every other debugger, or hold one dispatch
+            // and let the game carry on — and `can_yield_here` is whether Lua
+            // can honour it here at all.
+            #[cfg(not(feature = "luajit"))]
+            if !st.freezes() && can_yield_here(lua) {
+                park_and_yield(lua, st, &mut hl, reason);
+                // The trace record for this event is skipped: the dispatch is
+                // suspended here and the engine takes over.
+                return Ok(VmState::Yield);
+            } else {
+                // Either the policy says freeze, or there is nowhere to suspend
+                // to — the main thread, or a C frame in the way.
+                enter_pause(lua, st, &mut hl, reason);
+            }
         }
     }
 
@@ -507,7 +783,7 @@ pub fn on_event(
     } else {
         hl.intern(source.source.as_deref().unwrap_or("?"))
     };
-    let line = if is_c { 0 } else { dbg.curr_line().max(0) as u32 };
+    let line = if is_c { 0 } else { dbg.current_line().unwrap_or(0) as u32 };
     let name = dbg.names().name.map(|n| hl.intern(&n));
     let micros = hl.t0.elapsed().as_micros().min(u32::MAX as u128) as u32;
     let depth = hl.depth;

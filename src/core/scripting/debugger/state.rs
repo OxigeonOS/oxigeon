@@ -155,14 +155,32 @@ pub struct DapVariable {
     pub var_ref: i64,
 }
 
+/// Identifies one stop.
+///
+/// Doubles as the DAP `threadId`, which is what makes several suspended
+/// dispatches addressable at once: a client asks for *this* stop's stack and
+/// resumes *this* stop, rather than whichever happened last.
+pub type StopId = i64;
+
+/// The id reported when nothing is parked — the blocking path, where "the stop"
+/// and "the VM" are the same thing and there is only ever one.
+pub const WORLD_STOP: StopId = 1;
+
 /// A request that can only be serviced by the Lua thread, and only while it is
 /// stopped inside the hook.
+///
+/// Each carries the stop it is about. On the blocking path that is always
+/// [`WORLD_STOP`] and is ignored; on the yielding path it is the difference
+/// between inspecting the frame you clicked on and inspecting the most recent
+/// one to have stopped.
 pub enum VmRequest {
     StackTrace {
+        stop: StopId,
         levels: usize,
         reply: tokio::sync::oneshot::Sender<Vec<Frame>>,
     },
     Scopes {
+        stop: StopId,
         frame: i64,
         reply: tokio::sync::oneshot::Sender<Vec<DapScope>>,
     },
@@ -171,35 +189,104 @@ pub enum VmRequest {
         reply: tokio::sync::oneshot::Sender<Vec<DapVariable>>,
     },
     Evaluate {
+        stop: StopId,
         frame: i64,
         expr: String,
         reply: tokio::sync::oneshot::Sender<Result<DapVariable, String>>,
     },
-    Resume(ResumeKind),
+    Resume {
+        stop: StopId,
+        kind: ResumeKind,
+    },
     Detach,
 }
 
 /// A notification from the Lua thread to the DAP client.
 #[derive(Debug)]
 pub enum DebugEventMsg {
-    Stopped(StopReason),
-    Continued,
-    Output(String),
+    Stopped {
+        stop: StopId,
+        reason: StopReason,
+        /// Whether the whole VM is held, or only this dispatch. Sent on as
+        /// `allThreadsStopped`, where it used to be hard-coded true.
+        world: bool,
+    },
+    Continued {
+        stop: StopId,
+        world: bool,
+    },
+    /// Console output.
+    ///
+    /// Two very different things arrive here and a client has to tell them
+    /// apart: a **logpoint** reporting, which is ordinary and expected and may
+    /// arrive once a round, and a breakpoint **condition that raised**, which is
+    /// a mistake needing attention. Rendering both as warnings — which is what
+    /// happened when conditions were the only source — makes a working logpoint
+    /// look broken.
+    Output { text: String, important: bool },
 }
 
-/// What must hold before a breakpoint actually stops the VM.
+impl DebugEventMsg {
+    /// A logpoint line, or anything else purely informational.
+    pub fn output(text: impl Into<String>) -> Self {
+        Self::Output { text: text.into(), important: false }
+    }
+
+    /// Something the user needs to look at.
+    pub fn problem(text: impl Into<String>) -> Self {
+        Self::Output { text: text.into(), important: true }
+    }
+}
+
+/// What must hold before a breakpoint fires, and what it does when it does.
 #[derive(Clone, Debug, Default)]
 pub struct BreakpointSpec {
-    /// A Lua expression evaluated in the paused frame. Stop only if truthy.
+    /// A Lua expression evaluated in the paused frame. Fire only if truthy.
     pub condition: Option<String>,
-    /// Ignore this many hits before stopping.
+    /// Ignore this many hits before firing.
     pub hit_condition: Option<u32>,
+    /// Report instead of stopping — a *logpoint*.
+    ///
+    /// `{expr}` segments are evaluated in the frame and substituted, and the
+    /// result is sent as console output. Execution never pauses, which is what
+    /// makes this usable on a line a ticker reaches every round: a breakpoint
+    /// there is a stop per round, and a logpoint there is a running commentary.
+    /// Standard DAP, so VS Code sets it natively.
+    pub log_message: Option<String>,
 }
 
 impl BreakpointSpec {
+    /// No gates to evaluate. A logpoint is never plain: it always has a message
+    /// to render.
     pub fn is_plain(&self) -> bool {
-        self.condition.is_none() && self.hit_condition.is_none()
+        self.condition.is_none() && self.hit_condition.is_none() && self.log_message.is_none()
     }
+}
+
+/// What a yielded stop left behind, so the DAP can be answered after the thread
+/// that owned the frames has been parked.
+///
+/// Only used on the yielding path (Lua 5.3+). Blocking in the hook needs none of
+/// this: the frames are still the current ones, because nothing else can run.
+#[derive(Debug, Clone)]
+pub struct ParkedStop {
+    /// The session whose dispatch is suspended. Empty for a tick.
+    pub session: String,
+    /// What the suspended dispatch is, for the client's thread list — a verb, or
+    /// `timer:<id>`.
+    pub what: String,
+    pub reason: StopReason,
+    /// Answered directly — the stack they describe is no longer running.
+    pub frames: Vec<Frame>,
+    /// `introspect.lua` capture id, released on resume.
+    pub capture: i64,
+    /// Stack depth of the suspended coroutine, measured at the stop.
+    ///
+    /// Step-over and step-out are relative to it, and it cannot be re-measured
+    /// on resume: by then the only stack this thread can see is its own.
+    pub depth: u16,
+    /// When it stopped, for the paused-clock accounting.
+    pub since: std::time::Instant,
 }
 
 #[derive(Default)]
@@ -222,12 +309,47 @@ pub struct DebugState {
     pub bp_count: AtomicU64,
     /// Attached DAP clients. Non-zero means breakpoints are live.
     pub clients: AtomicU64,
-    /// True while the Lua thread is blocked in the pause loop. The DAP task
-    /// checks this before queuing a VM-touching request, so such a request can
-    /// never sit unanswered in the channel until the next breakpoint.
+    /// **The world is frozen.** True only while the Lua thread is blocked in the
+    /// pause loop, which is the whole VM and every player with it.
+    ///
+    /// It used to mean "something is stopped", which stopped being the same
+    /// thing the moment a stop could suspend one dispatch and let the rest of
+    /// the game run. Everything downstream inherited that — the cockpit put up a
+    /// freeze banner over a game that was demonstrably still being played. For
+    /// "something is suspended", read [`Self::parked_count`].
+    ///
+    /// The DAP task also checks this before queuing a VM-touching request, so
+    /// such a request can never sit unanswered in the channel until the next
+    /// breakpoint.
     pub stopped: AtomicBool,
     /// A `pause` request from the client, consumed by the next line event.
     pub pause_req: AtomicBool,
+    /// Whether a stop should hold the whole VM rather than one dispatch.
+    ///
+    /// Default true: a debugger that freezes is what everyone expects, and
+    /// stepping through a world that is moving underneath you is the expert
+    /// case. Turn it off to debug a live game — `trace freeze off`, or
+    /// `[servers.debug] stop_the_world = false`.
+    ///
+    /// Ignored under LuaJIT, whose hook cannot yield: there is only one
+    /// behaviour available there and it is this one.
+    pub stop_the_world: AtomicBool,
+    /// Every dispatch currently suspended at a stop, by id.
+    ///
+    /// A map rather than the single slot it began as. A breakpoint on a line a
+    /// ticker reaches every round parks a *new* dispatch every round, and one
+    /// slot meant each overwrote the last: the older stop's capture was dropped
+    /// without being released — leaking a frozen frame in `introspect.lua` for
+    /// the life of the process — and the client could no longer ask it anything,
+    /// because every answer came from whatever had stopped most recently.
+    ///
+    /// Empty on the blocking path, where the live stack is still the right one.
+    pub parked: Mutex<std::collections::BTreeMap<StopId, ParkedStop>>,
+    /// How many dispatches are suspended. Read by clients; the map is the truth.
+    pub parked_count: AtomicU64,
+    /// Source of stop ids. Never reused, so a stale client request naming a
+    /// finished stop is refused rather than answered about a different one.
+    next_stop: AtomicU64,
     /// Milliseconds the world has spent frozen at a breakpoint, cumulative.
     ///
     /// Freezing the VM does not freeze the clock, and the game's sense of time
@@ -304,6 +426,12 @@ impl DebugState {
             clients: AtomicU64::new(0),
             stopped: AtomicBool::new(false),
             pause_req: AtomicBool::new(false),
+            stop_the_world: AtomicBool::new(true),
+            parked: Mutex::new(std::collections::BTreeMap::new()),
+            parked_count: AtomicU64::new(0),
+            // 1 is `WORLD_STOP`, so a real parked stop can never collide with
+            // the id the blocking path reports.
+            next_stop: AtomicU64::new(2),
             paused_ms: AtomicU64::new(0),
             cfg: Mutex::new(TraceConfig::default()),
             breakpoints: Mutex::new(BreakpointTable::default()),
@@ -335,6 +463,7 @@ impl DebugState {
     ) -> SharedDebugState {
         let mut st = Self::new(cfg.trace_capacity, cfg.timing_capacity);
         st.debug_library = cfg.enabled;
+        st.stop_the_world = AtomicBool::new(cfg.stop_the_world);
         st.instruction_limit = instruction_limit;
         st.instruction_step = instruction_step(instruction_limit);
         st.auto_continue = if cfg.auto_continue_secs == 0 {
@@ -425,6 +554,53 @@ impl DebugState {
         self.breakpoints.lock_recover().by_file.clear();
         self.bp_count.store(0, Ordering::Relaxed);
         self.republish();
+    }
+
+    /// Claim the next stop id.
+    pub fn next_stop_id(&self) -> StopId {
+        self.next_stop.fetch_add(1, Ordering::Relaxed) as StopId
+    }
+
+    /// Record a suspended dispatch.
+    pub fn park(&self, id: StopId, stop: ParkedStop) {
+        let mut parked = self.parked.lock_recover();
+        parked.insert(id, stop);
+        self.parked_count.store(parked.len() as u64, Ordering::Release);
+    }
+
+    /// Take one suspended dispatch out of the registry.
+    ///
+    /// The caller must release its capture — that is the whole reason removal
+    /// goes through one function.
+    pub fn unpark(&self, id: StopId) -> Option<ParkedStop> {
+        let mut parked = self.parked.lock_recover();
+        let out = parked.remove(&id);
+        self.parked_count.store(parked.len() as u64, Ordering::Release);
+        out
+    }
+
+    /// A copy of one suspended dispatch, for answering a client about it.
+    pub fn parked_stop(&self, id: StopId) -> Option<ParkedStop> {
+        self.parked.lock_recover().get(&id).cloned()
+    }
+
+    /// Every suspended dispatch, oldest first: `(id, session, what)`.
+    pub fn parked_list(&self) -> Vec<(StopId, String, String)> {
+        self.parked
+            .lock_recover()
+            .iter()
+            .map(|(id, p)| (*id, p.session.clone(), p.what.clone()))
+            .collect()
+    }
+
+    /// Whether a stop holds the whole VM.
+    pub fn freezes(&self) -> bool {
+        self.stop_the_world.load(Ordering::Relaxed)
+    }
+
+    /// Change the freeze policy at runtime. Returns the previous value.
+    pub fn set_freezes(&self, on: bool) -> bool {
+        self.stop_the_world.swap(on, Ordering::Relaxed)
     }
 
     pub fn emit(&self, msg: DebugEventMsg) {

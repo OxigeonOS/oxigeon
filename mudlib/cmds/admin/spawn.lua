@@ -3,7 +3,7 @@ M.name = 'spawn'
 M.aliases = {}
 M.category = 'admin'
 M.summary = 'Create item in your inventory.'
-M.permission = 'admin'
+M.permission = "cmd.spawn"
 
 function M.execute(session_id, args_str, args)
     local player = get_player(session_id)

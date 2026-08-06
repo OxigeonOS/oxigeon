@@ -1,190 +1,143 @@
--- game/cmds/dig.lua — Dig a new exit and room (OLC-only)
--- Usage: dig <direction> <room_id>
--- Creates exit from current room → target. If target doesn't exist, creates it
--- with a return exit. Both rooms are written to disk as Lua data files.
+-- mudlib/cmds/building/dig.lua — A new room, and the passage to it.
+--
+-- The one shortcut OLC has always had, and the reason is that digging is two
+-- exits and a room: doing it with `olc new room` plus two `olc set exits.*`
+-- is four commands to express one intention, and one of the four is easy to
+-- forget in a way that leaves a one-way passage.
+--
+-- Everything it changes goes into the session's **draft**. It used to write both
+-- rooms to disk on every dig, discard the result of the write, and mutate the
+-- live Room objects alongside — so a refused write left the world and the files
+-- disagreeing with nothing reported. `olc save` is the only thing that writes.
+
+local movement = require('lib.movement')
+local olc      = require('lib.olc')
 
 local M = {}
 
 M.name       = "dig"
 M.aliases    = {}
 M.category   = "building"
-M.summary    = "Create a new exit and optionally a new room."
-M.permission = "olc"
-
--- ─── Direction tables ────────────────────────────────────────────────────────
-
-local EXPAND = {
-    n  = "north",     s  = "south",     e  = "east",      w  = "west",
-    u  = "up",        d  = "down",
-    ne = "northeast", nw = "northwest", se = "southeast",  sw = "southwest",
+M.summary    = "Create a room in a direction, with the passage back."
+M.usage      = {
+    "dig <direction> <room>     e.g. `dig n hall`, `dig down crypt.cistern`",
+    "dig <direction> <existing> link to a room that already exists",
 }
+M.permission = "cmd.dig"
 
-local REVERSE = {
-    north     = "south",     south     = "north",
-    east      = "west",      west      = "east",
-    up        = "down",      down      = "up",
-    northeast = "southwest", southwest = "northeast",
-    northwest = "southeast", southeast = "northwest",
-}
+--- Direction names, abbreviations and opposites all come from `lib/movement.lua`.
+---
+--- This file used to hold private `EXPAND` and `REVERSE` tables — a third copy,
+--- after `movement.OPPOSITES` and `cmds/directions.lua`'s list — while
+--- `docs/src/lua-api/olc.md` claimed the reverse direction came "from the same
+--- table `movement.lua` uses". It did not, and the private `REVERSE` had no
+--- entry for `in` or `out`: digging either way made a one-way passage and said
+--- nothing about it.
+local EXPAND, REVERSE = movement.ABBREVIATIONS, movement.OPPOSITES
 
---- Split a room_id into area and room_name.
--- "wizard_workshop.laboratory" → "wizard_workshop", "laboratory"
-local function split_room_id(room_id)
-    local area, room_name = room_id:match("^(.+)%.([^%.]+)$")
-    return area, room_name
-end
-
---- Capitalize and humanize a room name.
--- "dark_laboratory" → "Dark Laboratory"
+--- "dark_laboratory" → "Dark Laboratory"
 local function humanize(name)
-    return name:gsub("_", " "):gsub("(%a)([%w_']*)", function(first, rest)
+    return (name:gsub("_", " "):gsub("(%a)([%w_']*)", function(first, rest)
         return first:upper() .. rest
-    end)
+    end))
 end
-
--- ─── Execute ─────────────────────────────────────────────────────────────────
 
 function M.execute(session_id, args_str, args)
     local player = get_player(session_id)
     if not player then return end
 
-    -- Must be in OLC mode
-    if not DAEMON.olc or not DAEMON.olc.is_active(session_id) then
-        player:send("{red}You must enter OLC mode first. Use: olc <area_name>{/}")
-        return
+    local function fail(message) player:send("{red}" .. message .. "{/}") end
+
+    if not (DAEMON.olc and DAEMON.olc.is_active(session_id)) then
+        return fail("You must be building first. `olc <area>` to start.")
+    end
+    local area = DAEMON.olc.get_state(session_id).area_name
+
+    local direction, target = (args_str or ""):match("^(%S+)%s+(%S+)%s*$")
+    if not direction then
+        return player:send_lines(M.usage)
     end
 
-    if #args < 2 then
-        local lines = {}
-        table.insert(lines, "{cyan}Usage: dig <direction> <room_id>{/}")
-        table.insert(lines, "Example: dig east wizard_workshop.laboratory")
-        table.insert(lines, "Example: dig n store_room  (area auto-prefixed)")
-        player:send(table.concat(lines, "\r\n"))
-        return
+    direction = movement.expand(direction)
+    if not direction then
+        return fail("'" .. args_str:match("^(%S+)") .. "' is not a direction. "
+            .. table.concat(movement.ORDER, " "))
+    end
+    local back = REVERSE[direction]
+
+    -- Where you dig *from* is where you are standing, not the cursor. Digging is
+    -- a spatial act and the cursor deliberately does not follow movement, so
+    -- tying it to the cursor would let you dig an exit out of a room on the
+    -- other side of the area without noticing.
+    local here = DAEMON.world and DAEMON.world.get_character_room(player.char_id)
+    if not here then return fail("You are nowhere.") end
+
+    local from, from_err = olc.draft(session_id, "room", here)
+    if not from then return fail(tostring(from_err)) end
+
+    -- A bare name belongs to the area being built. `olc new room` agrees.
+    if not target:find("%.") then target = area .. "." .. target end
+
+    from.exits = from.exits or {}
+    if from.exits[direction] then
+        return fail(here .. " already has a " .. direction .. " exit, to "
+            .. tostring(from.exits[direction]) .. ".")
     end
 
-    local direction = args[1]:lower()
-    local room_id   = args[2]
-
-    -- Expand shorthand directions
-    direction = EXPAND[direction] or direction
-    if not REVERSE[direction] then
-        player:send("{red}Invalid direction: {yellow}" .. direction .. "{/}")
-        return
-    end
-
-    local olc_state = DAEMON.olc.get_state(session_id)
-    local area_name = olc_state.area_name
-
-    -- Auto-prefix area name if room_id has no dot
-    if not room_id:find("%.") then
-        room_id = area_name .. "." .. room_id
-    end
-
-    -- Get the current room via WORLD_D
-    local session = get_session(session_id)
-    if not session or not session.character_id then return end
-    local char_id = session.character_id
-
-    local current_room_id = DAEMON.world.get_character_room(char_id)
-    if not current_room_id then
-        player:send("{red}You are not in any room.{/}")
-        return
-    end
-    local current_room = DAEMON.world.get_room(current_room_id)
-    if not current_room then
-        player:send("{red}Cannot find your current room.{/}")
-        return
-    end
-
-    -- Check if exit already exists
-    if current_room.exits[direction] then
-        player:send("{red}An exit {yellow}" .. direction .. "{red} already exists (to {yellow}" .. current_room.exits[direction] .. "{red}).{/}")
-        return
-    end
-
-    -- Split target room_id for codegen paths
-    local target_area, target_room_name = split_room_id(room_id)
-    if not target_area or not target_room_name then
-        player:send("{red}Invalid room ID format. Expected: area.room_name{/}")
-        return
-    end
-
-    -- Get builder name
-    local builder_name = player.name or "Unknown"
-
-    local target_room = DAEMON.world.get_room(room_id)
-    local created_new = false
-    local reverse_dir = REVERSE[direction]
-
-    if not target_room then
-        -- ── Create new room ──────────────────────────────────────────────
-        local short_name = humanize(target_room_name)
-
-        local new_room_data = {
-            id          = room_id,
-            short       = short_name,
-            description = "A bare room awaiting description.",
-            exits       = { [reverse_dir] = current_room_id },
-            builder     = builder_name,
-        }
-
-        local ok, err = pcall(function()
-            -- Write room file to disk
-            DAEMON.codegen.write_room_file(target_area, target_room_name, new_room_data)
-
-            -- Load live into world
-            local room = DAEMON.room.from_data(new_room_data)
-            DAEMON.world.register_room(room)
-        end)
-
-        if not ok then
-            log("error", "DIG: Failed to create room '" .. room_id .. "': " .. tostring(err))
-            if DAEMON.journal then
-                DAEMON.journal.error("DIG: Failed to create room: " .. tostring(err))
-            end
-            player:send("{red}[OLC] Error creating room. See logs.{/}")
-            return
-        end
-
-        created_new = true
-        player:send("{green}[OLC] Created room: {yellow}" .. room_id .. "{/}")
+    -- Existing or new. Linking to an existing room is the second half of a loop
+    -- and has to work, or an area can only ever be a tree.
+    local existed = DAEMON.world.get_room(target) ~= nil
+    local to
+    if existed then
+        to = olc.draft(session_id, "room", target)
     else
-        -- ── Existing room: add return exit ───────────────────────────────
-        if not target_room.exits[reverse_dir] then
-            target_room.exits[reverse_dir] = current_room_id
+        local _, room_name = target:match("^(.+)%.([^%.]+)$")
+        local err
+        to, err = olc.create(session_id, "room", target)
+        if not to then return fail(tostring(err)) end
+        to.short = humanize(room_name or target)
+    end
 
-            -- Update target room's file on disk
-            pcall(function()
-                DAEMON.codegen.update_room_exits(target_area, target_room_name,
-                    { [reverse_dir] = current_room_id })
-            end)
+    from.exits[direction] = target
+    to.exits = to.exits or {}
+
+    local linked_back = false
+    if not to.exits[back] then
+        to.exits[back] = here
+        linked_back = true
+    end
+
+    for _, spec in ipairs({ { here, from }, { target, to } }) do
+        DAEMON.olc.touch(session_id, "room", spec[1])
+        local ok, err = olc.apply_live("room", spec[2])
+        if not ok then
+            return fail("Could not rebuild " .. spec[1] .. ": " .. tostring(err))
         end
     end
 
-    -- ── Add exit on current room ─────────────────────────────────────────
-    current_room.exits[direction] = room_id
+    -- The cursor follows a dig — unlike movement — because you have just
+    -- explicitly created that room and the next thing you do is describe it.
+    DAEMON.olc.set_cursor(session_id, "room", target)
 
-    -- Update current room's file on disk
-    local c_area, c_room_name = split_room_id(current_room_id)
-    if c_area and c_room_name then
-        pcall(function()
-            DAEMON.codegen.update_room_exits(c_area, c_room_name,
-                { [direction] = room_id })
-        end)
+    player:send("{green}[OLC]{/} " .. (existed and "Linked to" or "Created")
+        .. " room {yellow}" .. target .. "{/}")
+    player:send("  " .. here .. "  {cyan}" .. direction .. "{/} → " .. target)
+    if linked_back then
+        player:send("  " .. target .. "  {cyan}" .. back .. "{/} → " .. here
+            .. "  {dim}(the way back){/}")
+    else
+        player:send("  {yellow}" .. target .. " already had a " .. back
+            .. " exit, so the passage is one-way.{/}")
     end
+    player:send("  {dim}Cursor: " .. target .. ". Unsaved — `olc save` to write.{/}")
 
-    -- ── Report ───────────────────────────────────────────────────────────
-    local out_lines = {}
-    table.insert(out_lines, "{green}[OLC] Exit added:{/} {yellow}" .. direction .. "{/} → {yellow}" .. room_id .. "{/}")
-    if reverse_dir then
-        table.insert(out_lines, "{green}[OLC] Exit added:{/} {yellow}" .. reverse_dir .. "{/} → {yellow}" .. current_room_id .. "{/} (return exit)")
+    if DAEMON.world then
+        pcall(DAEMON.world.move_character, player.char_id, target)
+        local room = DAEMON.world.get_room(target)
+        if room and room.get_appearance then
+            player:send(room:get_appearance(session_id))
+        end
     end
-    if created_new then
-        local path = "areas/" .. target_area .. "/rooms/" .. target_room_name .. ".lua"
-        table.insert(out_lines, "{green}[OLC] File written:{/} game/" .. path)
-    end
-    player:send(table.concat(out_lines, "\r\n"))
 end
 
 return M

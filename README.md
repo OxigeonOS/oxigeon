@@ -1,14 +1,18 @@
 # Oxigeon
 
-**A modern MUD driver** written in Rust with LuaJIT scripting.
+**A modern MUD driver** written in Rust with Lua scripting.
 
 Oxigeon provides the infrastructure — networking, Telnet protocol, session management, database — so you can focus on building your game in Lua.
 
 ## Quick Start
 
 ```bash
-# Build (first build compiles LuaJIT from source — takes a few minutes)
+# Build (the first build compiles Lua from source — takes a few minutes)
 cargo build --release
+
+# Optional: the compute worker, only needed with [compute] enabled = true.
+# A separate binary because it links LuaJIT while the server links Lua 5.5.
+cargo build --release -p oxigeon-compute
 
 # Run (uses config/driver.toml and config/server.toml)
 cargo run
@@ -52,7 +56,7 @@ oxigeon/
     │   ├── network/
     │   │   └── telnet/    # Telnet state machine, Q Method, codec
     │   ├── session/       # Session registry + multisession policy
-    │   └── scripting/     # LuaJIT engine, efuns, sandbox
+    │   └── scripting/     # Lua engine, efuns, sandbox
     └── domain/
         ├── db/            # Diesel pool + schema
         ├── models/        # Account + Character models

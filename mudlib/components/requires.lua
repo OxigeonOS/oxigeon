@@ -88,6 +88,42 @@ function M.from_data(data)
     return req
 end
 
+--- The flat authoring fields, derived from `CHECKS` above.
+---
+--- Generated rather than written out, so the two cannot drift: adding a fourth
+--- requirement to `CHECKS` makes it authorable in the same commit.
+M.fields = {}
+for _, c in ipairs(CHECKS) do
+    M.fields[#M.fields + 1] = {
+        name = "required_" .. c.key,
+        type = "integer",
+        min = 1,
+        editable = true,
+        help = c.label .. " needed to use this at all.",
+    }
+end
+
+--- Present because one of its fields is, rather than because it was named.
+---
+--- `required_strength = 16` on a sword has always meant this component, and
+--- making a builder also write `components = { "requires" }` would be a second
+--- way to say one thing — and a way to say it inconsistently. Every other
+--- component is explicit; this one is the exception because its authoring form
+--- already carries the declaration.
+M.implicit = true
+
+--- The inverse of `from_data`. See the note in `weapon.lua`.
+--- @param item table
+--- @return table|nil
+function M.to_data(item)
+    if not M.is(item) then return nil end
+    local out = {}
+    for _, c in ipairs(CHECKS) do
+        out["required_" .. c.key] = item.requires[c.key]
+    end
+    return out
+end
+
 --- Does the item carry a requirement at all?
 ---
 --- Absence is still the real predicate — `M.met` answers `true` for an item

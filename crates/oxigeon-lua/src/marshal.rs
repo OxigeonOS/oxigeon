@@ -1,8 +1,9 @@
 //! Moving a Lua value between two VMs.
 //!
-//! The compute bridge runs a second LuaJIT VM on another thread, and mlua's
-//! `Lua` is `!Send` — no table, function or string may cross. Everything has
-//! to be copied through an owned, `Send` representation.
+//! A compute job runs in a second VM, in a second *process*, quite possibly
+//! built against a different Lua. Nothing that lives in one VM's heap can be
+//! meaningful in the other's, so everything has to be copied through an owned,
+//! `Send` representation — which [`crate::wire`] then puts on a pipe.
 //!
 //! **Not JSON.** `efuns::lua_to_json` exists and is `pub`, but JSON's data
 //! model cannot express a Lua table: JSON has one composite type where Lua has

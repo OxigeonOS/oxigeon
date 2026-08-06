@@ -3,7 +3,7 @@ M.name = 'teleport'
 M.aliases = {'tp'}
 M.category = 'admin'
 M.summary = 'Teleport another player.'
-M.permission = 'admin'
+M.permission = "cmd.teleport"
 
 function M.execute(session_id, args_str, args)
     local player = get_player(session_id)

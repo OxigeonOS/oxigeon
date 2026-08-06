@@ -43,7 +43,7 @@ Oxigeon is structured in three layers. Each layer has a specific responsibility 
 │                                                             │
 │  src/core/network/      → Telnet, GMCP, MCCP2, ECHO         │
 │  src/core/session/      → Session, SessionHandler           │
-│  src/core/scripting/    → LuaJIT VM, efuns, sandbox         │
+│  src/core/scripting/    → Lua VM, efuns, sandbox            │
 │  src/driver.rs          → Coordinator, main loop            │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -177,16 +177,29 @@ Lua: send(session_id, "Hello!")
 │  LuaCommand (UnboundedSender)  │
 └────────────────┬────────────────┘
                  │ channel
-┌────────────────▼────────────────┐
-│  Lua thread (dedicated OS thread)│
-│                                 │
-│  ScriptEngine (LuaJIT VM)       │
-│  Processes commands sequentially│
-│  No async — blocking recv()     │
+┌────────────────▼────────────────┐        ┌──────────────────────────┐
+│  Lua thread (dedicated OS thread)│  pipe  │  oxigeon-compute (process)│
+│                                 │◄──────►│  a LuaJIT VM, no efuns    │
+│  ScriptEngine (the Lua VM)      │        │  started only when        │
+│  Processes commands sequentially│        │  [compute] enabled = true │
+│  No async — blocking recv()     │        └──────────────────────────┘
 └─────────────────────────────────┘
 ```
 
 The Lua VM runs on **one dedicated thread**. All events are processed sequentially — no concurrency issues within Lua. Each connection task sends events via an unbounded channel.
+
+Two things qualify that, both opt-in:
+
+- **A dispatch can be suspended.** On a Lua 5.5 build with
+  `[servers.debug] stop_the_world = false`, a breakpoint parks that one command
+  as a coroutine and the loop carries on serving everyone else. Sequential
+  becomes *interleaved*, which is why module-level guards in the mudlib are keyed
+  per entity rather than per process — see `tests/interleaving.rs`.
+- **Compute runs elsewhere.** `compute()` hands a job to an `oxigeon-compute`
+  child process with its own LuaJIT VM and no efuns at all, and the answer comes
+  back through `on_compute_result`. It is a separate binary because it links a
+  different Lua from the server; see
+  [Compute — Off-Thread Lua](./lua-api/compute.md).
 
 ## Database
 

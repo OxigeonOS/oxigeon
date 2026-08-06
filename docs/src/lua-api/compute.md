@@ -4,7 +4,7 @@ The whole game runs on one Lua thread. Anything expensive on it — a pathfind
 across a large map, generating an area, a simulation pass — freezes every
 connected player for its duration.
 
-`compute()` hands the work to a pool of worker threads, each with its own
+`compute()` hands the work to a pool of worker *processes*, each with its own
 LuaJIT VM, and delivers the answer later through a mudlib hook. The submitting
 command returns immediately.
 
@@ -13,6 +13,29 @@ command returns immediately.
 [compute]
 enabled = true
 ```
+
+A worker is a separate binary, and has to be built:
+
+```bash
+cargo build --release -p oxigeon-compute
+```
+
+It is looked for beside the server binary, or wherever `[compute] worker_path`
+says. Workers start on first use, so an enabled-but-unused pool costs nothing —
+`server_info().compute.spawned` is 0 until a job runs.
+
+### Why a separate process
+
+**It can be a different Lua.** `mlua-sys` permits one Lua version per binary, and
+the server defaults to Lua 5.5 — for a debug hook that can yield, so a breakpoint
+stops one player rather than the whole game. A compute job wants the opposite
+trade: LuaJIT's compiler, worth about 2.1× on exactly the arithmetic-heavy work
+this facility exists for. Two processes is the only way to have both.
+
+**It can be killed.** Rust cannot kill a thread, and with the compiler on there
+is no hook to interrupt a runaway job — so under the old thread pool one burned
+its worker for the life of the *server*. A process can be terminated. See
+[When a job never comes back](#when-a-job-never-comes-back).
 
 ## The shape of it
 
@@ -127,16 +150,16 @@ file access. Arguments in, a value out.
 
 This is not caution for its own sake — each candidate fails concretely:
 
-- **`get_current_session` is a thread-local.** On a worker it is permanently
+- **`get_current_session` is a thread-local.** In a worker it is permanently
   `nil`, so session-scoped efuns would not error, they would quietly return
   nothing. Silent wrongness is the worst failure available.
 - **`set_object_state` and `get_persistent` are Lua globals.** A second VM gets
   its own empty copies: writes vanish, reads lie, and it looks like it works
   right up until it matters.
-- **The session table and the database genuinely are thread-safe**, so `send()`
-  *would* work. That is the trap, not the reassurance — it would interleave a
-  worker's output with the game thread's and let a job watch the world change
-  underneath it.
+- **`send()` would compile.** Under the old thread pool the session table and
+  the database were genuinely thread-safe, so it would even have run — that was
+  the trap, not the reassurance. Out of process it cannot work at all, which is
+  a nice property to get for free rather than by discipline.
 
 Arguments being the only channel in is a feature: it forces a job to state what
 it depends on, which makes it reproducible and testable as plain Lua with no
@@ -144,9 +167,17 @@ driver at all.
 
 ## What crosses the boundary
 
-Values are copied, not shared — mlua's `Lua` is `!Send`, so nothing else is
-possible. Numbers, strings, booleans, `nil`, and tables all survive exactly,
-including tables that are both a list and a map, and integer keys.
+Values are copied, not shared — they go down a pipe to another process, so
+nothing else is possible. Numbers, strings, booleans, `nil`, and tables all
+survive exactly, including tables that are both a list and a map, integer keys,
+and strings that are not valid UTF-8.
+
+> [!IMPORTANT]
+> **A whole number from a worker is a float.** LuaJIT has one number type, so a
+> job that returns `3` returns `3.0`, and on a Lua 5.5 server `tostring` renders
+> it `3.0`. The wire carries what the worker produced and converts nothing —
+> promoting integral floats would corrupt a job that meant to return one. Use
+> `math.floor` on the game side if you need an integer.
 
 Functions, coroutines and userdata are **refused** at the call site rather than
 silently becoming `nil`. So are cycles and anything past `max_arg_depth` /
@@ -160,27 +191,35 @@ silently becoming `nil`. So are cycles and anything past `max_arg_depth` /
 
 ## When a job never comes back
 
-Rust cannot kill a thread. With the compiler on — the default — a job that
-ignores its deadline runs until the process exits, burning one worker.
+With the compiler on — the default — nothing *inside* the VM can interrupt a job
+that ignores its deadline: no hook fires from a compiled trace. So the deadline
+is enforced from outside, by **killing the worker process**:
 
-What you get is that it costs **one worker, not the game**:
+- the caller is told, so nothing waits forever;
+- the worker is terminated and the next job gets a fresh one, so the pool
+  recovers rather than degrading;
+- `server_info().compute.wedged` counts it and the driver logs it at error
+  level, because a job that has to be killed is doing something it should not;
+- `server_info().compute.spawned` counts every worker started, so a pool that
+  keeps replacing workers is visible.
 
-- the deadline still tells the caller, so nothing waits forever;
-- the pool degrades to refusing new jobs rather than blocking;
-- `server_info().compute.wedged` counts the loss, and the driver logs it at
-  error level.
+This is the main thing moving out of process bought. Under the thread pool the
+same job cost a worker permanently.
 
-Setting `[compute] instruction_limit` makes workers recoverable, and makes
-deadlines and `compute_cancel` enforceable rather than advisory — at the cost
-of the compiler in that VM, which is worth about 2.1× on the arithmetic-heavy
-work that belongs here. See
+Setting `[compute] instruction_limit` lets a job stop *itself*, which makes
+`compute_cancel` enforceable rather than advisory and ends a runaway job without
+a kill — at the cost of the compiler in that VM, which is worth about 2.1× on
+the arithmetic-heavy work that belongs here. See
 [Performance & the JIT Trade-off](./performance.md).
+
+A worker also exits on its own if the server goes away: its stdin closes, and it
+stops immediately rather than finishing a job nobody is waiting for.
 
 ## Reloads
 
-`reload` recycles every worker: each rebuilds its VM before its next job. There
-is no partial reload, because a worker holds no state anyone may depend on —
-which is exactly the property the game VM lacks.
+`reload` recycles every worker: each is replaced by a fresh process before its
+next job. There is no partial reload, because a worker holds no state anyone may
+depend on — which is exactly the property the game VM lacks.
 
 A compute module that fails to load fails **loudly on every job** rather than
 silently keeping the old version. That is a deliberate divergence from
@@ -191,7 +230,9 @@ same wrong answer, and having no idea why.
 
 See the `[compute]` block in `config/server.toml`, which documents every key
 inline. The ones worth thinking about are `workers` (keep it well under your
-core count — compute competes with the game thread), `queue_depth` (shallow on
+core count — compute competes with the game thread, and each one is now a
+process), `worker_path` (unset means "beside the server binary"), `queue_depth`
+(shallow on
 purpose: a deep queue only produces answers that arrive after they stopped
 mattering), and `instruction_limit`.
 

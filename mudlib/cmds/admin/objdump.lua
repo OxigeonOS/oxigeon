@@ -24,8 +24,28 @@ M.usage = {
     "objdump mob:<name|id>",
     "objdump item:<name|uuid>",
     "objdump template:<id>      — a mob or item template, unspawned",
+    "",
+    "  -d <n>  nest this deep (default 2, max 8)",
+    "  -r      resolve lfun fields — show what they return, not <function>",
+    "  -i      include fields inherited through the metatable",
+    "  -s      annotate: · OLC-editable  # hand-code only  ! not in the schema",
+    "  -a      all of the above",
 }
-M.permission = 'admin'
+M.help = [[
+The dump `stat` is the summary of. Every dump ends with the raw fields, because
+a curated view can only show what somebody thought to list and the reason you
+are running objdump is usually that the interesting field is not one of them.
+
+Defaults are unchanged by the flags: `objdump rat` prints exactly what it always
+did, so a dump stays diffable against the last one.
+
+{yellow}-s{/} is the one worth knowing about. It marks each field against the
+schema, and `!` means **no schema names this field** — so `olc save` would drop
+it. That is the only way to find out before the loss rather than after.
+
+{yellow}-r{/} resolves lfuns, and only the fields the schema types as one: a dump
+that called every stored function would be a dump with side effects.]]
+M.permission = "cmd.objdump"
 
 -- Sorted, not `pairs` order: a dump you cannot diff against the last one is
 -- most of the way to useless.
@@ -89,7 +109,65 @@ end
 
 -- ─── The generic dump ────────────────────────────────────────────────────────
 
-local MAX_DEPTH = 2
+--- How deep a dump nests by default, and how deep it may be asked to go.
+---
+--- Two now rather than one constant, because two was never enough for the thing
+--- objdump is most often run on: a weapon shows at depth 1, `weapon.damage` at
+--- 2, and a component's sub-sub-table as `<table>`. Raising the *default* would
+--- change every existing invocation's output, and this file's stated purpose is
+--- a dump you can diff against the last one — so the default stands and `-d`
+--- asks for more.
+local DEFAULT_DEPTH = 2
+local MAX_DEPTH = 8
+
+--- Per-dump options, set from the flags and read by `dump_fields`.
+---
+--- A module-level table rather than a parameter threaded through six call sites.
+--- `objdump` is one dispatch on one thread and cannot re-enter itself, so the
+--- alternative buys nothing and costs six signatures.
+local opts = {}
+
+local function reset_opts()
+    opts = { depth = DEFAULT_DEPTH, resolve = false, inherit = false, schema = false }
+end
+reset_opts()
+
+--- The schema descriptor for a field, when the caller asked for annotations.
+---
+--- Nil when `-s` is off, when the object's kind is unknown, or when no schema
+--- names the field — and the *third* case is the interesting one: that is the
+--- `!` marker, a field `olc save` would drop.
+local function descriptor_for(key)
+    if not (opts.schema and opts.kind) then return nil end
+    local ok, schema = pcall(require, 'lib.schema')
+    if not ok then return nil end
+    local found = schema.field(opts.kind, tostring(key), opts.data)
+    if found then return found end
+    -- A hand-written field is known, just not editable.
+    local mod = schema.of(opts.kind)
+    for _, name in ipairs((mod and mod.hand_written) or {}) do
+        if name == key then return { name = key, editable = false, hand_written = true } end
+    end
+    return nil
+end
+
+--- The marker column. Fixed width, so `diff` still lines up.
+---
+---   ·  OLC can edit this
+---   #  hand-code only — an lfun, a hook, an id
+---   !  NOT IN THE SCHEMA. `olc save` would drop it.
+---
+--- `!` is the point of the whole flag: it is the only thing in the system that
+--- answers "what am I about to lose?" *before* the loss, and it is the same
+--- question `verify`'s LOSSY section answers for a whole area.
+local function marker(key, inherited)
+    if not opts.schema then return "" end
+    if inherited then return "^ " end
+    local d = descriptor_for(key)
+    if not d then return "! " end
+    if d.editable == false then return "# " end
+    return "· "
+end
 
 local function opaque(v)
     local t = type(v)
@@ -97,6 +175,25 @@ local function opaque(v)
     if t == "userdata" then return "<userdata>" end
     if t == "thread"   then return "<thread>"   end
     return nil
+end
+
+--- What a function-valued field actually returns, under `-r`.
+---
+--- Only for fields the schema types `lfun` or `text`, and only when asked. A
+--- dump that called every stored function would be a dump with side effects, and
+--- an admin command that changes the world by looking at it is a trap. The
+--- resolver is `Object.resolve` verbatim rather than a second copy: it already
+--- `pcall`s and already answers `<invalid lfun return>` for a raiser.
+local function resolved(key, value, owner)
+    if not opts.resolve or type(value) ~= "function" then return nil end
+    local d = descriptor_for(key)
+    if not (d and (d.type == "lfun" or d.type == "text")) then return nil end
+
+    local ok, Object = pcall(require, 'lib.object')
+    if not ok then return nil end
+    local rok, text = pcall(Object.resolve, value, owner)
+    if not rok then return "<raised>" end
+    return tostring(text)
 end
 
 local function is_array(t)
@@ -122,23 +219,30 @@ end
 --- followed — an Object's metatable chain and a container's parent pointer both
 --- close a loop, and a stack overflow inside an admin command takes the game
 --- thread with it.
-local function dump_fields(lines, tbl, indent, depth, seen)
+local function dump_fields(lines, tbl, indent, depth, seen, owner, inherited)
     seen = seen or {}
     if seen[tbl] then
         lines[#lines + 1] = indent .. "(cycle)"
         return
     end
     seen[tbl] = true
+    owner = owner or tbl
 
     local keys = {}
     for k in pairs(tbl) do keys[#keys + 1] = k end
     table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
 
     for _, k in ipairs(keys) do
-        local v, label = tbl[k], indent .. tostring(k)
+        local v = tbl[k]
+        -- The marker is only meaningful at the top level of an object: a key
+        -- inside `weapon` is not a field the schema names on its own.
+        local label = indent .. ((depth == opts.depth) and marker(k, inherited) or "")
+            .. tostring(k)
         local tag = opaque(v)
         if tag then
+            local shown = resolved(k, v, owner)
             lines[#lines + 1] = label .. " = " .. tag
+                .. (shown and (" -> " .. string.format("%q", shown)) or "")
         elseif type(v) ~= "table" then
             lines[#lines + 1] = label .. " = " .. tostring(v)
         elseif next(v) == nil then
@@ -154,11 +258,62 @@ local function dump_fields(lines, tbl, indent, depth, seen)
             lines[#lines + 1] = label .. " = [" .. table.concat(parts, ", ") .. "]"
         else
             lines[#lines + 1] = label .. ":"
-            dump_fields(lines, v, indent .. "  ", depth - 1, seen)
+            dump_fields(lines, v, indent .. "  ", depth - 1, seen, owner, inherited)
         end
     end
 
     seen[tbl] = nil
+end
+
+--- Fields and methods reached through the metatable chain, under `-i`.
+---
+--- `dump_fields` walks `pairs(tbl)`, which is the instance table only — so an
+--- Item's `display_name`, `has_tag` and every `Object` default are invisible,
+--- and "the field I am looking for is not in the dump" reads as "it does not
+--- exist" rather than "it is inherited".
+---
+--- Data and methods are split, and that split is what makes the flag usable:
+--- expanded identically, every room dump grows forty lines of `Room:` methods
+--- and nobody turns it on twice.
+local function dump_inherited(lines, tbl, indent)
+    local seen_here = {}
+    for k in pairs(tbl) do seen_here[k] = true end
+
+    local mt = getmetatable(tbl)
+    local level = 0
+    while type(mt) == "table" and type(mt.__index) == "table" and level < MAX_DEPTH do
+        local parent = mt.__index
+        local data, methods = {}, {}
+        for k, v in pairs(parent) do
+            -- Metamethods are the *mechanism* of inheritance, not a field of
+            -- the object. `__index` in particular points back at the class, so
+            -- expanding it walks the chain a second time and reports a cycle —
+            -- which is technically true and tells nobody anything.
+            local meta = type(k) == "string" and k:sub(1, 2) == "__"
+            if not seen_here[k] and not meta then
+                seen_here[k] = true
+                if type(v) == "function" then
+                    methods[#methods + 1] = tostring(k)
+                else
+                    data[#data + 1] = k
+                end
+            end
+        end
+
+        if #data > 0 then
+            table.sort(data, function(a, b) return tostring(a) < tostring(b) end)
+            local slice = {}
+            for _, k in ipairs(data) do slice[k] = parent[k] end
+            dump_fields(lines, slice, indent, opts.depth, nil, tbl, true)
+        end
+        if #methods > 0 then
+            table.sort(methods)
+            lines[#lines + 1] = indent .. "^ methods: " .. table.concat(methods, ", ")
+        end
+
+        mt = getmetatable(parent)
+        level = level + 1
+    end
 end
 
 -- Exposed for testing, as `_format_inventory` is. The cycle guard is the part
@@ -171,10 +326,38 @@ M._dump_fields = dump_fields
 --- A curated dump can only show the fields somebody thought to list, and the
 --- reason you are running objdump is usually that the field you care about is
 --- not one of them.
-local function dump_raw(lines, tbl)
+local function dump_raw(lines, tbl, kind)
     if type(tbl) ~= "table" then return end
+
+    -- Which schema to annotate against. Set here rather than passed, because
+    -- every curated dump funnels into this one call.
+    opts.kind = kind
+    opts.data = tbl
+
     lines[#lines + 1] = "  {yellow}Raw fields:{/}"
-    dump_fields(lines, tbl, "    ", MAX_DEPTH, nil)
+    dump_fields(lines, tbl, "    ", opts.depth, nil, tbl, false)
+
+    if opts.inherit then
+        lines[#lines + 1] = "  {yellow}Inherited:{/}"
+        dump_inherited(lines, tbl, "    ")
+    end
+
+    if opts.schema then
+        lines[#lines + 1] = "  {dim}· OLC-editable   # hand-code only   "
+            .. "^ inherited   ! not in the schema{/}"
+
+        local dropped = {}
+        for k in pairs(tbl) do
+            if not descriptor_for(k) then dropped[#dropped + 1] = tostring(k) end
+        end
+        if #dropped > 0 and kind then
+            table.sort(dropped)
+            lines[#lines + 1] = "  {red}" .. #dropped .. " field"
+                .. (#dropped == 1 and "" or "s")
+                .. " no schema names, which `olc save` would drop: "
+                .. table.concat(dropped, ", ") .. "{/}"
+        end
+    end
 end
 
 --- Present traits, read through the trait daemon rather than off `stats`.
@@ -333,7 +516,7 @@ local function dump_mob(mob)
 
     dump_traits(lines, mob)
     dump_effects(lines, mob)
-    dump_raw(lines, mob)
+    dump_raw(lines, mob, "mob")
     return lines
 end
 
@@ -376,7 +559,7 @@ local function dump_item(instance, resolved)
     -- The instance, not the resolved overlay: the resolved view is the template
     -- with overrides merged in, and "what does this one actually override" is a
     -- different question from "what is it like".
-    dump_raw(lines, instance)
+    dump_raw(lines, instance, "item")
     return lines
 end
 
@@ -386,7 +569,7 @@ local function dump_template(kind, t)
         kind, tostring(t.id)))
     table.insert(lines, "  Short: " .. tostring(t.short or "(none)"))
     table.insert(lines, "  {yellow}Not spawned — this is the shared template, not an instance.{/}")
-    dump_raw(lines, t)
+    dump_raw(lines, t, kind == "Item" and "item" or "mob")
     return lines
 end
 
@@ -397,7 +580,42 @@ function M.execute(session_id, args_str, args)
     local room_id = DAEMON.world and DAEMON.world.get_character_room
         and DAEMON.world.get_character_room(player.char_id)
 
+    -- Flags first, then the spec. Defaults are unchanged by design: every
+    -- existing invocation prints byte-identically, which is what makes a dump
+    -- diffable against the last one — this file's stated purpose.
+    reset_opts()
     local spec = (args_str or ""):gsub("^%s+", ""):gsub("%s+$", "")
+
+    while true do
+        local flag, rest = spec:match("^%-(%a)%s*(.*)$")
+        if not flag then break end
+        if flag == "d" then
+            local n, tail = rest:match("^(%d+)%s*(.*)$")
+            if not n then
+                player:send("{red}-d needs a depth: objdump -d 4 <spec>{/}")
+                return
+            end
+            opts.depth = math.max(1, math.min(MAX_DEPTH, tonumber(n)))
+            spec = tail
+        elseif flag == "r" then
+            opts.resolve = true
+            spec = rest
+        elseif flag == "i" then
+            opts.inherit = true
+            spec = rest
+        elseif flag == "s" then
+            opts.schema = true
+            spec = rest
+        elseif flag == "a" then
+            -- Everything, for when you do not yet know what you are looking for.
+            opts.depth, opts.resolve, opts.inherit, opts.schema = 6, true, true, true
+            spec = rest
+        else
+            player:send("{red}Unknown flag '-" .. flag .. "'. See: help objdump{/}")
+            return
+        end
+    end
+    spec = spec:gsub("^%s+", ""):gsub("%s+$", "")
 
     -- No argument dumps where you are standing. That is what you wanted nine
     -- times in ten, and reciting the usage line at somebody who typed the
@@ -580,7 +798,7 @@ function M.execute(session_id, args_str, args)
             table.insert(lines, "    (none)")
         end
 
-        dump_raw(lines, room)
+        dump_raw(lines, room, "room")
 
         player:send(table.concat(lines, "\r\n") .. "\r\n")
         return

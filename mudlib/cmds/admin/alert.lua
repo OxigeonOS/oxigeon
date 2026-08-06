@@ -1,6 +1,12 @@
 -- mudlib/cmds/alert.lua — Send an alert to all staff (privileged) accounts
--- Sends a formatted message to all online sessions that hold daemon.alert perm.
 -- This is for staff-to-staff communication, not player announcements.
+--
+-- Two permissions, deliberately: `cmd.alert` is who may *send* one, and
+-- `alert.receive` is who *gets* one. They were one string, which meant the only
+-- way to hear an alert was to be able to raise one — so a moderator who should
+-- be told about an incident had to be given the ability to page everyone.
+-- `alert.receive` is a capability rather than a command, so it is not `cmd.*`;
+-- `board.moderate` and `channel.staff` are the same shape.
 
 local M = {}
 
@@ -8,7 +14,7 @@ M.name       = "alert"
 M.aliases    = {}
 M.category   = "admin"
 M.summary    = "Send an alert to all online staff. Usage: alert <message>"
-M.permission = "daemon.alert"
+M.permission = "cmd.alert"
 
 function M.execute(session_id, args_str, args)
     local player = get_player(session_id)
@@ -36,12 +42,12 @@ function M.execute(session_id, args_str, args)
     -- broadcast_to_perm sends to all sessions with the given permission
     local count = 0
     if type(broadcast_to_perm) == "function" then
-        count = broadcast_to_perm("daemon.alert", msg .. "\r\n")
+        count = broadcast_to_perm("alert.receive", msg .. "\r\n")
     else
         -- Fallback: iterate sessions manually
         if type(all_sessions) == "function" then
             for _, sid in ipairs(all_sessions()) do
-                if type(has_permission) == "function" and has_permission(sid, "daemon.alert") then
+                if type(has_permission) == "function" and has_permission(sid, "alert.receive") then
                     send(sid, msg .. "\r\n")
                     count = count + 1
                 end

@@ -3,7 +3,7 @@ M.name = 'events'
 M.aliases = {'@events'}
 M.category = 'admin'
 M.summary = 'List events and their listeners.'
-M.permission = 'admin'
+M.permission = "cmd.events"
 
 function M.execute(session_id, args_str, args)
     local player = get_player(session_id)

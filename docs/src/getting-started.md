@@ -5,7 +5,7 @@ This guide walks you through setting up a fresh Oxigeon MUD from scratch.
 ## Prerequisites
 
 - Rust (stable, 1.75+) — install via [rustup](https://rustup.rs/)
-- A C compiler (MSVC on Windows, gcc on Linux) — required by LuaJIT
+- A C compiler (MSVC on Windows, gcc on Linux) — Lua is built from source
 - `mdbook` (for documentation) — `cargo install mdbook`
 
 ## Installation
@@ -14,12 +14,29 @@ This guide walks you through setting up a fresh Oxigeon MUD from scratch.
 # Clone or download Oxigeon
 cd oxigeon/
 
-# Build the driver (first build compiles LuaJIT — takes a few minutes)
+# Build the driver (the first build compiles Lua — takes a few minutes)
 cargo build --release
 
 # Run with default config
 cargo run
 ```
+
+The driver runs Lua 5.5 by default. `cargo build --no-default-features
+--features luajit` builds it against LuaJIT instead; the two are within a few
+percent of each other on real commands, and what 5.5 buys is a debugger that
+stops one player rather than the whole server. See
+[Performance](./lua-api/performance.md) and
+[Debugging](./lua-api/debugging.md).
+
+If you turn on `[compute]`, its workers are a **separate binary**, because they
+link LuaJIT whatever the server was built with:
+
+```bash
+cargo build --release -p oxigeon-compute
+```
+
+It is looked for beside the server binary, which is where a `cargo build`
+release layout puts it. Nothing needs it unless `[compute] enabled = true`.
 
 ## Configuration
 
@@ -106,7 +123,7 @@ mudlib/                  ← the driver's Lua half: reusable across games
 │   ├── prompt_d.lua   channel_d.lua  pager_d.lua  snoop_d.lua  gmcp_d.lua
 │   └── codegen_d.lua  olc_d.lua         ← online creation
 ├── compute/
-│   └── pathfind.lua     ← runs on a worker thread; no efuns
+│   └── pathfind.lua     ← runs in a worker process; no efuns
 ├── cmds/                ← auto-discovered, and recursive
 │   ├── directions.lua   ← all twelve directions, one file
 │   ├── admin/           ← the gated ones

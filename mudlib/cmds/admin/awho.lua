@@ -3,7 +3,7 @@ M.name = 'awho'
 M.aliases = {'@who'}
 M.category = 'admin'
 M.summary = 'Detailed admin who list.'
-M.permission = 'admin'
+M.permission = "cmd.awho"
 
 function M.execute(session_id, args_str, args)
     local player = get_player(session_id)

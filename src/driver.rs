@@ -84,6 +84,19 @@ impl Driver {
         let mudlib_path = PathBuf::from(&server_config.game.mudlib_path);
         let config_dir = std::path::Path::new("config");
         let permission_config = PermissionConfig::load_from_file(&config_dir.join("permissions.toml"));
+        // A directory rule that names no root protects nothing, and the file
+        // efuns are jailed to two trees now. `load_from_file` already logged
+        // each one; say it again at startup, where an operator is looking, so a
+        // boundary somebody believes in cannot quietly not exist. That is
+        // exactly how the `/areas` rule spent months commented out.
+        if !permission_config.invalid_directory_keys.is_empty() {
+            tracing::error!(
+                "permissions.toml: {} directory rule(s) name no root and are NOT in \
+                 effect: {}. Prefix each with /mudlib or /game.",
+                permission_config.invalid_directory_keys.len(),
+                permission_config.invalid_directory_keys.join(", ")
+            );
+        }
         let (engine_cmd_tx, engine_cmd_rx) = tokio::sync::mpsc::unbounded_channel::<crate::core::scripting::engine::LuaCommand>();
 
         // 5a. Game logger

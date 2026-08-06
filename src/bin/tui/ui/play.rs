@@ -26,7 +26,10 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     draw_input(frame, rows[1], app);
     draw_side(frame, cols[1], app);
 
-    if app.dbg.stopped {
+    // `world_frozen`, not `stopped`: on a server that suspends one dispatch the
+    // game is still being played, and covering the pane would be a lie about
+    // the text underneath it.
+    if app.dbg.world_frozen {
         draw_pause_banner(frame, rows[0], app);
     }
 }
@@ -62,7 +65,7 @@ fn draw_game(frame: &mut Frame, area: Rect, app: &App) {
         " game ".to_string()
     };
 
-    let style = if app.dbg.stopped {
+    let style = if app.dbg.world_frozen {
         // Dimmed, because nothing here is live: the VM is stopped and this text
         // is a photograph of the moment it froze.
         Style::default().add_modifier(Modifier::DIM)

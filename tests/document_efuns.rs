@@ -201,7 +201,7 @@ fn unset_removes_a_field() {
 fn gate(efun: &str) -> PermissionConfig {
     let mut efuns = HashMap::new();
     efuns.insert(efun.to_string(), "admin".to_string());
-    PermissionConfig { efuns, directories: HashMap::new() }
+    PermissionConfig { efuns, ..Default::default() }
 }
 
 /// Any `db_*` efun can be gated from permissions.toml without a code change,

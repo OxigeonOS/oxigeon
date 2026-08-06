@@ -324,8 +324,10 @@ fn register_io_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
         globals.set("stop_echo", echo_fn)?;
     }
 
-    // File I/O efuns (jailed to mudlib root; `list_dir` also reads the game
-    // root, jailed against that one separately)
+    // File I/O efuns. Jailed to **two** roots — the mudlib and the game layer —
+    // each checked against its own. A path may name one with a `game:` or
+    // `mudlib:` prefix; unprefixed, a read searches game-then-mudlib and a write
+    // stays in the mudlib. See `efuns_io::Roots`.
     let game_root = ctx
         .server_config
         .game
@@ -384,7 +386,7 @@ fn register_session_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
                         t.set("terminal_type", ttype.clone())?;
                     }
                     t.set("gmcp_supported", s.capabilities.gmcp_supported)?;
-                    t.set("dropped_output", s.dropped_output() as f64)?;
+                    t.set("dropped_output", s.dropped_output() as i64)?;
                     if !s.capabilities.gmcp_packages.is_empty() {
                         let pkgs = lua.create_table()?;
                         for (i, pkg) in s.capabilities.gmcp_packages.iter().enumerate() {
@@ -685,12 +687,18 @@ fn register_utility_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
     })?;
     globals.set("log", log_fn)?;
 
-    // time() -> number (Unix timestamp)
+    // time() -> integer (Unix timestamp, whole seconds)
+    //
+    // An integer, not a float. On LuaJIT every number is a double and this made
+    // no difference; on 5.3+ integers are a real subtype, and a float timestamp
+    // renders as `1712345678.0` — which reaches players through
+    // `event_d.lua`'s deferred timer ids and anything else that concatenates a
+    // timestamp into a string.
     let time_fn = lua.create_function(|_, ()| {
         Ok(std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
-            .as_secs() as f64)
+            .as_secs() as i64)
     })?;
     globals.set("time", time_fn)?;
 
@@ -1245,9 +1253,9 @@ fn register_observability_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
             freed.fetch_add(recovered, Ordering::Relaxed);
 
             let t = lua.create_table()?;
-            t.set("freed_bytes", recovered as f64)?;
+            t.set("freed_bytes", recovered as i64)?;
             t.set("ms", elapsed.as_secs_f64() * 1000.0)?;
-            t.set("heap_bytes", after as f64)?;
+            t.set("heap_bytes", after as i64)?;
             Ok(t)
         })?;
         globals.set("gc_collect", fn_)?;
@@ -1276,24 +1284,30 @@ fn register_observability_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
             // the answer to "the MUD ate my text", which used to leave no
             // trace at all.
             t.set("dropped_output",
-                sh.read_recover().dropped_output_total() as f64)?;
+                sh.read_recover().dropped_output_total() as i64)?;
 
             // The Lua heap, in its own sub-table. `used_memory` is what mlua's
             // allocator has handed out, which is the same number
             // `collectgarbage("count")` reports in kilobytes — read here so a
             // caller does not have to remember the unit.
             let heap = lua.create_table()?;
-            let used = lua.used_memory() as f64;
-            heap.set("heap_bytes", used)?;
-            heap.set("heap_kb", used / 1024.0)?;
-            heap.set("limit_bytes", (mem_limit_mb * 1024 * 1024) as f64)?;
+            // Byte totals and counts are integers; only the ratio and the
+            // duration are genuinely fractional. On LuaJIT every number was a
+            // double and the distinction did not show, but from 5.3 on a count
+            // returned as a float renders as `1.0` — which reached `mudstatus`
+            // and every test that reads these.
+            let used = lua.used_memory();
+            heap.set("heap_bytes", used as i64)?;
+            heap.set("heap_kb", used as f64 / 1024.0)?;
+            heap.set("limit_bytes", (mem_limit_mb * 1024 * 1024) as i64)?;
             if mem_limit_mb > 0 {
-                heap.set("heap_fraction", used / (mem_limit_mb * 1024 * 1024) as f64)?;
+                heap.set("heap_fraction",
+                    used as f64 / (mem_limit_mb * 1024 * 1024) as f64)?;
             }
-            heap.set("gc_full_count", gc_full_count.load(Ordering::Relaxed) as f64)?;
+            heap.set("gc_full_count", gc_full_count.load(Ordering::Relaxed) as i64)?;
             heap.set("gc_full_ms",
                 gc_full_micros.load(Ordering::Relaxed) as f64 / 1000.0)?;
-            heap.set("gc_freed_bytes", gc_freed_bytes.load(Ordering::Relaxed) as f64)?;
+            heap.set("gc_freed_bytes", gc_freed_bytes.load(Ordering::Relaxed) as i64)?;
             t.set("lua", heap)?;
 
             // Absent rather than zeroed when compute is off, so a mudlib can
@@ -1424,23 +1438,42 @@ fn register_observability_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
     }
 
     // verify_file(path) -> (bool, string?)
-    // Compiles a mudlib file WITHOUT executing it.
+    // Compiles a mudlib or game file WITHOUT executing it.
+    //
+    // Through the same jail every other file efun uses. It had its own —
+    // `sandbox::resolve_jailed_path`, which refuses any path containing `..`
+    // and knew only the mudlib root — so `verify` disagreed with `read_file`
+    // about which paths existed, and could not see the game layer at all. A
+    // builder who can `cat` a file should be able to compile-check it.
     {
         let mudlib_path = ctx.mudlib_path.clone();
+        let game_path = ctx
+            .server_config
+            .game
+            .game_path
+            .as_deref()
+            .map(std::path::PathBuf::from);
         let perm_config = ctx.permission_config.clone();
         let sh = ctx.session_handler.clone();
         let gl = ctx.game_logger.clone();
         let fn_ = lua.create_function(move |lua, path: String| {
             check_efun_permission("verify_file", &perm_config, &sh, &gl)?;
-            let resolved = match crate::core::scripting::sandbox::resolve_jailed_path(&mudlib_path, &path) {
+            let (resolved, virt) = match crate::core::scripting::efuns_io::resolve_read_path(
+                &mudlib_path,
+                game_path.as_deref(),
+                &path,
+            ) {
                 Ok(p) => p,
                 Err(e) => return Ok((false, Some(format!("Path error: {}", e)))),
             };
             let code = match std::fs::read_to_string(&resolved) {
                 Ok(c) => c,
-                Err(e) => return Ok((false, Some(format!("Cannot read '{}': {}", path, e)))),
+                Err(e) => return Ok((false, Some(format!("Cannot read '{}': {}", virt, e)))),
             };
-            let chunk_name = format!("@{}", path);
+            // The chunk name is the *virtual* path, so a compile error, a
+            // breakpoint and a stack frame all name the same file the builder
+            // typed — including which layer it came from.
+            let chunk_name = format!("@{}", virt);
             match lua.load(code.as_str()).set_name(&chunk_name).into_function() {
                 Ok(_)  => Ok((true, None)),
                 Err(e) => Ok((false, Some(e.to_string()))),

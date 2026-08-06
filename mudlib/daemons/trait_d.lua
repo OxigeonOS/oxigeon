@@ -136,8 +136,25 @@ local _entity_gen = setmetatable({}, { __mode = "k" })
 -- worth, never whether the entity has one.
 local _present = setmetatable({}, { __mode = "k" })
 
--- Guards `touch` re-entering itself through `value`.
-local _settling = false
+--- Entities currently being settled, so a settle's own reads cannot re-enter it.
+---
+--- `touch` reads back through `value` — for a gauge's bounds, and for the
+--- `regen_rate` effect hook, whose handlers are game code that may read
+--- anything — and `value` settles regenerating gauges before answering. Without
+--- a guard that is infinite recursion.
+---
+--- Keyed by entity rather than a single boolean, for two reasons:
+---
+--- 1. It is more correct even with one dispatch in flight. A global flag meant
+---    settling A also suppressed settling B, so a formula or effect on A that
+---    happened to read B silently skipped B's regeneration.
+--- 2. It is the difference between working and not once a dispatch can be
+---    *suspended* mid-flight. A global flag left true by a coroutine paused at a
+---    breakpoint stops regeneration for every other player on the server until
+---    it resumes — the wrong answer, arrived at silently.
+---
+--- Weak keys, so an entity that goes away is not held here by the guard.
+local _settling = setmetatable({}, { __mode = "k" })
 
 -- ─── Registration ────────────────────────────────────────────────────────────
 
@@ -607,8 +624,9 @@ function M.value(entity, id)
     if not def then return 0 end
 
     -- A regenerating gauge is a function of the clock, so settle it before
-    -- reading. `_settling` stops the settle's own reads coming back here.
-    if def.regen and not _settling then M.touch(entity) end
+    -- reading. `_settling[entity]` stops *this* entity's settle coming back
+    -- here; another entity's read is unaffected and still settles.
+    if def.regen and not _settling[entity] then M.touch(entity) end
 
     local values = fresh(entity) or recompute(entity)
     return values[id] or def.default
@@ -721,8 +739,8 @@ function M.set_cur(entity, id, value)
     local stats = stats_of(entity); if not stats then return false end
 
     if def.kind == "gauge" then
-        local was_settled = _settling
-        _settling = true
+        local was_settled = _settling[entity]
+        _settling[entity] = true
         local min, max, target = gauge_bounds(entity, def)
         local before = stats[id]
         value = traitlib.clamp(value, min, max)
@@ -736,7 +754,7 @@ function M.set_cur(entity, id, value)
             stats._at = stats._at or {}
             stats._at[id] = os_time()
         end
-        _settling = was_settled
+        _settling[entity] = was_settled
     else
         stats[id] = traitlib.clamp(value, def.min, def.max)
     end
@@ -768,12 +786,13 @@ end
 --- always reported a change would dirty every online player's state several
 --- times a second and undo the entire point of the write-behind tier.
 function M.touch(entity)
-    if _settling then return false end
+    if type(entity) ~= "table" then return false end
+    if _settling[entity] then return false end
     local r = root()
     if #(r.regen or {}) == 0 then return false end
     local stats = stats_of(entity); if not stats then return false end
 
-    _settling = true
+    _settling[entity] = true
     local now = os_time()
     local changed = false
 
@@ -803,7 +822,7 @@ function M.touch(entity)
         end
     end
 
-    _settling = false
+    _settling[entity] = nil
     if changed then M.bump(entity) end
     return changed
 end
@@ -839,7 +858,7 @@ function M.attach(entity)
 
     -- Bounds may have moved while the character was away — a level-up, an item
     -- gone from a slot — so clamp what is here into its current range.
-    _settling = true
+    _settling[entity] = true
     local now = os_time()
     for _, id in ipairs(present_of(entity)) do
         local def = r.defs[id]
@@ -853,7 +872,7 @@ function M.attach(entity)
             end
         end
     end
-    _settling = false
+    _settling[entity] = nil
 
     M.bump(entity)
     return true

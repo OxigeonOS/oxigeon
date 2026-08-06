@@ -15,7 +15,7 @@ M.name = 'traits'
 M.aliases = { '@traits' }
 M.category = 'admin'
 M.summary = 'Inspect traits by kind, category and presence.'
-M.permission = 'admin'
+M.permission = "cmd.traits"
 
 local function sets_of(def)
     if type(def.sets) ~= "table" then return "-" end

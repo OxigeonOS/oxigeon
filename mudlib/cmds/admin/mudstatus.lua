@@ -7,7 +7,7 @@ M.usage = {
     "mudstatus       status, including heap and GC counters",
     "mudstatus gc    force a full Lua collection and report what it cost",
 }
-M.permission = 'admin'
+M.permission = "cmd.mudstatus"
 
 local function format_uptime(seconds)
     if not seconds then return "0s" end
@@ -16,8 +16,11 @@ local function format_uptime(seconds)
     local h = math.floor(seconds / 3600)
     seconds = seconds % 3600
     local m = math.floor(seconds / 60)
-    local s = seconds % 60
-    
+    -- Floored: `uptime_secs` is fractional, and `%d` on a fraction raises
+    -- "number has no integer representation" from Lua 5.3 on. Nobody wants
+    -- their uptime reported to three decimal places anyway.
+    local s = math.floor(seconds % 60)
+
     local parts = {}
     if d > 0 then table.insert(parts, string.format("%dd", d)) end
     if h > 0 then table.insert(parts, string.format("%dh", h)) end

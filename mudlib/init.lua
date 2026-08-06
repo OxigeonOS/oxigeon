@@ -61,6 +61,11 @@ if not ok then log("warn", "Failed to load gmcp_d daemon: " .. tostring(err)) en
 ok, err = pcall(function() DAEMON.pager   = require("daemons.pager_d") end)
 if not ok then log("warn", "Failed to load pager_d daemon: " .. tostring(err)) end
 
+-- The line editor. Beside the pager because they are the same shape and share
+-- an interception point in `Commands.dispatch`.
+ok, err = pcall(function() DAEMON.editor  = require("daemons.editor_d") end)
+if not ok then log("warn", "Failed to load editor_d daemon: " .. tostring(err)) end
+
 ok, err = pcall(function() DAEMON.snoop   = require("daemons.snoop_d") end)
 if not ok then log("warn", "Failed to load snoop_d daemon: " .. tostring(err)) end
 
@@ -76,8 +81,22 @@ if not ok then log("warn", "Failed to load world_d daemon: " .. tostring(err)) e
 ok, err = pcall(function() DAEMON.codegen = require("daemons.codegen_d") end)
 if not ok then log("warn", "Failed to load codegen_d daemon: " .. tostring(err)) end
 
+-- The content linter, after codegen because it reads areas through it.
+ok, err = pcall(function() DAEMON.verify  = require("daemons.verify_d") end)
+if not ok then log("warn", "Failed to load verify_d daemon: " .. tostring(err)) end
+
+-- Adoption, which is the linter plus a flag flip and so comes after it.
+ok, err = pcall(function() DAEMON.adopt   = require("daemons.adopt_d") end)
+if not ok then log("warn", "Failed to load adopt_d daemon: " .. tostring(err)) end
+
 ok, err = pcall(function() DAEMON.olc     = require("daemons.olc_d") end)
 if not ok then log("warn", "Failed to load olc_d daemon: " .. tostring(err)) end
+
+-- Where each session is standing in the file tree. Separate from olc_d because
+-- `cd` outlives a build session — `olc done` should not throw your working
+-- directory away.
+ok, err = pcall(function() DAEMON.fs      = require("daemons.fs_d") end)
+if not ok then log("warn", "Failed to load fs_d daemon: " .. tostring(err)) end
 
 ok, err = pcall(function() DAEMON.items   = require("daemons.item_d") end)
 if not ok then log("warn", "Failed to load item_d daemon: " .. tostring(err)) end
@@ -301,11 +320,28 @@ function on_disconnect(session_id)
         end
     end
 
+    -- Clean up the shell's working directory
+    if DAEMON and DAEMON.fs then
+        local ok, err = pcall(DAEMON.fs.cleanup, session_id)
+        if not ok then
+            log("error", "Failed to cleanup fs session: " .. tostring(err))
+        end
+    end
+
     -- Clean up snoop relationships
     if DAEMON and DAEMON.snoop then
         local ok, err = pcall(DAEMON.snoop.cleanup, session_id)
         if not ok then
             log("error", "Failed to cleanup snoop session: " .. tostring(err))
+        end
+    end
+
+    -- Clean up any open editor. Left open, every subsequent line from this
+    -- session would be buffered as prose into a buffer nobody will ever save.
+    if DAEMON and DAEMON.editor then
+        local ok, err = pcall(DAEMON.editor.cleanup, session_id)
+        if not ok then
+            log("error", "Failed to cleanup editor session: " .. tostring(err))
         end
     end
 
@@ -458,12 +494,16 @@ function on_load(module_name)
         ["daemons.task_d"]       = "task",
         ["daemons.gmcp_d"]       = "gmcp",
         ["daemons.pager_d"]      = "pager",
+        ["daemons.editor_d"]     = "editor",
         ["daemons.snoop_d"]      = "snoop",
         ["daemons.room_d"]       = "room",
         ["daemons.character_d"]  = "character",
         ["daemons.world_d"]      = "world",
         ["daemons.codegen_d"]    = "codegen",
+        ["daemons.verify_d"]     = "verify",
+        ["daemons.adopt_d"]      = "adopt",
         ["daemons.olc_d"]        = "olc",
+        ["daemons.fs_d"]         = "fs",
         ["daemons.item_d"]       = "items",
         ["daemons.cache_d"]      = "cache",
         ["daemons.cooldown_d"]   = "cooldown",
@@ -502,5 +542,12 @@ function on_load(module_name)
     local components = package.loaded["components"]
     if components and components.flush_cache then
         components.flush_cache()
+    end
+
+    -- The schema index, for the same reason: an edited `schema/room.lua` should
+    -- take effect on reload rather than at the next restart.
+    local schemas = package.loaded["schema"]
+    if schemas and schemas.flush_cache then
+        schemas.flush_cache()
     end
 end

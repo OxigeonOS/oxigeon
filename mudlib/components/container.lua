@@ -57,6 +57,37 @@ function M.from_data(data)
     }
 end
 
+--- The flat authoring fields this component reads, in emit order.
+M.fields = {
+    { name = "capacity", type = "integer", default = 0, min = 0, editable = true,
+      help = "How many items fit. 0 is unlimited, which a corpse wants." },
+    { name = "capacity_weight", type = "number", default = 0, min = 0, editable = true,
+      help = "Total weight it holds. 0 is unlimited." },
+    { name = "closeable", type = "boolean", default = false, editable = true,
+      help = "Whether it can be shut at all. A corpse cannot; a chest can." },
+    { name = "starts_closed", type = "boolean", default = false, editable = true,
+      help = "The state a fresh instance starts in." },
+    { name = "key", type = "id", target = "item", editable = true,
+      help = "Template id of the key that opens it. Absent means not lockable." },
+    { name = "starts_locked", type = "boolean", default = false, editable = true },
+}
+
+--- The inverse of `from_data`. See the note in `weapon.lua`.
+--- @param item table
+--- @return table|nil
+function M.to_data(item)
+    if not M.is(item) then return nil end
+    local c = item.container
+    return {
+        capacity        = c.capacity,
+        capacity_weight = c.capacity_weight,
+        closeable       = c.closeable,
+        starts_closed   = c.starts_closed,
+        key             = c.key,
+        starts_locked   = c.starts_locked,
+    }
+end
+
 -- ─── The system ──────────────────────────────────────────────────────────────
 
 --- Does this item carry a container component?

@@ -37,7 +37,7 @@ function M.warn(msg, meta)  return M.write("warn",  msg, meta) end
 function M.error(msg, meta) return M.write("error", msg, meta) end
 
 --- Read recent journal entries.
---- Requires daemon.journal_d.read permission (enforced by journal_read efun).
+--- Requires efun.journal_read (enforced by the journal_read efun).
 --- @param n      number  default 20
 --- @param level  string|nil  optional level filter ("error", "warn", etc.)
 --- @return {} array of raw JSON strings

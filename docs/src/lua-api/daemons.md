@@ -67,8 +67,14 @@ this table is the directory.
 
 | Daemon | Key | Purpose |
 |--------|-----|---------|
-| `codegen_d` | `DAEMON.codegen` | Produces clean Lua data files for rooms and area metadata. |
-| `olc_d` | `DAEMON.olc` | Online Creation session state (area, room, mode). See [OLC](./olc.md). |
+| `codegen_d` | `DAEMON.codegen` | Reads and writes an area's data files. Decides *where* files go and what a file is made of; `lib/serialize.lua` decides how a value is written and `lib/schema.lua` which fields exist. |
+| `olc_d` | `DAEMON.olc` | What a builder is working on: the area, the cursor, and the unsaved drafts. |
+| `verify_d` | `DAEMON.verify` | The content linter. Reads areas **from disk**, never the registry, and reports without changing anything. |
+| `adopt_d` | `DAEMON.adopt` | Brings a hand-authored area under OLC. Reports first; `--confirm` writes. Never parses Lua source. |
+| `editor_d` | `DAEMON.editor` | A line editor, shaped like `pager_d` and intercepted just after it. What makes a six-line room description typable. |
+| `fs_d` | `DAEMON.fs` | Where each session is standing in the file tree, for `ls`/`cd`/`pwd`/`cat`. Separate from `olc_d` because `cd` outlives a build session. |
+
+See [OLC](./olc.md) for how they fit together.
 
 ### journal_d vs audit_d
 

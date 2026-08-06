@@ -74,12 +74,27 @@ A cramped kitchen with a cast-iron stove and hanging copper pots.]],
 
 ### Registering Areas
 
-Area files return data tables. `ROOM_D.load_area()` processes them into Room objects:
+**You do not.** Areas are *discovered*: `lib/areaload.lua` walks `areas/` and
+loads whatever directories it finds, in passes across all of them — items, then
+rooms, then mobs, then shops. Put a directory under `game/areas/` with a
+`rooms.lua` in it and it loads on the next boot.
+
+`game/init.lua` used to name every area explicitly, and it cost two things: an
+area OLC created was invisible until somebody edited that file, and nothing
+registered a reset source, so `areas reset <new_area>` answered "No registered
+source" for every area OLC had ever made. Registering the reset spec is now the
+last act of loading an area, so a working reset is not something anyone has to
+remember.
+
+The five entry file names are `rooms.lua` (or `init.lua`, for an area assembled
+from several files), `items.lua`, `mobs.lua`, `shops.lua` and `custom.lua`.
+Anything else in the directory is included by one of those.
+
+The underlying calls are still there for a game that wants to place something by
+hand:
 
 ```lua
--- game/init.lua
-local area_data = require('areas.tavern')
-local rooms = DAEMON.room.load_area(area_data)
+local rooms = DAEMON.room.load_area(require('areas.tavern'))
 DAEMON.world.register_area(rooms)
 ```
 
@@ -208,11 +223,9 @@ return ROOM_D.merge(
 
 Each sub-file is a normal area data file. Put the `_meta` in whichever sub-file makes sense (usually the first one or the index); `merge()` takes the first `_meta` it finds.
 
-Register like any other area — the caller doesn't care that it's multi-file:
-```lua
--- game/init.lua
-DAEMON.world.register_area(DAEMON.room.load_area(require('areas.elven_forest')))
-```
+Discovery handles it: an `init.lua` in the area directory *is* the entry file, so
+a multi-file area needs no registration and no configuration. `thornhollow` is
+built this way.
 
 ## Virtual Rooms
 

@@ -29,7 +29,7 @@ use oxigeon::config::server_config::ComputeConfig;
 use oxigeon::core::auth::AuthWorker;
 use oxigeon::core::compute::ComputeBridge;
 use oxigeon::core::logging::GameLogger;
-use oxigeon::core::scripting::debugger::DebugState;
+use oxigeon::core::scripting::debugger::{DebugState, SharedDebugState};
 use oxigeon::core::scripting::efuns::EfunContext;
 use oxigeon::core::scripting::{LuaCommand, ScriptEngine};
 use oxigeon::core::session::{Session, SessionHandler, SessionOutput};
@@ -95,6 +95,43 @@ pub struct AuthReply {
     pub username: Option<String>,
     /// The player-facing message on failure.
     pub error: Option<String>,
+}
+
+/// Build the `oxigeon-compute` binary once per test binary, and say where it is.
+///
+/// A compute worker is a separate *crate* — it links LuaJIT unconditionally, and
+/// cargo unifies features across one invocation, so it cannot be a default
+/// workspace member without breaking every `lua55` build. That means `cargo test`
+/// does not build it, and a test that needs one has to.
+///
+/// Built into its own target directory on purpose. Reusing `target/` would have
+/// this cargo contending for the build lock the outer `cargo test` may still
+/// hold, which shows up as a test run that hangs with no output — much worse
+/// than the disk cost of a second cached LuaJIT.
+pub fn compute_worker_binary() -> &'static std::path::Path {
+    static BUILT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    BUILT.get_or_init(|| {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let target = root.join("target").join("compute-worker");
+        let out = std::process::Command::new(env!("CARGO"))
+            .args(["build", "-p", "oxigeon-compute"])
+            .current_dir(root)
+            .env("CARGO_TARGET_DIR", &target)
+            .output()
+            .expect("could not run cargo to build the compute worker");
+        assert!(
+            out.status.success(),
+            "building oxigeon-compute failed:
+{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let bin = target
+            .join("debug")
+            .join(format!("oxigeon-compute{}", std::env::consts::EXE_SUFFIX));
+        assert!(bin.is_file(), "cargo reported success but {} is missing", bin.display());
+        bin
+    })
+    .as_path()
 }
 
 /// A running engine with one connected session to run probes through.
@@ -243,14 +280,81 @@ end
 return M
 "#;
 
-const PROBE_GAME_LAYER: &str = r#"
-package.path = "{game}/?.lua;{game}/?/init.lua;" .. package.path
+/// Run Lua *through the real command dispatcher*.
+///
+/// The probe boots (`boot_real_mudlib_with_probe`) replace `on_input`, so `eval`
+/// works and the dispatcher never runs. The playing boots keep the real
+/// dispatcher, so commands work and there is no way to run Lua. Anything that
+/// tests the dispatcher *itself* — an interception, a permission gate, what a
+/// verb does to a session — needs both at once.
+///
+/// So this is an ordinary command in the fixture game layer. It lives only in
+/// the harness: adding an eval verb to `mudlib/` to make tests easier would be
+/// putting a hole in the shipped game for the convenience of the test suite.
+///
+/// `SESSION` is the calling session id, so a test can say
+/// `fixtureeval DAEMON.editor.open(SESSION, {...})`.
+const FIXTURE_EVAL: &str = r#"
+local M = {}
+M.name = 'fixtureeval'
+M.aliases = { 'fe' }
+M.category = 'general'
+M.summary = 'Run Lua through the real dispatcher. Harness only.'
+M.permission = nil
+function M.execute(session_id, args_str, args)
+    SESSION = session_id
+    local chunk, err = load(args_str, "=fixtureeval")
+    if not chunk then
+        send(session_id, "\r\nFXEVAL	COMPILE	" .. tostring(err) .. "\r\n")
+        return
+    end
+    local ok, res = pcall(chunk)
+    -- The marker is one line, so a multi-line value has its newlines escaped
+    -- rather than truncated. A room description is the whole point of the
+    -- editor, and every one of them is multi-line.
+    local text = tostring(res):gsub("\\", "\\\\"):gsub("\r", ""):gsub("\n", "\\n")
+    send(session_id, "\r\nFXEVAL	" .. (ok and "OK	" or "ERR	") .. text .. "\r\n")
+end
+return M
+"#;
 
-local loaded, err = pcall(require, 'init')
+/// The probe dispatcher over a **copy of the real `game/`**.
+///
+/// This file *is* the copied tree's `init.lua`, overwritten after the copy — so
+/// `real_init.lua` beside it is the game's own, and requiring it runs the real
+/// game layer from the same tree the file jail is pointed at.
+///
+/// It used to prepend the real `game/` to `package.path` and require it from
+/// there instead, which left `require` and `list_dir` disagreeing about where
+/// the game was. See `boot_real_mudlib_with_probe_opts`.
+const PROBE_GAME_LAYER: &str = r#"
+local loaded, err = pcall(require, 'real_init')
 if not loaded then
     log("error", "probe: the real game layer failed to load: " .. tostring(err))
 end
+{probe}"#;
 
+/// Copy a directory tree. Used to stand the real `game/` up in a temp root.
+fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(from) else { return };
+    std::fs::create_dir_all(to).ok();
+    for entry in entries.flatten() {
+        let src = entry.path();
+        let dst = to.join(entry.file_name());
+        if src.is_dir() {
+            copy_dir(&src, &dst);
+        } else {
+            std::fs::copy(&src, &dst).ok();
+        }
+    }
+}
+
+/// The probe dispatcher on its own, with no game content behind it.
+///
+/// Appended to whichever world the boot chose. Kept separate from
+/// [`PROBE_GAME_LAYER`] so a test of *mudlib* mechanics can have the fixture
+/// world instead of Thornhollow and still `eval`.
+const PROBE_DISPATCHER: &str = r#"
 local mudlib_shutdown = on_shutdown
 
 function on_input(session_id, text)
@@ -344,6 +448,53 @@ impl RealVm {
         self.pool.clone()
     }
 
+    /// Run Lua through the **real command dispatcher**, on a playing session.
+    ///
+    /// Only for boots that carry the fixture game layer
+    /// ([`RealVm::boot_with_fixture_world`]) — the probe boots have `eval`
+    /// instead, and the two exist for opposite reasons: `eval` replaces the
+    /// dispatcher, this one goes through it. Anything testing dispatch itself
+    /// needs the second.
+    ///
+    /// Panics on a Lua error, like `Probe::unwrap`.
+    ///
+    /// When the chunk has side effects that write a *prompt* — opening the
+    /// editor does — the reply ends at that prompt and the result marker arrives
+    /// after it. There is nothing to return in that case, so the captured output
+    /// is, which is what a caller checking a banner wants anyway. An error
+    /// never reaches that path: raising produces no prompt, so its marker is
+    /// always in the reply.
+    pub fn lua(&mut self, src: &str) -> String {
+        let out = self.command(&format!("fixtureeval {src}"));
+        for line in out.lines() {
+            if let Some(rest) = line.trim().strip_prefix("FXEVAL\t") {
+                // `trim` has taken the trailing tab off an empty value, so
+                // "OK" and "OK\t…" are both successes. Without this an empty
+                // string — an unset global, a cleared buffer — reads as a
+                // failure, which is a real answer being reported as an error.
+                if rest == "OK" {
+                    return String::new();
+                }
+                if let Some(v) = rest.strip_prefix("OK\t") {
+                    // Newlines travelled escaped; the marker is one line.
+                    return v.replace("\\n", "\n").replace("\\\\", "\\");
+                }
+                panic!("fixtureeval failed: {rest}\n(source: {src})");
+            }
+        }
+        out
+    }
+
+    /// This VM's game root on disk, when it owns a temporary one.
+    ///
+    /// For anything that writes into the game layer and then wants to check
+    /// *where* the file landed — which, with a two-root jail, is half the
+    /// question. `None` for a boot pointed at the repository's own `game/`,
+    /// where a test has no business writing anyway.
+    pub fn game_root(&self) -> Option<&std::path::Path> {
+        self._game.as_ref().map(|d| d.path())
+    }
+
     /// Shut down the way the driver does on Ctrl+C: dispatch `on_shutdown` and
     /// wait for the Lua thread, bounded. Returns whether it finished in time.
     ///
@@ -429,6 +580,7 @@ impl RealVm {
         // about the loader rather than a claim about Thornhollow.
         std::fs::create_dir_all(game.path().join("cmds")).unwrap();
         std::fs::write(game.path().join("cmds/fixturecmd.lua"), FIXTURE_COMMAND).unwrap();
+        std::fs::write(game.path().join("cmds/fixtureeval.lua"), FIXTURE_EVAL).unwrap();
 
         let mut vm = Self::boot_inner_at(
             None,
@@ -484,15 +636,26 @@ impl RealVm {
         let logs = TempDir::new().unwrap();
         let game = TempDir::new().unwrap();
 
-        let real_game = root
-            .join("game")
-            .to_string_lossy()
-            .replace('\\', "/")
-            .trim_start_matches("//?/")
-            .to_string();
+        // The real `game/` is **copied** into the temp root rather than being
+        // reached through `package.path`.
+        //
+        // It used to be the latter: the temp directory held one `init.lua` that
+        // prepended the real game to `package.path` and required it. That made
+        // `require('areas.thornhollow.rooms')` work and left the *file jail*
+        // pointing somewhere else entirely — so `list_dir("areas")` saw nothing,
+        // and once areas were discovered rather than listed, this harness booted
+        // a world with no areas in it while every other path still looked right.
+        //
+        // Copying is ~20 small files and makes both halves agree: what `require`
+        // resolves and what `list_dir` reports are the same tree. The copy is
+        // also what makes it safe for a test to write into the game root.
+        copy_dir(&root.join("game"), game.path());
+        // The game's own entry point, moved aside so the probe can be the one
+        // the engine loads and still hand off to it.
+        std::fs::rename(game.path().join("init.lua"), game.path().join("real_init.lua")).unwrap();
         std::fs::write(
             game.path().join("init.lua"),
-            PROBE_GAME_LAYER.replace("{game}", &real_game),
+            PROBE_GAME_LAYER.replace("{probe}", PROBE_DISPATCHER),
         )
         .unwrap();
 
@@ -504,6 +667,87 @@ impl RealVm {
         vm._game = Some(game);
         assert_eq!(vm.eval("return 'ready'").unwrap(), "ready");
         vm
+    }
+
+    /// The probe dispatcher over the **fixture world** rather than `game/`.
+    ///
+    /// [`RealVm::boot_real_mudlib_with_probe`] gives you `eval` against a fully
+    /// wired `DAEMON` table — and Thornhollow with it, so any test that seeds a
+    /// creature through it is quietly asserting that *this* game defines the
+    /// traits. Delete `game/` and it fails, which is exactly what
+    /// `docs/src/testing.md` says a mudlib test must not do.
+    ///
+    /// This is the same probe over [`FIXTURE_WORLD`]: the smallest world in
+    /// which the mudlib still works. Nobody logs in; use it to ask what mudlib
+    /// code does.
+    pub fn boot_fixture_with_probe() -> Self {
+        Self::boot_fixture_with_probe_opts(TestCtx::default())
+    }
+
+    /// As above, with control over the config. `game_path` and `log_dir` are
+    /// overwritten; everything else is honoured.
+    pub fn boot_fixture_with_probe_opts(mut opts: TestCtx) -> Self {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let logs = TempDir::new().unwrap();
+        let game = TempDir::new().unwrap();
+        std::fs::write(
+            game.path().join("init.lua"),
+            format!("{FIXTURE_WORLD}
+{PROBE_DISPATCHER}"),
+        )
+        .unwrap();
+
+        opts.game_path = Some(game.path().to_path_buf());
+        opts.log_dir = Some(logs.path().to_path_buf());
+
+        let mut vm = Self::boot_inner_at(None, root.join("mudlib"), opts);
+        vm._logs = Some(logs);
+        vm._game = Some(game);
+        assert_eq!(vm.eval("return 'ready'").unwrap(), "ready");
+        vm
+    }
+
+    /// Boot with **both jail roots writable**, for anything that tests the file
+    /// efuns themselves.
+    ///
+    /// Every other constructor points the mudlib root at the repository's own
+    /// `mudlib/`, which makes a write test either impossible or a test that
+    /// litters the tree it is testing. Both roots here are temp directories, so
+    /// a refusal and a success are equally safe to assert.
+    ///
+    /// Returns the VM plus the two real paths, so a test can check *where* a
+    /// write landed rather than only that it succeeded — which is the whole
+    /// question a two-root jail raises.
+    pub fn boot_two_roots(
+        permissions: PermissionConfig,
+    ) -> (Self, std::path::PathBuf, std::path::PathBuf) {
+        let mudlib = TempDir::new().unwrap();
+        write_probe_mudlib(mudlib.path());
+        let game = TempDir::new().unwrap();
+        // The engine requires a game layer to load; an empty one is enough,
+        // because these tests ask about the efuns rather than about content.
+        std::fs::write(game.path().join("init.lua"), "-- two-root jail fixture\n").unwrap();
+
+        let mudlib_path = mudlib.path().to_path_buf();
+        let game_path = game.path().to_path_buf();
+        let logs = TempDir::new().unwrap();
+
+        let mut vm = Self::boot_inner_at(
+            Some(mudlib),
+            mudlib_path.clone(),
+            TestCtx {
+                permissions,
+                game_path: Some(game_path.clone()),
+                log_dir: Some(logs.path().to_path_buf()),
+                max_connections: 8,
+                max_characters_per_account: 1,
+                ..Default::default()
+            },
+        );
+        vm._logs = Some(logs);
+        vm._game = Some(game);
+        assert_eq!(vm.eval("return 'ready'").unwrap(), "ready");
+        (vm, mudlib_path, game_path)
     }
 
     fn boot_inner(instruction_limit: u64, permissions: PermissionConfig) -> Self {
@@ -892,6 +1136,44 @@ impl RealVm {
         }
     }
 
+    /// Send probe source without waiting for its reply.
+    ///
+    /// [`RealVm::eval`] waits, which is exactly wrong for a dispatch that is
+    /// about to stop at a breakpoint and may never answer.
+    pub fn send_eval(&self, src: &str) {
+        assert!(!src.contains('\n'), "probe source must be one line");
+        self.engine.as_ref().unwrap().send(LuaCommand::OnInput {
+            session_id: self.session_id.clone(),
+            text: src.to_string(),
+        });
+    }
+
+    /// The next probe reply, or `None` if none arrives inside `window`.
+    ///
+    /// The `None` is the assertion in a test of a frozen VM, so this must not
+    /// give up early the way `drain_for` does on a quiet channel.
+    pub fn probe_within(&mut self, window: Duration) -> Option<Probe> {
+        if let Some(queued) = self.pending_probe.pop_front() {
+            return Some(queued);
+        }
+        let deadline = Instant::now() + window;
+        while Instant::now() < deadline {
+            match self.output.try_recv() {
+                Ok(SessionOutput::Text(t)) => match parse_line(&t) {
+                    Line::Probe(p) => return Some(p),
+                    Line::Auth(a) => self.pending_auth.push_back(a),
+                    Line::Compute(c) => self.pending_compute.push_back(c),
+                },
+                Ok(_) => {}
+                Err(mpsc::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Err(mpsc::error::TryRecvError::Disconnected) => break,
+            }
+        }
+        None
+    }
+
     /// Whether a global is reachable from unprivileged mudlib code.
     pub fn reaches(&mut self, expr: &str) -> bool {
         self.eval(&format!("return tostring(({expr}) ~= nil)")).unwrap() == "true"
@@ -1066,6 +1348,14 @@ pub struct TestCtx {
     pub start_room: Option<String>,
     /// The `[compute]` block. Disabled unless a test asks for it.
     pub compute: ComputeConfig,
+    /// The debugger's shared state. `None` builds the default one, exactly as
+    /// a server without `[servers.debug]` does.
+    ///
+    /// A test that wants to *drive* a stop passes its own clone in here and
+    /// keeps the other: the atomics are the same ones the hook reads, so
+    /// setting `pause_req` from the test thread is the same request a DAP
+    /// client's `pause` makes, without a TCP client in the way.
+    pub debug_state: Option<SharedDebugState>,
     /// The periodic subsystems, all off by default for the same reason
     /// `autosave_seconds` is: a ticker that fires mid-test injects work
     /// nothing asked for. Set one when the registration itself is what is
@@ -1094,6 +1384,7 @@ impl Default for TestCtx {
             game_path: None,
             start_room: None,
             compute: ComputeConfig::default(),
+            debug_state: None,
             cache_flush_seconds: Some(0),
             effect_sweep_seconds: Some(0),
             effect_heartbeat_seconds: Some(0),
@@ -1183,9 +1474,18 @@ pub fn efun_context(
         .map(|tx| AuthWorker::start(account_store.clone(), tx.clone(), 1));
 
     // Same story: no channel means nothing to answer on, so no pool.
+    //
+    // A worker is a child process, and under `cargo test` there is no release
+    // layout to find one beside. Point every compute test at the binary the
+    // harness builds — here rather than in one constructor, so a test that turns
+    // compute on through any boot path gets it.
     let compute = opts.cmd_tx.as_ref().and_then(|tx| {
+        let mut cfg = opts.compute.clone();
+        if cfg.enabled && cfg.worker_path.is_none() {
+            cfg.worker_path = Some(compute_worker_binary().to_string_lossy().into_owned());
+        }
         ComputeBridge::start(
-            opts.compute.clone(),
+            cfg,
             mudlib_path.clone(),
             opts.game_path.clone().unwrap_or_else(|| mudlib_path.join("game")),
             tx.clone(),
@@ -1211,10 +1511,9 @@ pub fn efun_context(
         started_at_utc: "2026-01-01T00:00:00Z".to_string(),
         // The same call the driver makes, so the instruction budget is armed
         // the same way it is in production.
-        debug_state: DebugState::from_config(
-            &DebugServerConfig::default(),
-            opts.instruction_limit,
-        ),
+        debug_state: opts.debug_state.clone().unwrap_or_else(|| {
+            DebugState::from_config(&DebugServerConfig::default(), opts.instruction_limit)
+        }),
         auth_worker,
         compute,
         document_store,

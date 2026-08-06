@@ -119,8 +119,12 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled(app.telnet.label(), dot(&app.telnet)),
         Span::styled("  dap ", Style::default().fg(Color::DarkGray)),
         Span::styled(
-            if app.dbg.stopped {
-                "stopped".to_string()
+            if app.dbg.world_frozen {
+                "frozen".to_string()
+            } else if app.dbg.stopped {
+                // One dispatch is held and the game is still running. Saying
+                // "stopped" here is what made a live server look dead.
+                "suspended".to_string()
             } else if app.dbg.attached {
                 "attached".to_string()
             } else {

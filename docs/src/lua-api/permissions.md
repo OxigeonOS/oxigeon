@@ -101,19 +101,37 @@ local ok = refresh_permissions(session_id)
 
 ## Permission Naming Convention
 
-Permission strings are arbitrary, but follow these conventions for clarity:
+Permission strings are arbitrary to the driver, and the cost of leaving it at
+that was steep: `game/setup_roles.lua` granted `cmd.olc`, `cmd.verify` and
+`efun.write_file` while the code required `olc`, `efun.verify` and
+`efun.file.write`. Not one of the builder role's grants matched anything, so the
+role was decorative and the only account that could build was account 1, through
+the `is_admin` bypass. Every half of that mismatch looked correct on its own.
 
-| Prefix | Used for |
-|--------|----------|
-| `efun.` | Driver efun access (e.g. `efun.reload`, `efun.broadcast`) |
-| `efun.file.` | File efun access (e.g. `efun.file.write`, `efun.file.delete`) |
-| `efun.session.` | Session control (e.g. `efun.session.disconnect`) |
-| `dir.read.` | Directory read access (e.g. `dir.read.admin`) |
-| `dir.write.` | Directory write access (e.g. `dir.write.areas`) |
-| `cmd.` | Command-level gates (e.g. `cmd.reload`) — mudlib-defined |
+So the convention is now enforced rather than suggested:
 
-The `cmd.*` namespace is purely for mudlib use — set `M.permission = "cmd.smite"` on
-a command module and check it via `has_permission()` in the dispatcher.
+| Shape | Used for |
+|-------|----------|
+| `cmd.<verb>` | A command. **Every** gated command, and the verb is its own name |
+| `cmd.<verb>.<capability>` | A sub-power of one command (`cmd.olc.areas`, `cmd.audit.manage`) |
+| `efun.<name>` | An efun, spelled exactly as the Lua global (`efun.write_file`, not `efun.file.write`) |
+| `dir.<op>.<top>` | A directory rule, matching a `[directories]` key (`dir.write.areas`) |
+| `<thing>.<capability>` | Anything that is none of the above — `alert.receive`, `board.moderate`, `channel.staff` |
+
+Two tests hold the line, and they ask different questions:
+
+- `tests/command_layout.rs` — every gated command's `M.permission` is
+  `cmd.<its own verb>`. The "own verb" half matters: a uniform prefix alone
+  still let `dig` ask for `cmd.olc`, which it did, so `dig` could not be granted
+  separately from `olc`.
+- `tests/demo_world/roles.rs` — every permission a command names is granted by
+  some role. That one lives with the game layer, because which roles exist is a
+  game decision.
+
+A command gate and an efun gate are **separate and both apply**: `cmd.verify`
+lets you type the verb, `efun.verify_file` lets mudlib code call the efun. Giving
+somebody the command does not give them the efun, which is what stops a mudlib
+module compiling arbitrary files just because a command exists.
 
 ---
 
@@ -131,10 +149,10 @@ Missing file = all open (safe default for development).
 # Superusers bypass all checks.
 
 reload      = "efun.reload"
-write_file  = "efun.file.write"
-append_file = "efun.file.write"
-delete_file = "efun.file.delete"
-disconnect  = "efun.session.disconnect"   # only for disconnecting OTHER sessions
+write_file  = "efun.write_file"
+append_file = "efun.write_file"
+delete_file = "efun.delete_file"
+disconnect  = "efun.disconnect"   # only for disconnecting OTHER sessions
 broadcast   = "efun.broadcast"
 
 [directories]

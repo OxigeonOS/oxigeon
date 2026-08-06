@@ -28,7 +28,7 @@ fn the_game_declares_its_roles_on_every_boot() {
     assert_eq!(
         vm.eval(
             "for _, p in ipairs(get_permissions('builder')) do \
-             if p == 'dir.write.areas' then return 'yes' end end return 'no'"
+             if p == 'dir.write.game.areas' then return 'yes' end end return 'no'"
         )
         .unwrap(),
         "yes"
@@ -65,7 +65,7 @@ fn the_role_command_grants_and_the_change_lands_immediately() {
     assert!(out.contains("permission"), "{out}");
 
     let out = vm.command("role perms builder");
-    assert!(out.contains("dir.write.areas"), "{out}");
+    assert!(out.contains("dir.write.game.areas"), "{out}");
 
     // The test character is the superuser, so `role who` on them is the case
     // worth checking: the bypass is an *account flag*, not a role, and must not
@@ -112,5 +112,48 @@ fn a_role_can_be_edited_and_a_cache_refreshed() {
 
     // Somebody who is not here.
     assert!(vm.command("role grant nobody builder").contains("not online"));
+}
+
+/// Every permission a command asks for is granted by some role.
+///
+/// This is the check that was missing, and its absence is why the builder role
+/// did nothing for months: `setup_roles.lua` granted `cmd.olc`, `cmd.verify` and
+/// `efun.write_file` while the code required `olc`, `efun.verify` and
+/// `efun.file.write`. Every grant was a string nothing would ever ask for. The
+/// role existed, `role list` printed it, and the only account that could build
+/// was account 1 through the `is_admin` bypass.
+///
+/// Here rather than in `tests/command_layout.rs` because it reads
+/// `game/setup_roles.lua` — which roles exist is a game decision, and a mudlib
+/// with no `game/` must not fail for having no opinion about it.
+///
+/// `tests/command_layout.rs` asserts the *shape* of the strings; this asserts
+/// somebody can actually be given them. Both are needed: a uniform naming
+/// scheme that nothing grants is as useless as a grant that names nothing.
+#[test]
+fn every_command_permission_is_granted_by_some_role() {
+    let mut vm = RealVm::boot_real_mudlib_with_probe();
+
+    let ungranted = vm
+        .eval(
+            "local held = {} \
+             for _, r in ipairs(list_roles()) do \
+               local name = type(r) == 'table' and r.name or tostring(r) \
+               for _, p in ipairs(get_permissions(name)) do held[p] = true end \
+             end \
+             local out = {} \
+             for verb, mod in pairs(require('lib.commands').registry()) do \
+               if mod.permission and not held[mod.permission] then \
+                 out[#out+1] = verb .. ' wants ' .. mod.permission \
+               end \
+             end \
+             table.sort(out) return table.concat(out, '; ')",
+        )
+        .unwrap();
+
+    assert_eq!(
+        ungranted, "",
+        "commands nobody but account 1 can ever run: {ungranted}"
+    );
 }
 

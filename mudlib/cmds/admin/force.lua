@@ -3,7 +3,7 @@ M.name = 'force'
 M.aliases = {}
 M.category = 'admin'
 M.summary = 'Execute command as another player.'
-M.permission = 'admin'
+M.permission = "cmd.force"
 
 function M.execute(session_id, args_str, args)
     local player = get_player(session_id)

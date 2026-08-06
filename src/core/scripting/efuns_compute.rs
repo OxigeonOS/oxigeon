@@ -104,18 +104,24 @@ fn refused(lua: &Lua, e: SubmitError) -> LuaResult<(LuaValue, LuaValue)> {
 pub fn snapshot_table(lua: &Lua, bridge: &ComputeBridge) -> LuaResult<LuaTable> {
     let s = bridge.snapshot();
     let t = lua.create_table()?;
-    t.set("workers", s.workers as f64)?;
-    t.set("queue_depth", s.queue_depth as f64)?;
-    t.set("instruction_limit", s.instruction_limit as f64)?;
-    t.set("in_flight", s.in_flight as f64)?;
-    t.set("running", s.running as f64)?;
-    t.set("submitted", s.stats.submitted as f64)?;
-    t.set("completed", s.stats.completed as f64)?;
-    t.set("failed", s.stats.failed as f64)?;
-    t.set("timed_out", s.stats.timed_out as f64)?;
-    t.set("refused", s.stats.refused as f64)?;
-    t.set("cancelled", s.stats.cancelled as f64)?;
-    // Non-zero means a worker is gone for good. Worth alerting on.
-    t.set("wedged", s.stats.wedged as f64)?;
+    t.set("workers", s.workers as i64)?;
+    t.set("queue_depth", s.queue_depth as i64)?;
+    t.set("instruction_limit", s.instruction_limit as i64)?;
+    t.set("in_flight", s.in_flight as i64)?;
+    t.set("running", s.running as i64)?;
+    t.set("submitted", s.stats.submitted as i64)?;
+    t.set("completed", s.stats.completed as i64)?;
+    t.set("failed", s.stats.failed as i64)?;
+    t.set("timed_out", s.stats.timed_out as i64)?;
+    t.set("refused", s.stats.refused as i64)?;
+    t.set("cancelled", s.stats.cancelled as i64)?;
+    // Jobs that overran their deadline while running. Each killed and replaced
+    // a worker process, so the pool recovers — but a job that has to be killed
+    // is doing something it should not. Worth alerting on.
+    t.set("wedged", s.stats.wedged as i64)?;
+    // Worker processes started, including respawns. Zero on a server where
+    // compute is enabled but has never been used: workers are spawned lazily,
+    // which is what makes an enabled-but-idle pool free.
+    t.set("spawned", s.stats.spawned as i64)?;
     Ok(t)
 }

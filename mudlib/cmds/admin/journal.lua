@@ -1,6 +1,6 @@
 -- mudlib/cmds/journal.lua — Read server journal entries
 -- Displays recent journal entries from logs/journal.log.
--- Requires daemon.journal_d.read permission.
+-- Requires cmd.journal to run, and efun.journal_read to reach the daemon.
 
 local M = {}
 
@@ -8,7 +8,7 @@ M.name       = "journal"
 M.aliases    = {}
 M.category   = "admin"
 M.summary    = "Read server journal. Usage: journal [count] [level]"
-M.permission = "daemon.journal_d.read"
+M.permission = "cmd.journal"
 
 -- Map level argument to the filter string used by journal_read
 local LEVEL_ALIASES = {

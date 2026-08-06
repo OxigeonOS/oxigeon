@@ -195,6 +195,15 @@ function H.expand(ref)
         end
         table.sort(out, function(a, b) return a.name < b.name end)
 
+    elseif spec.kind == "frozen" then
+        -- Rows captured at the moment of the stop. The stack they came from may
+        -- be suspended — or gone — by the time anyone asks, so there is nothing
+        -- to walk: the values are already here.
+        for _, row in ipairs(spec.rows) do
+            if #out >= MAX_CHILDREN then break end
+            out[#out + 1] = entry(row.name, row.value)
+        end
+
     elseif spec.kind == "table" then
         local t = spec.value
         for k, v in pairs(t) do
@@ -261,15 +270,55 @@ local function frame_env(level)
     })
 end
 
+--- Compile `src` with `env` as its environment, on whichever Lua this is.
+---
+--- 5.1 (LuaJIT) has `loadstring` + `setfenv`; 5.2 removed both and folded the
+--- environment into `load`'s fourth argument. `frame_env` already returns a
+--- proxy table, which is exactly what that argument wants, so the two paths
+--- differ only in spelling.
+---
+--- `"t"` refuses precompiled bytecode, matching the text-only loaders the
+--- sandbox installs — an evaluator that accepted a binary chunk would be a way
+--- around them.
+local compile
+if loadstring then
+    compile = function(src, env)
+        local chunk, err = loadstring(src, "=eval")
+        if not chunk then return nil, err end
+        setfenv(chunk, env)
+        return chunk
+    end
+else
+    compile = function(src, env)
+        return load(src, "=eval", "t", env)
+    end
+end
+
 --- Compile and run `src` against `env`. Touches no debug.* API, so its own
 --- stack depth is irrelevant and it is safe to call from any nesting.
 local function exec(env, src)
     -- Try as an expression first so `player.name` works, then as a statement.
-    local chunk, err = loadstring("return " .. src, "=eval")
-    if not chunk then chunk, err = loadstring(src, "=eval") end
+    local chunk, err = compile("return " .. src, env)
+    if not chunk then chunk, err = compile(src, env) end
     if not chunk then return false, err end
-    setfenv(chunk, env)
     return pcall(chunk)
+end
+
+--- Point at the `.`-versus-`:` slip, when that is plainly what happened.
+---
+--- `player.is_alive()` calls a method with no `self`, and Lua reports it from
+--- inside the callee: "mobile.lua:114: attempt to index a nil value (local
+--- 'self')" — a file and a line that have nothing to do with what you typed.
+--- Everything else here reports Lua's error verbatim, and this is the one case
+--- where verbatim sends you to the wrong place.
+---
+--- Only fires when the expression really does contain `.name(`, so it cannot
+--- misread an unrelated nil `self`.
+local function self_hint(src, err)
+    if not err:find("local 'self'", 1, true) then return err end
+    local dotted = src:match("[%w_%]%)]%.([%w_]+)%s*%(")
+    if not dotted then return err end
+    return err .. "  (did you mean :" .. dotted .. "() ? a `.` call passes no self)"
 end
 
 --- Evaluate an expression as if it ran inside a frame.
@@ -277,7 +326,7 @@ function H.eval(frame, src)
     -- +1 for frame_env's own frame; see its contract.
     local env = frame_env(frame + LEVEL_BASE + 1)
     local ok, result = exec(env, src)
-    if not ok then return false, tostring(result), "error", 0 end
+    if not ok then return false, self_hint(src, tostring(result)), "error", 0 end
 
     local text, t = describe(result)
     return true, text, t, ref_for(result)
@@ -291,9 +340,119 @@ end
 function H.cond(frame, src)
     local env = frame_env(frame + LEVEL_BASE + 1)
     local ok, result = exec(env, src)
-    if not ok then return false, false, tostring(result) end
+    if not ok then return false, false, self_hint(src, tostring(result)) end
     -- Lua truthiness: only nil and false are falsy.
     return true, (result and true or false), nil
+end
+
+-- ─── Capturing a stop, for a VM that will not still be there ─────────────────
+--
+-- Everything above resolves against the *live* stack: a handle holds a level,
+-- and `debug.getlocal(level, i)` walks the thread that is running now. That is
+-- correct while the hook blocks the thread, because nothing else can run.
+--
+-- Once a stop is a coroutine *yield*, it stops being correct. The engine parks
+-- the suspended thread and carries on serving other players, so by the time the
+-- debug client asks what a local holds, the stack those levels described is
+-- suspended and the running thread is somebody else's command.
+--
+-- So a stop is captured at the moment it happens, from inside the hook, while
+-- the frames are still the current ones. What comes out has no stack in it:
+-- frozen rows for the panes, and the same eager environment `frame_env` already
+-- built for evaluation. Answering afterwards touches no `debug.*` at all.
+
+local captures, cseq = {}, 0
+
+--- Freeze one frame's locals and upvalues into ordered rows.
+local function freeze(level)
+    local locals, upvals = {}, {}
+
+    local info = dbg.getinfo(level, "fS")
+    if not info then return nil end
+
+    if info.func then
+        local i = 1
+        while true do
+            local name, value = dbg.getupvalue(info.func, i)
+            if not name then break end
+            if not is_internal(name) then
+                upvals[#upvals + 1] = { name = name, value = value }
+            end
+            i = i + 1
+        end
+    end
+
+    local i = 1
+    while true do
+        local name, value = dbg.getlocal(level, i)
+        if not name then break end
+        if not is_internal(name) then
+            -- Later declarations shadow earlier ones, as in `H.expand`.
+            local replaced = false
+            for k = 1, #locals do
+                if locals[k].name == name then locals[k] = { name = name, value = value }; replaced = true; break end
+            end
+            if not replaced then locals[#locals + 1] = { name = name, value = value } end
+        end
+        i = i + 1
+    end
+
+    return { locals = locals, upvals = upvals, has_upvals = #upvals > 0 }
+end
+
+--- Capture the paused frames. Call only from the hook, before yielding.
+--- @param levels integer  how many frames to keep
+--- @return integer  capture id, or 0 if there was nothing to capture
+function H.capture(levels)
+    local frames = {}
+    for frame = 0, math.max(0, levels - 1) do
+        -- +1 for this function's own frame, as `frame_env` documents.
+        local level = frame + LEVEL_BASE + 1
+        local frozen = freeze(level)
+        if not frozen then break end
+        frozen.env = frame_env(level)
+        frames[frame] = frozen
+    end
+    if not frames[0] then return 0 end
+
+    cseq = cseq + 1
+    captures[cseq] = frames
+    return cseq
+end
+
+--- Drop a capture. Called on resume, with the handles it allocated.
+function H.release(cap)
+    captures[cap] = nil
+end
+
+--- Scopes for a frame of a captured stop. Same shape as `H.scopes`, but the
+--- handles hold values rather than stack levels.
+function H.cap_scopes(cap, frame)
+    local frames = captures[cap]
+    local f = frames and frames[frame]
+    if not f then return {} end
+
+    local out = {}
+    out[#out + 1] = { name = "Locals", ref = alloc({ kind = "frozen", rows = f.locals }), expensive = false }
+    if f.has_upvals then
+        out[#out + 1] = { name = "Upvalues", ref = alloc({ kind = "frozen", rows = f.upvals }), expensive = false }
+    end
+    -- Globals are live by nature and shared, so there is nothing to freeze.
+    out[#out + 1] = { name = "Globals", ref = alloc({ kind = "globals" }), expensive = true }
+    return out
+end
+
+--- Evaluate against a captured frame's environment.
+function H.cap_eval(cap, frame, src)
+    local frames = captures[cap]
+    local f = frames and frames[frame]
+    if not f then return false, "that frame is no longer available", "error", 0 end
+
+    local ok, result = exec(f.env, src)
+    if not ok then return false, tostring(result), "error", 0 end
+
+    local text, t = describe(result)
+    return true, text, t, ref_for(result)
 end
 
 return H

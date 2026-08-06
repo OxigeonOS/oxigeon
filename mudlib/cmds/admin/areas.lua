@@ -3,7 +3,7 @@ M.name = 'areas'
 M.aliases = {'@areas'}
 M.category = 'admin'
 M.summary = 'List and manage areas.'
-M.permission = 'admin'
+M.permission = "cmd.areas"
 
 function M.execute(session_id, args_str, args)
     local player = get_player(session_id)

@@ -21,6 +21,22 @@
 
 local M = {}
 
+-- ─── The grants have to spell the same strings the code requires ────────────
+--
+-- They did not. This file granted `cmd.olc`, `cmd.verify` and `efun.write_file`
+-- while the code required `olc`, `efun.verify` and `efun.file.write` — not one
+-- of the builder role's eight grants matched anything it was meant to unlock.
+-- The role existed, the database held it, `role list` printed it, and it did
+-- nothing at all. The only account that could build was account 1, through the
+-- `is_admin` superuser bypass, which is why nobody noticed.
+--
+-- `tests/demo_world/` now asserts that every permission a command names is
+-- granted by some role, which is the check that would have caught it.
+--
+-- The scheme is in `config/permissions.toml`. In short: `cmd.<verb>` for a
+-- command, `efun.<name>` for an efun, `dir.<op>.<root>.<top>` for a directory,
+-- and a bare `<thing>.<capability>` for anything that is none of those.
+
 --- role -> permissions. Ordered as a list of pairs rather than a map, so the
 --- order roles are created in is stable and a diff of this file reads as a
 --- diff of the policy.
@@ -36,16 +52,30 @@ M.ROLES = {
         summary = "May write area files and use the online builder.",
         permissions = {
             -- The rule in `permissions.toml` that was commented out until this
-            -- existed to be granted. Without it `/areas` was world-writable and
-            -- the builder role was a label rather than a boundary.
-            "dir.write.areas",
+            -- existed to be granted. Without it `/areas` was world-writable
+            -- and the builder role was a label rather than a boundary.
+            "dir.write.game.areas",
+
+            -- Calling the efun at all. Distinct from where it may write:
+            -- `[directories]` answers that, and both have to pass.
             "efun.write_file",
             "efun.append_file",
             "efun.delete_file",
+            "efun.verify_file",
+
+            -- The builder's toolchain.
             "cmd.olc",
+            "cmd.olc.areas",   -- creating a new area, not just editing one
             "cmd.dig",
             "cmd.verify",
             "cmd.reload",
+            "cmd.objdump",     -- you cannot edit a field you cannot see
+
+            -- Reading around the tree they build in.
+            "cmd.ls",
+            "cmd.cd",
+            "cmd.pwd",
+            "cmd.cat",
         },
     },
 
@@ -60,6 +90,18 @@ M.ROLES = {
             "cmd.audit",
             "cmd.awho",
             "cmd.finger",
+
+            -- Raising an alert and hearing one are different powers. They used
+            -- to be one string, so the only way to be told about an incident
+            -- was to be able to page everyone about it.
+            "alert.receive",
+
+            -- The efuns behind `journal` and `audit`. The command gate stops
+            -- the verb; these stop mudlib code reaching past it.
+            "efun.journal_read",
+            "efun.audit_read",
+            "efun.broadcast_to_perm",
+
             "board.moderate",
             "channel.staff",
         },
@@ -70,7 +112,10 @@ M.ROLES = {
         summary = "Everything a role can carry. Not the superuser bypass, "
                .. "which is an account flag and cannot be granted.",
         permissions = {
-            "admin",
+            -- `has_permission` is exact-match with no wildcards, so a blanket
+            -- has to be spelled out. Listing every verb is the honest form:
+            -- what this role can do is readable here rather than inferred from
+            -- a prefix rule that lives somewhere else.
             "cmd.goto",
             "cmd.spawn",
             "cmd.force",
@@ -78,7 +123,17 @@ M.ROLES = {
             "cmd.role",
             "cmd.trace",
             "cmd.mudstatus",
+            "cmd.affect",
+            "cmd.areas",
+            "cmd.events",
+            "cmd.objdump",
+            "cmd.stat",
+            "cmd.tasks",
+            "cmd.traits",
             "efun.db.clear",
+            "efun.trace",
+            "efun.disconnect",
+            "efun.broadcast",
         },
     },
 }

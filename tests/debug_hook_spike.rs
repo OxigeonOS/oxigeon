@@ -56,12 +56,22 @@ fn spike4_debug_stdlib_can_be_loaded_and_hidden() {
         );
     }
 
-    // LuaJIT is 5.1: setfenv/loadstring exist, which `eval_in_frame` relies on.
-    let has_setfenv: bool = lua
-        .load("return setfenv ~= nil and getfenv ~= nil and loadstring ~= nil")
+    // The evaluator needs *some* way to run a chunk with a supplied environment.
+    // 5.1 (LuaJIT) spells that `loadstring` + `setfenv`; 5.2 removed both and
+    // folded it into `load`'s fourth argument. `introspect.lua` picks whichever
+    // is present — this asserts one of them always is, on either runtime.
+    let can_set_env: bool = lua
+        .load(
+            "if setfenv and loadstring then return true end \
+             local f = load('return 1 + 1', '=probe', 't', { }) \
+             return f ~= nil",
+        )
         .eval()
         .unwrap();
-    assert!(has_setfenv, "LuaJIT should expose setfenv/getfenv/loadstring");
+    assert!(
+        can_set_env,
+        "no way to compile a chunk with a supplied environment — `evaluate` cannot work"
+    );
 }
 
 // ─── Spike 1: re-entering the VM from inside a hook ──────────────────────────
@@ -91,10 +101,11 @@ fn spike1_hook_can_call_back_into_the_vm() {
             Err(e) => sink.borrow_mut().push(format!("get_global_ERR={e}")),
         }
         // (c) inspect the stack while inside the hook
-        let depth = (0..64).take_while(|n| lua.inspect_stack(*n).is_some()).count();
+        let depth = (0..64).take_while(|n| lua.inspect_stack(*n, |_| ()).is_some()).count();
         sink.borrow_mut().push(format!("stack_depth={depth}"));
         Ok(VmState::Continue)
-    });
+    })
+    .expect("the hook must install, or this test asserts nothing");
 
     lua.load(
         r#"
@@ -133,14 +144,14 @@ fn spike2_getlocal_level_offset_from_hook() {
     // Fire on the `return b` line inside `inner` (line 5 of the chunk below).
     // Filter by line, not by `names().name` — spike 3 shows that name is stale or
     // empty for tail-called and anonymous frames.
-    const MARKER_LINE: i32 = 5;
+    const MARKER_LINE: usize = 5;
 
     lua.set_hook(HookTriggers::EVERY_LINE, move |lua, debug| {
         let src = debug.source().source.map(|s| s.to_string()).unwrap_or_default();
         if !src.contains("spike2") {
             return Ok(VmState::Continue);
         }
-        if debug.curr_line() != MARKER_LINE || !sink.borrow().is_empty() {
+        if debug.current_line() != Some(MARKER_LINE) || !sink.borrow().is_empty() {
             return Ok(VmState::Continue);
         }
 
@@ -180,7 +191,8 @@ fn spike2_getlocal_level_offset_from_hook() {
             ));
         }
         Ok(VmState::Continue)
-    });
+    })
+    .expect("the hook must install, or this test asserts nothing");
 
     // NOTE: line numbers matter — MARKER_LINE above points at `return b`.
     // `outer` must use a NON-tail call, or LuaJIT replaces its frame and its
@@ -246,17 +258,18 @@ fn spike3_tailcall_events_and_stack_depth() {
         if !src.contains("spike3") {
             return Ok(VmState::Continue);
         }
-        let depth = (0..64).take_while(|n| lua.inspect_stack(*n).is_some()).count();
+        let depth = (0..64).take_while(|n| lua.inspect_stack(*n, |_| ()).is_some()).count();
         let name = debug.names().name.map(|s| s.to_string()).unwrap_or_default();
         sink.borrow_mut().push(format!(
             "{:?} depth={} line={} name={}",
             debug.event(),
             depth,
-            debug.curr_line(),
+            debug.current_line().unwrap_or(0),
             name
         ));
         Ok(VmState::Continue)
-    });
+    })
+    .expect("the hook must install, or this test asserts nothing");
 
     lua.load(
         r#"

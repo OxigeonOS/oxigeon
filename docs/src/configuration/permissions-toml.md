@@ -31,12 +31,12 @@ Superusers (`account.is_admin = true`) bypass all checks.
 reload = "efun.reload"
 
 # File system (write operations — read is unrestricted unless [directories] says otherwise)
-write_file  = "efun.file.write"
-append_file = "efun.file.write"
-delete_file = "efun.file.delete"
+write_file  = "efun.write_file"
+append_file = "efun.append_file"
+delete_file = "efun.delete_file"
 
 # Session control (only applies when disconnecting OTHER sessions, not yourself)
-disconnect = "efun.session.disconnect"
+disconnect = "efun.disconnect"
 
 # Broadcasting to all players
 broadcast = "efun.broadcast"
@@ -88,10 +88,10 @@ Given a file at `/areas/dungeon.lua` with no matching entry:
 
 [efuns]
 reload      = "efun.reload"
-write_file  = "efun.file.write"
-append_file = "efun.file.write"
-delete_file = "efun.file.delete"
-disconnect  = "efun.session.disconnect"
+write_file  = "efun.write_file"
+append_file = "efun.append_file"
+delete_file = "efun.delete_file"
+disconnect  = "efun.disconnect"
 broadcast   = "efun.broadcast"
 
 [directories]

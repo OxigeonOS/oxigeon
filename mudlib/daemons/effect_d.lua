@@ -87,8 +87,22 @@ local _index = {}
 -- scope -> entity, so the sweep and the heartbeat can reach the objects they
 -- have to act on. Weak values: a despawned mob must not be kept alive by this.
 local _entities = setmetatable({}, { __mode = "v" })
+--- Pipelines in flight, keyed `"<scope>|<hook>"`. Already per-entity, because
+--- the scope is `char:<id>` or `obj:<id>` — two players running the same hook do
+--- not collide, and never did.
 local _running = {}
-local _depth = 0
+
+--- Pipeline nesting depth, **per entity scope**.
+---
+--- This was one global counter, which is fine while exactly one dispatch is ever
+--- in flight and wrong the moment one can be suspended: a coroutine paused three
+--- levels deep leaves the count at three, so the next player's pipeline trips
+--- the cap after five levels instead of eight, and the decrement on resume
+--- belongs to whoever happens to be running then.
+---
+--- Entries are removed at zero rather than left at zero, so this cannot grow
+--- without bound across every entity the game has ever run an effect on.
+local _depth = {}
 
 -- ─── Storage ─────────────────────────────────────────────────────────────────
 
@@ -596,13 +610,14 @@ function M.run(entity, hook, ev)
         log_warn("EFFECT_D: '" .. hook .. "' re-entered for " .. scope .. " — refusing to recurse")
         return ev
     end
-    if _depth > 8 then
+    local depth = _depth[scope] or 0
+    if depth > 8 then
         log_warn("EFFECT_D: effect chain deeper than 8 at '" .. hook .. "' — stopping")
         return ev
     end
 
     _running[guard] = true
-    _depth = _depth + 1
+    _depth[scope] = depth + 1
 
     for _, h in ipairs(handlers) do h.ctx.entity = entity end
     local ok, err = pcall(efflib.dispatch, ev, handlers, function(e, h)
@@ -613,7 +628,8 @@ function M.run(entity, hook, ev)
         log_error("EFFECT_D: pipeline for '" .. hook .. "' failed: " .. tostring(err))
     end
 
-    _depth = _depth - 1
+    local left = (_depth[scope] or 1) - 1
+    _depth[scope] = left > 0 and left or nil
     _running[guard] = nil
     return ev
 end

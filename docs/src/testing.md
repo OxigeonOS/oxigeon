@@ -23,10 +23,21 @@ game-layer command — and boots the real mudlib against it. Traits and roles ar
 in there because both are game-layer by design: a world with no trait
 definitions has no `hp` for anything to lose.
 
+`boot_fixture_with_probe` is the same world behind the probe dispatcher, for a
+test that needs `eval` against a wired `DAEMON` table rather than a player's
+view. Prefer it over `boot_real_mudlib_with_probe`, which puts the real `game/`
+on `package.path`: anything that seeds a creature through *that* is quietly
+asserting that this game defines the traits.
+
 The check that keeps this honest, and the only one that proves it:
 
 ```bash
-git stash push game tests/demo_world && cargo test && git stash pop
+# `git stash push <path>` only reverts changes to tracked files — it leaves the
+# directory in place, so the version of this check that used it never removed
+# `game/` and never proved anything. Move them out of the tree.
+mkdir ../away && mv game ../away/ && mv tests/demo_world ../away/
+cargo test --no-fail-fast
+mv ../away/game . && mv ../away/demo_world tests/ && rmdir ../away
 ```
 
 That must be green. If a test you are writing fails it, ask whether it is really
@@ -53,7 +64,16 @@ cargo test --test lua_unit test_mobile_take_damage
 cargo test --test lua_unit test_player
 ```
 
-All 200+ tests should pass before committing. The Lua unit tests alone run in ~20ms.
+All tests should pass before committing — 891 at the time of writing, green on
+the default Lua 5.5 build and on `--no-default-features --features luajit`. The
+Lua unit tests alone run in ~20ms.
+
+`cargo test` does not build `oxigeon-compute`. It is a separate workspace member
+that links LuaJIT unconditionally, and cargo unifies features across a single
+invocation, so making it a default member would break every `lua55` build. The
+harness builds it on demand, into its own `target/compute-worker/` — a shared
+target directory would contend for the build lock the outer `cargo test` holds,
+which looks like a test run that hangs with no output.
 
 ---
 

@@ -17,7 +17,12 @@ local M = {}
 -- verb -> "success" | "fail" | "all"
 local _watch = {}
 
-local WATCH_FILE = "logs/audit_watch.json"
+-- Rooted explicitly. The file efuns are jailed to two trees, and an unprefixed
+-- *write* stays in the mudlib while an unprefixed *read* prefers the game layer
+-- — so a stray `game/logs/audit_watch.json` would shadow the one this daemon
+-- writes, for ever, with nothing reporting it. A file a daemon owns should say
+-- which tree it lives in rather than rely on the defaults agreeing.
+local WATCH_FILE = "mudlib:logs/audit_watch.json"
 
 -- Helpers for resolving char name from session
 local function char_name_for(session_id)
@@ -150,20 +155,33 @@ function M.load_watch()
 end
 
 --- Persist the watch table to logs/audit_watch.json.
+---
+--- `write_file` *returns* failure rather than raising it, so the result has to
+--- be read. A watch list that silently stopped persisting would go unnoticed
+--- until a restart dropped every watch somebody had set.
+--- @return boolean ok
 function M.save_watch()
-    if type(write_file) ~= "function" then return end
+    if type(write_file) ~= "function" then return false end
     local parts = {}
     for verb, cond in pairs(_watch) do
         parts[#parts+1] = string.format('  "%s": "%s"', verb, cond)
     end
     local json = "{\n" .. table.concat(parts, ",\n") .. "\n}"
-    write_file(WATCH_FILE, json)
+
+    local ok, err = write_file(WATCH_FILE, json)
+    if not ok then
+        local message = "AUDIT_D: could not save the watch list to "
+            .. WATCH_FILE .. ": " .. tostring(err)
+        log("error", message)
+        if DAEMON and DAEMON.journal then pcall(DAEMON.journal.error, message) end
+    end
+    return ok and true or false
 end
 
 -- ─── Reading entries ─────────────────────────────────────────────────────────
 
 --- Read the last n audit entries. Returns array of raw JSON strings.
---- Requires daemon.audit_d.read permission (enforced by audit_read efun).
+--- Requires efun.audit_read (enforced by the audit_read efun).
 --- @param n number  default 20
 function M.recent(n)
     if type(audit_read) ~= "function" then return {} end

@@ -39,7 +39,10 @@ fn what_is_readable_at_a_return_event() {
         // Lua 5.2+ uses negative indices for varargs; check whether LuaJIT
         // exposes anything there that might be the pending return values.
         let mut negatives = Vec::new();
-        for n in -1..=-3i32 {
+        // Listed rather than `-1..=-3`, which is an empty range: the loop this
+        // replaces never executed once, so the probe it exists for silently
+        // reported nothing every time it ran.
+        for n in [-1i32, -2, -3] {
             if let Ok((Some(name), v)) = getlocal.call::<(Option<String>, LuaValue)>((1, n)) {
                 negatives.push(format!("{name}={}", render(&v)));
             }
@@ -53,7 +56,8 @@ fn what_is_readable_at_a_return_event() {
             negatives.join(", "),
         ));
         Ok(VmState::Continue)
-    });
+    })
+    .expect("the hook must install, or this test asserts nothing");
 
     lua.load(
         r#"
@@ -87,9 +91,12 @@ fn what_is_readable_at_a_return_event() {
 
     // The finding this spike exists to record: the returned values ARE on the
     // stack as unnamed temporaries...
+    // The pseudo-local is spelled `(*temporary)` by 5.1/LuaJIT and
+    // `(temporary)` from 5.4 on. The finding is the same either way — the value
+    // is there, in a slot with no usable name.
     let computed = out.iter().find(|l| l.contains("name=computed")).unwrap();
     assert!(
-        computed.contains("(*temporary)=16"),
+        computed.contains("(*temporary)=16") || computed.contains("(temporary)=16"),
         "expected the return value of `n * 3 + 1` in a temporary: {computed}"
     );
 

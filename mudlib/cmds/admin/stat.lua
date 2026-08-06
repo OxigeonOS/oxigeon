@@ -17,7 +17,7 @@ M.usage = {
     "stat <mob>           a creature in this room, by name prefix",
     "stat <item>          an item template id",
 }
-M.permission = 'admin'
+M.permission = "cmd.stat"
 
 local function line(label, value)
     return string.format("  {yellow}%-12s{/} %s", label, tostring(value))

@@ -22,14 +22,15 @@
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use mlua::prelude::*;
 use mlua::{HookTriggers, VmState};
 
-use crate::config::server_config::ComputeConfig;
-
-use super::marshal::{self, Limits, LuaData};
+use crate::marshal::{self, Limits, LuaData};
+use crate::settings::ComputeSettings;
 
 /// How a job ended.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -83,9 +84,12 @@ const MAX_LOG_BYTES: usize = 512;
 ///
 /// `Lua::set_hook` takes an `Fn`, so this lives behind `Rc<RefCell<..>>` — the
 /// same shape the debugger's `HookLocal` uses, and for the same reason.
+///
+/// Cancellation is the exception and is an `Arc<AtomicBool>`: it arrives on the
+/// worker's stdin, read by a thread that is not the Lua thread and cannot touch
+/// an `Rc` or a `RefCell`. See [`ComputeVm::cancel_flag`].
 #[derive(Default)]
 pub struct JobCtl {
-    pub cancelled: bool,
     pub deadline: Option<Instant>,
     instr_used: u64,
     instr_limit: u64,
@@ -96,7 +100,6 @@ pub struct JobCtl {
 
 impl JobCtl {
     fn begin(&mut self, deadline: Option<Instant>) {
-        self.cancelled = false;
         self.deadline = deadline;
         self.instr_used = 0;
         self.logs.clear();
@@ -120,6 +123,8 @@ impl JobCtl {
 pub struct ComputeVm {
     lua: Lua,
     ctl: Rc<RefCell<JobCtl>>,
+    /// Set from off-thread to ask the running job to stop.
+    cancel: Arc<AtomicBool>,
     limits: Limits,
 }
 
@@ -129,13 +134,21 @@ pub struct ComputeVm {
 /// first if a budget is wanted, install the intrinsics, *then* close the
 /// sandbox, then set the path. Anything registered after `apply_sandbox` would
 /// not be subject to it.
-pub fn build(cfg: &ComputeConfig, mudlib: &Path, game: &Path, salt: u64) -> LuaResult<ComputeVm> {
+pub fn build(
+    cfg: &ComputeSettings,
+    mudlib: &Path,
+    game: &Path,
+    salt: u64,
+) -> LuaResult<ComputeVm> {
     let lua = Lua::new();
 
     // Same bargain as the game VM: a budget needs the interpreter, because
     // LuaJIT dispatches no hooks from inside a compiled trace. Unlike the game
     // VM, the default here is to keep the compiler — running expensive code
     // fast is the entire reason this facility exists.
+    // PUC Lua has no compiler to disable and always dispatches hooks, so this
+    // is a LuaJIT-only concern.
+    #[cfg(feature = "luajit")]
     if cfg.instruction_limit > 0 {
         lua.load("jit.off()").set_name("=<oxigeon>/compute_jit_off").exec()?;
     }
@@ -152,25 +165,30 @@ pub fn build(cfg: &ComputeConfig, mudlib: &Path, game: &Path, salt: u64) -> LuaR
         ..Default::default()
     }));
 
-    register_intrinsics(&lua, &ctl)?;
-    crate::core::scripting::sandbox::apply_sandbox(&lua)?;
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    register_intrinsics(&lua, &ctl, &cancel)?;
+    crate::sandbox::apply_sandbox(&lua)?;
 
     // Each worker gets its own sequence. LuaJIT seeds from a constant, so
     // without this every worker VM — and every rebuild of one after a reload —
     // would replay the same numbers, which is precisely wrong for the facility
     // meant to run simulations. `salt` is the worker index, so two workers
     // built in the same nanosecond still diverge.
-    crate::core::scripting::sandbox::seed_prng(&lua, salt)?;
+    crate::sandbox::seed_prng(&lua, salt)?;
 
     set_package_path(&lua, mudlib, game)?;
 
     if cfg.instruction_limit > 0 {
-        install_hook(&lua, &ctl);
+        // A hook that failed to install is a budget that never fires, and a
+        // runaway job would then burn a worker for the life of the process.
+        install_hook(&lua, &ctl, &cancel)?;
     }
 
     Ok(ComputeVm {
         lua,
         ctl,
+        cancel,
         limits: Limits { depth: cfg.max_arg_depth, nodes: cfg.max_arg_nodes },
     })
 }
@@ -184,7 +202,11 @@ fn instruction_step(limit: u64) -> u32 {
 /// They are not efuns: none of them touches game state. `compute_log` matters
 /// more than it looks — a debug adapter cannot attach to a compute VM, so
 /// without it there is no way at all to see inside a job.
-fn register_intrinsics(lua: &Lua, ctl: &Rc<RefCell<JobCtl>>) -> LuaResult<()> {
+fn register_intrinsics(
+    lua: &Lua,
+    ctl: &Rc<RefCell<JobCtl>>,
+    cancel: &Arc<AtomicBool>,
+) -> LuaResult<()> {
     let globals = lua.globals();
 
     let c = ctl.clone();
@@ -215,10 +237,10 @@ fn register_intrinsics(lua: &Lua, ctl: &Rc<RefCell<JobCtl>>) -> LuaResult<()> {
         })?,
     )?;
 
-    let c = ctl.clone();
+    let c = cancel.clone();
     globals.set(
         "compute_cancelled",
-        lua.create_function(move |_, ()| Ok(c.borrow().cancelled))?,
+        lua.create_function(move |_, ()| Ok(c.load(Ordering::Relaxed)))?,
     )?;
 
     Ok(())
@@ -227,18 +249,19 @@ fn register_intrinsics(lua: &Lua, ctl: &Rc<RefCell<JobCtl>>) -> LuaResult<()> {
 /// Charge instructions, and stop the job if its budget, deadline or cancel
 /// flag says so. Only installed when a budget is configured — with the
 /// compiler on the hook would never fire anyway.
-fn install_hook(lua: &Lua, ctl: &Rc<RefCell<JobCtl>>) {
+fn install_hook(lua: &Lua, ctl: &Rc<RefCell<JobCtl>>, cancel: &Arc<AtomicBool>) -> LuaResult<()> {
     let step = ctl.borrow().instr_step;
     let ctl = ctl.clone();
+    let cancel = cancel.clone();
     lua.set_hook(
         HookTriggers::new().every_nth_instruction(step as u32),
         move |_, _| {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(LuaError::RuntimeError(MARK_CANCELLED.into()));
+            }
             let Ok(mut c) = ctl.try_borrow_mut() else {
                 return Ok(VmState::Continue);
             };
-            if c.cancelled {
-                return Err(LuaError::RuntimeError(MARK_CANCELLED.into()));
-            }
             if c.deadline.is_some_and(|d| Instant::now() >= d) {
                 return Err(LuaError::RuntimeError(MARK_TIMEOUT.into()));
             }
@@ -248,17 +271,17 @@ fn install_hook(lua: &Lua, ctl: &Rc<RefCell<JobCtl>>) {
             }
             Ok(VmState::Continue)
         },
-    );
+    )
 }
 
 /// The same `package.path` the game VM uses, so a compute module can `require`
 /// the same shared libraries and static data.
 fn set_package_path(lua: &Lua, mudlib: &Path, game: &Path) -> LuaResult<()> {
-    use crate::core::scripting::debugger::paths;
+    use crate::lua_path::abs_lua_path;
     let new_path = format!(
         "{game}/?.lua;{game}/?/init.lua;{mudlib}/?.lua;{mudlib}/?/init.lua",
-        game = paths::abs_lua_path(game),
-        mudlib = paths::abs_lua_path(mudlib),
+        game = abs_lua_path(game),
+        mudlib = abs_lua_path(mudlib),
     );
     lua.load(format!(
         "package.path = \"{};\" .. package.path",
@@ -277,11 +300,17 @@ pub struct Outcome {
 }
 
 impl ComputeVm {
-    /// Ask a running job to stop. Only does anything if a budget is armed —
-    /// without the hook there is nothing to notice the flag except the job
-    /// itself, via `compute_cancelled()`.
-    pub fn ctl(&self) -> &Rc<RefCell<JobCtl>> {
-        &self.ctl
+    /// The flag a `Cancel` frame sets.
+    ///
+    /// Handed to the worker's stdin reader, which is the only other thread that
+    /// touches this VM's job — and touches nothing else about it, because
+    /// everything else here belongs to the Lua thread.
+    ///
+    /// Setting it only stops a job if a budget is armed: without the hook there
+    /// is nothing inside the VM that checks, except the job itself via
+    /// `compute_cancelled()`. The server's fallback is to kill the process.
+    pub fn cancel_flag(&self) -> Arc<AtomicBool> {
+        self.cancel.clone()
     }
 
     /// Run `module.func(args)`. Never panics; every failure is an [`Ending`].
@@ -292,6 +321,7 @@ impl ComputeVm {
         args: &LuaData,
         deadline: Option<Instant>,
     ) -> Outcome {
+        self.cancel.store(false, Ordering::Relaxed);
         self.ctl.borrow_mut().begin(deadline);
 
         let outcome = self.run_inner(module, func, args);
@@ -383,14 +413,14 @@ function M.logs() compute_log("info", "hello from the worker") return true end
 return M
 "#;
 
-    fn vm_with(cfg: ComputeConfig, dir: &tempfile::TempDir) -> ComputeVm {
+    fn vm_with(cfg: ComputeSettings, dir: &tempfile::TempDir) -> ComputeVm {
         build(&cfg, dir.path(), dir.path(), 0).unwrap()
     }
 
     #[test]
     fn a_job_runs_and_its_value_comes_back() {
         let dir = workspace(PROBE);
-        let vm = vm_with(ComputeConfig::default(), &dir);
+        let vm = vm_with(ComputeSettings::default(), &dir);
         let args = marshal::from_lua(
             &Lua::new().load("return {n = 7, list = {1,2}}").eval::<LuaValue>().unwrap(),
             &Limits::default(),
@@ -406,7 +436,7 @@ return M
     #[test]
     fn a_job_cannot_reach_the_game_or_the_host() {
         let dir = workspace(PROBE);
-        let vm = vm_with(ComputeConfig::default(), &dir);
+        let vm = vm_with(ComputeSettings::default(), &dir);
         let out = vm.run("compute.probe", "reach", &LuaData::Nil, None);
         assert_eq!(out.ending, Ending::Ok, "{:?}", out.error);
 
@@ -424,7 +454,7 @@ return M
     #[test]
     fn a_job_that_raises_is_reported_not_swallowed() {
         let dir = workspace(PROBE);
-        let vm = vm_with(ComputeConfig::default(), &dir);
+        let vm = vm_with(ComputeSettings::default(), &dir);
         let out = vm.run("compute.probe", "boom", &LuaData::Nil, None);
         assert_eq!(out.ending, Ending::Error);
         assert!(out.error.unwrap().contains("kaboom"));
@@ -433,7 +463,7 @@ return M
     #[test]
     fn a_missing_module_or_function_is_a_load_error() {
         let dir = workspace(PROBE);
-        let vm = vm_with(ComputeConfig::default(), &dir);
+        let vm = vm_with(ComputeSettings::default(), &dir);
         assert_eq!(
             vm.run("compute.nope", "echo", &LuaData::Nil, None).ending,
             Ending::LoadError
@@ -449,7 +479,7 @@ return M
     #[test]
     fn a_worker_survives_a_failed_job() {
         let dir = workspace(PROBE);
-        let vm = vm_with(ComputeConfig::default(), &dir);
+        let vm = vm_with(ComputeSettings::default(), &dir);
         vm.run("compute.probe", "boom", &LuaData::Nil, None);
         assert_eq!(
             vm.run("compute.probe", "echo", &LuaData::Int(1), None).ending,
@@ -462,7 +492,7 @@ return M
     #[test]
     fn a_runaway_job_is_stopped_when_a_budget_is_armed() {
         let dir = workspace(PROBE);
-        let cfg = ComputeConfig { instruction_limit: 500_000, ..Default::default() };
+        let cfg = ComputeSettings { instruction_limit: 500_000, ..Default::default() };
         let vm = vm_with(cfg, &dir);
 
         let out = vm.run("compute.probe", "spin", &LuaData::Nil, None);
@@ -478,7 +508,7 @@ return M
     #[test]
     fn a_deadline_stops_a_running_job_when_a_budget_is_armed() {
         let dir = workspace(PROBE);
-        let cfg = ComputeConfig { instruction_limit: 100_000_000, ..Default::default() };
+        let cfg = ComputeSettings { instruction_limit: 100_000_000, ..Default::default() };
         let vm = vm_with(cfg, &dir);
 
         let deadline = Instant::now() + std::time::Duration::from_millis(100);
@@ -491,7 +521,7 @@ return M
     #[test]
     fn compute_log_lines_come_back_with_the_result() {
         let dir = workspace(PROBE);
-        let vm = vm_with(ComputeConfig::default(), &dir);
+        let vm = vm_with(ComputeSettings::default(), &dir);
         let out = vm.run("compute.probe", "logs", &LuaData::Nil, None);
         assert_eq!(out.ending, Ending::Ok);
         assert_eq!(out.logs.len(), 1);

@@ -92,6 +92,16 @@ function M.render(session_id)
 
     local char_id = session.character_id
 
+    -- Editor mode override, before OLC's: while a buffer is open every line is
+    -- prose, so the prompt has to say so — and it belongs here rather than in
+    -- `editor_d` for the reason `commands.lua` states, that dispatch renders
+    -- exactly one prompt per input line. The editor sending its own produced
+    -- two, and the second one arrived out of order.
+    if DAEMON.editor and DAEMON.editor.is_editing(session_id) then
+        send_prompt(session_id, "] ")
+        return
+    end
+
     -- OLC mode override
     if DAEMON.olc and DAEMON.olc.is_active(session_id) then
         local state = DAEMON.olc.get_state(session_id)

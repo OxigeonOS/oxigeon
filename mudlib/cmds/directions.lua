@@ -19,34 +19,29 @@
 
 local movement = require('lib.movement')
 
--- name, aliases, and how `help` describes it.
+-- Direction names, their order and their short forms all come from
+-- `lib/movement.lua`. They used to be a private copy here, and `dig.lua` had a
+-- third — which is how `docs/src/lua-api/olc.md` came to claim `dig` took its
+-- reverse direction "from the same table `movement.lua` uses" when it did not.
 --
 -- `in` and `out` take no single-letter alias: `i` is `inventory` and has been
 -- for as long as MUDs have had one. `u` is `up` — `use` used to claim it too,
 -- and which of the two you got depended on the order the filesystem happened to
 -- list them in.
-local DIRECTIONS = {
-    { "north",     { "n" }  },
-    { "south",     { "s" }  },
-    { "east",      { "e" }  },
-    { "west",      { "w" }  },
-    { "northeast", { "ne" } },
-    { "northwest", { "nw" } },
-    { "southeast", { "se" } },
-    { "southwest", { "sw" } },
-    { "up",        { "u" }  },
-    { "down",      { "d" }  },
-    { "in",        {}       },
-    { "out",       {}       },
-}
+local ALIASES = {}
+for short, long in pairs(movement.ABBREVIATIONS) do
+    ALIASES[long] = ALIASES[long] or {}
+    ALIASES[long][#ALIASES[long] + 1] = short
+end
+for _, list in pairs(ALIASES) do table.sort(list) end
 
 local M = {}
 
 --- The loader registers each of these exactly as it would a single-command file.
 M.commands = {}
 
-for _, spec in ipairs(DIRECTIONS) do
-    local direction, aliases = spec[1], spec[2]
+for _, direction in ipairs(movement.ORDER) do
+    local aliases = ALIASES[direction] or {}
     M.commands[#M.commands + 1] = {
         name       = direction,
         aliases    = aliases,

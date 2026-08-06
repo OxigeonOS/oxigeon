@@ -500,6 +500,49 @@ end
 
 --- Send multiple lines of text to this player (each individually wrapped).
 -- @param ... string  Lines to send
+--- Send text through the pager, coloured to this player's preference and
+--- **not** word-wrapped.
+---
+--- `DAEMON.pager.page` writes through the raw `send` efun, so anything handed to
+--- it directly arrives with its `{colour}` tags intact and unrendered.
+--- `cmds/admin/trace.lua` carried a comment warning callers not to use colour in
+--- a paged body, which is the wrong end to fix it: colour is a *player*
+--- preference — `color_enabled` lives here — so applying it is the Player's job
+--- and not the pager's.
+---
+--- No wrapping, deliberately. What gets paged is listings and file contents,
+--- where a wrapped line is a corrupted one; `send` and `send_lines` remain the
+--- wrapping paths for prose.
+---
+--- `opts.literal` sends the text through untouched — no colourising, no
+--- stripping. That is for showing a *file*: a mudlib source file is full of
+--- `{red}` and `{/}`, and rendering them would paint the listing in the colours
+--- of the code you were trying to read. Stripping them would be worse — the tags
+--- would silently vanish from the source you are inspecting.
+--- @param text string
+--- @param opts table|nil  { page_length = n, literal = bool }
+function Player:send_paged(text, opts)
+    if not self.session_id then return end
+    opts = opts or {}
+
+    local c = get_color()
+    if c and not opts.literal then
+        if self.color_enabled == false then
+            text = c.strip(text)
+        else
+            text = c.colorize(text)
+        end
+    end
+
+    local length = opts.page_length or (self.custom and self.custom.page_length)
+    if DAEMON and DAEMON.pager and length ~= 0 then
+        DAEMON.pager.page(self.session_id, text, length)
+    else
+        -- Paging turned off (`pagesize 0`), or no pager at all.
+        send(self.session_id, text .. "\r\n")
+    end
+end
+
 function Player:send_lines(...)
     if not self.session_id then return end
     local width = self:get_width()

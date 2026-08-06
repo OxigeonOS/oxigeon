@@ -3,7 +3,7 @@ M.name = 'snoop'
 M.aliases = {}
 M.category = 'admin'
 M.summary = 'Snoop on a player.'
-M.permission = 'admin'
+M.permission = "cmd.snoop"
 
 function M.execute(session_id, args_str, args)
     local player = get_player(session_id)

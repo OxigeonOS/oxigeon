@@ -72,6 +72,38 @@ function M.apply(item, config)
     return item
 end
 
+--- The flat authoring fields this component reads, in emit order.
+M.fields = {
+    { name = "drink_message", type = "string",
+      default = "You drink {short}.", editable = true,
+      help = "Shown to the drinker. {name} and {short} expand." },
+    { name = "drink_room_message", type = "string",
+      default = "{name} drinks {short}.", editable = true,
+      help = "Shown to everyone else in the room." },
+    { name = "consumed", type = "boolean", default = true, editable = true,
+      help = "Destroy the item afterwards. A bottomless one has to say so." },
+}
+
+--- Fields the item carries for this component that OLC cannot author.
+---
+--- `on_drink` is a function and lives at the top level rather than inside the
+--- component — see `M.apply`. Naming it here is what lets `adopt` report it as
+--- "moves to custom.lua" instead of "unknown field".
+M.hand_written = { "on_drink" }
+
+--- The inverse of `from_data`. See the note in `weapon.lua`.
+--- @param item table
+--- @return table|nil
+function M.to_data(item)
+    if not M.is(item) then return nil end
+    local d = item.drinkable
+    return {
+        drink_message      = d.drink_message,
+        drink_room_message = d.drink_room_message,
+        consumed           = d.consumed,
+    }
+end
+
 -- ─── The system ──────────────────────────────────────────────────────────────
 
 --- Does this item carry a drinkable component?

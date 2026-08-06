@@ -74,6 +74,43 @@ Harness floor — an empty round trip to the Lua thread and back — is 7.1 µs.
 **The compiler is worth 2.10× on a tight arithmetic loop and essentially
 nothing on real command dispatch.**
 
+## LuaJIT against Lua 5.5
+
+Which runtime the game thread uses is a build-time choice (`--features lua55`;
+see `Cargo.toml`). Both columns below have the instruction budget on, because
+that is what `config/server.toml` ships — and it is the honest comparison, since
+enabling the budget is what turns the LuaJIT compiler off in the first place.
+
+Debug build, criterion, 20 samples, one machine, so read these as a shape rather
+than as figures to three digits.
+
+| Workload | LuaJIT + budget | Lua 5.5 + budget | |
+|---|---|---|---|
+| `look` | 105.5 µs | **103.4 µs** | 5.5 is 2% faster |
+| `who` | 127.3 µs | **122.8 µs** | 5.5 is 4% faster |
+| `mudstatus` | **163.9 µs** | 179.1 µs | 5.5 is 9% slower |
+
+**It is a wash.** That reads oddly until you remember the game thread has never
+been getting the compiler: `lua_instruction_limit` disables it at boot, so both
+columns are interpreter against interpreter, and PUC Lua's is competitive with
+LuaJIT's when neither is tracing. `mudstatus` is the outlier because it is the
+one command that does real arithmetic — heap fractions, uptime division — which
+is exactly where LuaJIT's interpreter is stronger.
+
+**Lua 5.5 is therefore the default**, and not for performance — on the numbers
+above that would be a coin toss. It is because **a breakpoint stops one player
+instead of the server**. mlua's `VmState::Yield` is Lua 5.3+ only, so on LuaJIT a
+stop is implemented by blocking the Lua thread — the only thread — while on 5.5
+the hook yields and the engine parks that one command as a suspended coroutine.
+See [What a breakpoint costs](./debugging.md#-what-a-breakpoint-costs).
+
+The one real objection to 5.5 used to be that it took the *compute* pool with
+it, and the compiler is worth 2.10× on exactly the arithmetic-heavy work that
+belongs there. That is why compute now runs as its own process: `oxigeon-compute`
+links LuaJIT unconditionally, whatever the server was built with, so the 2.10×
+applies where it was worth having and the game thread gets the debugger it
+wanted. See [Compute](./compute.md).
+
 That is not surprising once you look at what LuaJIT needs. Its trace recorder
 fires after 56 iterations of a loop, and nothing inside a single MUD command
 loops 56 times — the dispatcher runs a handful of pattern matches, a few table
@@ -99,7 +136,7 @@ never really there.
 
 Turn it off (`lua_instruction_limit = 0`) if your game genuinely does heavy
 arithmetic in Lua on the game thread. If it does, consider the
-[compute bridge](./compute.md) instead: it moves that work to a worker thread
+[compute bridge](./compute.md) instead: it moves that work to a worker process
 where it can keep the compiler *and* stop blocking every player.
 
 > [!WARNING]

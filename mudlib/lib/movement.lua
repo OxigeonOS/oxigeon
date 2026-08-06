@@ -5,6 +5,25 @@
 local messaging = require('lib.messaging')
 local M = {}
 
+--- Every direction, in the order they should be listed anywhere.
+---
+--- Canonical, and there are three reasons it has to be:
+---
+--- * `cmds/directions.lua` had its own copy to register verbs from.
+--- * `cmds/building/dig.lua` had a third, private `REVERSE` table — while
+---   `docs/src/lua-api/olc.md` claimed it came "from the same table
+---   `movement.lua` uses". It did not.
+--- * The schema orders a room's `exits` by this, so a generated file reads
+---   north-south-east-west rather than alphabetically.
+---
+--- Three copies of a list is three chances for one of them to be missing a
+--- direction, and the symptom is a stair you can author and cannot climb.
+M.ORDER = {
+    "north", "south", "east", "west",
+    "northeast", "northwest", "southeast", "southwest",
+    "up", "down", "in", "out",
+}
+
 M.OPPOSITES = {
     north = "south",
     south = "north",
@@ -19,6 +38,27 @@ M.OPPOSITES = {
     ["in"] = "out",
     out = "in"
 }
+
+--- Short forms, for anything that takes a direction from a player.
+---
+--- `i` is deliberately absent: it has meant `inventory` for as long as MUDs have
+--- had one, so `in` takes no single-letter alias.
+M.ABBREVIATIONS = {
+    n = "north", s = "south", e = "east", w = "west",
+    ne = "northeast", nw = "northwest", se = "southeast", sw = "southwest",
+    u = "up", d = "down",
+}
+
+--- Expand an abbreviation, or return what was given if it is already a
+--- direction. Nil for anything that is neither.
+--- @param word string
+--- @return string|nil
+function M.expand(word)
+    if type(word) ~= "string" then return nil end
+    word = word:lower()
+    if M.OPPOSITES[word] then return word end
+    return M.ABBREVIATIONS[word]
+end
 
 function M.move(session_id, direction)
     local session = get_session(session_id)

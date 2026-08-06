@@ -6,6 +6,8 @@
 -- through their own module, so a new component describes itself by existing
 -- rather than by editing this file.
 
+local Strings = require('lib.strings')
+
 local Carry      = require('lib.carry')
 local Components = require('components')
 local Object     = require('lib.object')
@@ -50,8 +52,8 @@ local function describe_item(player, entry, item, where)
         if ok and #conditions > 0 then
             for _, t in ipairs(conditions) do
                 if not t.hidden then
-                    lines[#lines + 1] = "  " .. t.label .. ": " .. tostring(t.value)
-                        .. (t.max and (" / " .. tostring(t.max)) or "")
+                    lines[#lines + 1] = "  " .. t.label .. ": " .. Strings.number(t.value)
+                        .. (t.max and (" / " .. Strings.number(t.max)) or "")
                 end
             end
         end

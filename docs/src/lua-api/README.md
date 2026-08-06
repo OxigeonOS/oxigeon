@@ -29,17 +29,41 @@ Efuns are Rust functions exposed to Lua — they form the bridge between your mu
 - **[File & System Access](./file-access.md)** — `read_file()`, `write_file()`, `list_dir()`, `os_time()`, `os_date()`, etc.
 - **[Sandboxing & Security](./sandboxing.md)** — What is and isn't available, and why.
 - **[Performance & the JIT Trade-off](./performance.md)** — What the compiler is worth, measured, and how to re-measure it
-- **[Compute — Off-Thread Lua](./compute.md)** — `compute()`: run a long computation on a worker thread without freezing the game
+- **[Compute — Off-Thread Lua](./compute.md)** — `compute()`: run a long computation in a worker process without freezing the game
 
 ## Lua Version
 
-Oxigeon uses **LuaJIT (API compatible with Lua 5.1)**. This means:
+**Lua 5.5 by default**, with LuaJIT (Lua 5.1) available as a build-time
+alternative — `cargo build --no-default-features --features luajit`. Which one
+you get is a property of the *build*, not of your mudlib, so game code that has
+to run on both should stay inside the common subset.
 
-- Lua 5.1 standard library (string, table, math, coroutine)
-- `setfenv`/`getfenv` available (removed in Lua 5.2+)
-- **No** Lua 5.2+ features: `goto`, bitwise operators, integer types, UTF-8 library
-- **No** Lua 5.3+ features: integer division `//`, bitwise `&|~^`, etc.
-- JIT compilation for fast Lua code
+The default is 5.5 because of the debugger, not speed: on LuaJIT a breakpoint
+can only freeze the whole server, while on 5.5 it can suspend one player's
+command and let everyone else carry on. See
+[Debugging](./debugging.md#-what-a-breakpoint-costs) and
+[Performance](./performance.md#luajit-against-lua-55), which has the numbers.
+
+What differs, if you are writing for both:
+
+| | Lua 5.5 (default) | LuaJIT |
+|---|---|---|
+| Integers | a distinct subtype: `3` and `3.0` are different | one number type; `3` *is* `3.0` |
+| `1/2` | `0.5`; `//` is integer division | `0.5`; no `//` |
+| `goto`, `&` `\|` `~`, `<<` `>>` | yes | no |
+| `utf8` library | yes | no |
+| `setfenv` / `getfenv` / `loadstring` | gone — use `load`'s 4th argument | yes |
+| `#` on a table with holes | undefined either way — do not rely on it | same |
+| Errors from a hook | uncatchable, so the instruction budget cannot be `pcall`ed away | catchable |
+
+The integer/float split is the one that bites. `tostring(3/1)` is `"3.0"` on 5.5
+and `"3"` on LuaJIT, and `string.format("%d", x)` **raises** on 5.5 if `x` has a
+fractional part rather than silently truncating. Floor before formatting, or use
+`require('lib.strings').number(n)`, which renders a whole number without a `.0` on
+either runtime.
+
+Traits are already careful about this: a trait declares `round`, and anything
+displayed goes through it.
 
 ## Available Standard Libraries
 
@@ -52,7 +76,8 @@ Oxigeon uses **LuaJIT (API compatible with Lua 5.1)**. This means:
 | `io` | ❌ | Use `read_file()`, `write_file()`, `list_dir()` instead |
 | `os` | ⚠️ Clocks only | `os.time`, `os.date`, `os.clock`, `os.difftime` are kept; everything else is removed. `os_time()`/`os_clock()`/`os_date()` are efun equivalents |
 | `debug` | ❌ | Can escape any sandbox. Loaded but hidden from `_G` when the debug adapter is enabled |
-| `jit` | ❌ | `jit.on()` would disarm the instruction limit |
+| `jit` | ❌ | LuaJIT builds only, and removed there: `jit.on()` would disarm the instruction limit |
+| `utf8` | ✅ | Lua 5.5 builds only |
 | `package.loadlib` | ❌ | No C extensions |
 | `require` | ✅ (jailed) | Limited to mudlib and game directories |
 

@@ -1,32 +1,50 @@
 # config/permissions.toml — Oxigeon Permission Configuration
 #
-# Maps efun names and mudlib path prefixes to required permission strings.
+# Maps efun names and jailed path prefixes to required permission strings.
 # Missing file = all efuns and directories are unrestricted (safe default for dev).
 # See docs/src/configuration/permissions-toml.md for full reference.
+#
+# ─── The naming scheme ───────────────────────────────────────────────────────
+#
+# There was not one, and the cost was that nothing lined up: `setup_roles.lua`
+# granted `cmd.olc` while the command required `olc`, and `efun.write_file`
+# while this file said `efun.file.write`. Not one of the builder role's eight
+# grants matched anything, so the only account that could build was account 1,
+# by way of the `is_admin` superuser bypass. A permission system where every
+# grant is a no-op looks exactly like one that works.
+#
+#   cmd.<verb>[.<capability>]   a command. Every gated command, no exceptions;
+#                               `tests/command_layout.rs` asserts the shape.
+#   efun.<name>                 an efun, named exactly as the Lua global is.
+#   dir.<op>.<root>.<top>       a directory rule, matching the keys below.
+#   <thing>.<capability>        anything that is neither — `alert.receive`,
+#                               `board.moderate`, `channel.staff`.
 
 [efuns]
 # ─── Hot-reload ──────────────────────────────────────────────────────────────
 reload = "efun.reload"
 
 # ─── File system ─────────────────────────────────────────────────────────────
-write_file  = "efun.file.write"
-append_file = "efun.file.write"
-delete_file = "efun.file.delete"
+# These gate the *ability to call the efun at all*. Where it may write is a
+# separate question, answered by [directories] below — both must pass.
+write_file  = "efun.write_file"
+append_file = "efun.append_file"
+delete_file = "efun.delete_file"
 
 # ─── Session control ─────────────────────────────────────────────────────────
 # Note: disconnecting yourself is always allowed; this gates disconnecting others.
-disconnect = "efun.session.disconnect"
+disconnect = "efun.disconnect"
 
 # ─── Broadcast ───────────────────────────────────────────────────────────────
-broadcast        = "efun.broadcast"        # send to ALL sessions
-broadcast_to_perm = "daemon.broadcast"     # send to privileged sessions only
+broadcast         = "efun.broadcast"          # send to ALL sessions
+broadcast_to_perm = "efun.broadcast_to_perm"  # send to holders of a permission
 
 # ─── Lua verification ────────────────────────────────────────────────────────
-verify_file = "efun.verify"
+verify_file = "efun.verify_file"
 
 # ─── Observability reads ─────────────────────────────────────────────────────
-journal_read = "daemon.journal_d.read"
-audit_read   = "daemon.audit_d.read"
+journal_read = "efun.journal_read"
+audit_read   = "efun.audit_read"
 
 # ─── Debugging / tracing ─────────────────────────────────────────────────────
 # Gated independently of cmds/trace.lua's own `admin` permission, so mudlib code
@@ -49,25 +67,50 @@ trace_clear   = "efun.trace"
 db_clear = "efun.db.clear"
 
 [directories]
-# Maps mudlib path prefixes to {read, write} permission requirements.
-# Longest-prefix match wins. Omit read or write to leave that op unrestricted.
-
-# Admin tooling — only staff can read or write
-"/admin" = { read = "dir.read.admin", write = "dir.write.admin" }
-
-# Server logs — read requires appropriate daemon permission; write open for daemon
-"/logs"  = { read = "daemon.journal_d.read" }
-
-# Command files — builders can read; only senior staff can modify
-"/cmds"  = { write = "dir.write.cmds" }
-
-# Area content — builders can write; everyone can read.
+# Maps jailed path prefixes to {read, write} permission requirements.
+# Longest matching prefix wins, counted in whole path segments. Omit read or
+# write to leave that op unrestricted.
 #
-# Commented out, this rule was a no-op: `/areas` was world-writable, so the
+# ─── Every key names its root ────────────────────────────────────────────────
+#
+# The file efuns are jailed to **two** trees, `mudlib/` and `game/`, so a key of
+# `/areas` no longer has an answer: it could mean the mudlib's, the game's, or
+# both, and those are different trust levels. Under the old single-root jail the
+# ambiguity was invisible because there was only one root to mean.
+#
+# So the first segment is the root, and it is required. A rootless key is
+# **dropped and logged as an error** rather than guessed at — the failure
+# documented below is a rule that was a silent no-op for months, and a rule that
+# silently guards the wrong tree is that failure with more steps.
+#
+# These are the same paths `ls` and `cd` show. `/game/areas/crypt/rooms.lua` is
+# what the shell prints, what a builder types, and what the rule below names.
+
+# Admin tooling — only staff can read or write.
+"/mudlib/admin" = { read = "dir.read.mudlib.admin", write = "dir.write.mudlib.admin" }
+
+# Server logs — read requires the journal permission; write is open, because the
+# daemon that writes them runs as the engine and bypasses this anyway.
+"/mudlib/logs"  = { read = "efun.journal_read" }
+
+# The system layer. Builders read it; changing it is a code change.
+"/mudlib/cmds"       = { write = "dir.write.mudlib.cmds" }
+"/mudlib/daemons"    = { write = "dir.write.mudlib.daemons" }
+"/mudlib/lib"        = { write = "dir.write.mudlib.lib" }
+"/mudlib/components" = { write = "dir.write.mudlib.components" }
+
+# Area content — builders can write; everyone can read. This is where OLC writes.
+#
+# Commented out, this rule was a no-op: areas were world-writable, so the
 # builder role was a label rather than a boundary and any test over it proved
-# nothing. Grant `dir.write.areas` to the builder role — see
+# nothing. Grant `dir.write.game.areas` to the builder role — see
 # `game/setup_roles.lua` — and note that account 1 bypasses this like everything
 # else. The engine's own dispatch (a daemon writing on a tick, the mudlib load)
 # also bypasses it, because it has no session and acts with the driver's own
 # authority; see `efuns::enter_system_dispatch`.
-"/areas" = { write = "dir.write.areas" }
+"/game/areas" = { write = "dir.write.game.areas" }
+
+# Game-layer code. Same reasoning as the mudlib's: content is data, this is not.
+"/game/cmds"    = { write = "dir.write.game.cmds" }
+"/game/daemons" = { write = "dir.write.game.daemons" }
+"/game/lib"     = { write = "dir.write.game.lib" }

@@ -821,65 +821,13 @@ fn test_room_d_load_area_and_merge() {
     assert_eq!(eval_str(&lua, "return rooms[1].id"), "test_area.r1");
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-//  Codegen tests
-// ═══════════════════════════════════════════════════════════════════════════════
-
-#[test]
-fn test_codegen_generate_room() {
-    let lua = make_test_lua();
-    lua.load("CODEGEN = require('daemons.codegen_d')").exec().unwrap();
-    lua.load(r#"
-        source = CODEGEN.generate_room("test.lab", {
-            short = "The Laboratory",
-            description = "A room of science.",
-            exits = { west = "test.entrance" },
-            builder = "TestBuilder",
-        })
-    "#).exec().unwrap();
-
-    let source = eval_str(&lua, "return source");
-    assert!(source.contains("test.lab"), "should contain room id");
-    assert!(source.contains("The Laboratory"), "should contain short");
-    assert!(source.contains("A room of science"), "should contain description");
-    assert!(source.contains("west"), "should contain exit direction");
-    assert!(source.contains("TestBuilder"), "should contain builder name");
-    assert!(source.contains("return {"), "should be a valid return table");
-
-    // The generated source should be loadable
-    lua.load(r#"
-        local fn = load(source)
-        loaded_data = fn()
-    "#).exec().unwrap();
-    assert_eq!(eval_str(&lua, "return loaded_data.id"), "test.lab");
-    assert_eq!(eval_str(&lua, "return loaded_data.short"), "The Laboratory");
-    assert_eq!(eval_str(&lua, r#"return loaded_data.exits.west"#), "test.entrance");
-}
-
-#[test]
-fn test_codegen_generate_meta() {
-    let lua = make_test_lua();
-    lua.load("CODEGEN = require('daemons.codegen_d')").exec().unwrap();
-    lua.load(r#"
-        source = CODEGEN.generate_meta("test_area", {
-            title = "Test Area",
-            author = "Builder",
-            status = "live",
-        })
-    "#).exec().unwrap();
-
-    let source = eval_str(&lua, "return source");
-    assert!(source.contains("test_area"));
-    assert!(source.contains("Test Area"));
-    assert!(source.contains("Builder"));
-
-    // Should be loadable
-    lua.load(r#"
-        local fn = load(source)
-        loaded_meta = fn()
-    "#).exec().unwrap();
-    assert_eq!(eval_str(&lua, "return loaded_meta.name"), "test_area");
-}
+// Codegen tests moved to `tests/codegen.rs`.
+//
+// They asked `make_test_lua` — a bare `mlua::Lua` with hand-stubbed globals —
+// what a *rewritten* `codegen_d` produced. That module now depends on the file
+// jail, the schema index and `list_dir`, none of which a stub reproduces, so the
+// questions worth asking about it can only be asked of the real VM. This is the
+// pattern `CLAUDE.md`'s testing section is about.
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  Inheritance chain verification
@@ -1736,7 +1684,7 @@ fn test_trace_command_exposes_the_standard_command_shape() {
 
     assert!(eval_bool(&lua, "return trace.name == 'trace'"));
     assert!(eval_bool(&lua, "return trace.category == 'admin'"));
-    assert!(eval_bool(&lua, "return trace.permission == 'admin'"));
+    assert!(eval_bool(&lua, "return trace.permission == 'cmd.trace'"));
     assert!(eval_bool(&lua, "return type(trace.execute) == 'function'"));
 }
 
@@ -1955,8 +1903,12 @@ fn multipliers_in_the_same_phase_add_rather_than_compound() {
             { phase = "mult", def = "a", fn = function(e) e.scale = e.scale + 0.2 end },
             { phase = "mult", def = "b", fn = function(e) e.scale = e.scale + 0.2 end },
         })
-        return tostring(ev.amount)
-    "#), "140");
+        -- Compared as a number, not as its spelling: `100 * 1.4` is a float,
+        -- and from Lua 5.3 on `tostring` renders that `140.0`. The pipeline
+        -- floors at the call site (`mobile.lua`), so what matters here is the
+        -- value.
+        return tostring(ev.amount == 140)
+    "#), "true");
 }
 
 #[test]
@@ -2661,8 +2613,8 @@ fn stacks_scale_a_multiplier() {
     "#), 2);
     assert_eq!(eval_str(&lua, r#"
         local ev = DAEMON.effect.run(e, "xp_gained", { amount = 100, scale = 0 })
-        return tostring(ev.amount)
-    "#), "140", "two stacks of +20% is +40%, not +44%");
+        return tostring(ev.amount == 140)
+    "#), "true", "two stacks of +20% is +40%, not +44%");
 }
 
 #[test]

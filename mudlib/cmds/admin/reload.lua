@@ -13,7 +13,7 @@ M.name       = "reload"
 M.aliases    = {}
 M.category   = "admin"
 M.summary    = "Hot-reload a Lua module. Usage: reload <module|pattern>"
-M.permission = "efun.reload"   -- requires this permission string (Phase 2)
+M.permission = "cmd.reload"
 
 --- Convert a glob pattern (using * as wildcard) into a Lua pattern.
 -- Slashes are normalized to dots (module-path style) for matching

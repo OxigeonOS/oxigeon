@@ -200,7 +200,7 @@ fn login_and_logout_are_announced() {
     // harness cannot answer.
     assert_eq!(
         vm.eval(
-            "local f = read_file('login.lua') \
+            "local f = read_file('mudlib:login.lua') \
              return tostring(f ~= nil and f:find('player.login', 1, true) ~= nil)"
         )
         .unwrap(),
@@ -209,7 +209,7 @@ fn login_and_logout_are_announced() {
     );
     assert_eq!(
         vm.eval(
-            "local f = read_file('init.lua') \
+            "local f = read_file('mudlib:init.lua') \
              return tostring(f ~= nil and f:find('player.logout', 1, true) ~= nil)"
         )
         .unwrap(),

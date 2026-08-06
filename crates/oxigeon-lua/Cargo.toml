@@ -1,0 +1,21 @@
+[package]
+name = "oxigeon-lua"
+version = "0.1.0"
+edition = "2021"
+description = "The parts of Oxigeon that touch a Lua VM, shared by the server and the compute worker."
+
+# Deliberately no default. Both consumers build this crate with a different Lua,
+# and a default would be silently unioned into whichever one is being built —
+# `mlua-sys` then refuses to compile at all, from a Cargo.toml that never
+# mentioned two runtimes. `cargo build -p oxigeon-lua` on its own therefore
+# needs `--features luajit` or `--features lua55`.
+[features]
+luajit = ["mlua/luajit"]
+lua55 = ["mlua/lua55"]
+
+[dependencies]
+mlua = { version = "0.11", features = ["vendored"], default-features = false }
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"

@@ -119,3 +119,45 @@ fn binary_bytecode_will_not_load() {
     );
     assert!(out.contains("binary bytecode"), "got {out:?}");
 }
+
+/// `require` must not be able to reach a native module loader.
+///
+/// The sandbox prunes the searcher list, but it used to read only
+/// `package.loaders` — the Lua 5.1 name. On 5.2 and later the table is
+/// `package.searchers`, so the whole block found nothing, did nothing, and left
+/// the C searcher installed. It failed **open**, with no error and no failing
+/// test, which is the shape of bug this file exists to catch: the control was
+/// written, and production did not reach it.
+///
+/// Asserted through the real engine on whichever Lua this build uses.
+#[test]
+fn require_cannot_reach_a_native_module_loader() {
+    let mut vm = RealVm::boot();
+
+    // Whichever name this runtime uses, only preload and the Lua-source
+    // searcher may remain.
+    let remaining = vm
+        .eval(
+            "local t = package.searchers or package.loaders \
+             if not t then return 'no searcher table at all' end \
+             local n = 0 \
+             for i = 1, 8 do if t[i] ~= nil then n = i end end \
+             return tostring(n)",
+        )
+        .unwrap();
+    assert_eq!(
+        remaining, "2",
+        "only package.preload and the Lua searcher may remain, found {remaining}"
+    );
+
+    // And the doors those searchers would have opened.
+    assert_eq!(vm.eval("return tostring(package.loadlib)").unwrap(), "nil");
+    assert_eq!(vm.eval("return package.cpath").unwrap(), "");
+
+    // The negative case, end to end: a C module cannot be required even by
+    // name. The message differs per runtime; that it fails does not.
+    let out = vm
+        .eval("local ok, err = pcall(require, 'ffi') return tostring(ok)")
+        .unwrap();
+    assert_eq!(out, "false", "requiring a native module should fail");
+}

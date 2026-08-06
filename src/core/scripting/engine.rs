@@ -274,11 +274,52 @@ impl ScriptEngine {
                 hook_local.borrow_mut().attach_channel(rx);
             }
 
+            // Dispatches suspended at a breakpoint, oldest first.
+            //
+            // Only ever non-empty on the yielding path: on LuaJIT a stop blocks
+            // this thread, so there is nothing to hold.
+            #[cfg(not(feature = "luajit"))]
+            let mut parked: Vec<debugger::parked::ParkedDispatch> = Vec::new();
+
             // Event loop — receive commands from the async driver
             loop {
-                match cmd_rx.blocking_recv() {
+                // While a dispatch is suspended, the debugger has to be served
+                // from here — the hook returned rather than blocking, so this
+                // thread is the only one that can answer it — and other players'
+                // commands have to keep flowing. So poll instead of blocking,
+                // and only while something is actually parked.
+                #[cfg(not(feature = "luajit"))]
+                let next = if parked.is_empty() {
+                    cmd_rx.blocking_recv()
+                } else {
+                    match cmd_rx.try_recv() {
+                        Ok(c) => Some(c),
+                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => None,
+                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                            debugger::parked::serve(&lua, &debug_state, &hook_local, &mut parked);
+                            debugger::parked::auto_continue(&lua, &debug_state, &hook_local, &mut parked);
+                            // A stop is a human-scale event; a millisecond of
+                            // latency costs nothing and this keeps the thread
+                            // off a spin.
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                            continue;
+                        }
+                    }
+                };
+                #[cfg(feature = "luajit")]
+                let next = cmd_rx.blocking_recv();
+
+                match next {
                     None => break, // Channel closed
                     Some(cmd) => {
+                        // Answer anything the debugger asked for before running
+                        // the next command, so a client is never left waiting on
+                        // a quiet server.
+                        #[cfg(not(feature = "luajit"))]
+                        if !parked.is_empty() {
+                            debugger::parked::serve(&lua, &debug_state, &hook_local, &mut parked);
+                        }
+
                         // Arm or disarm the hook before running any Lua. This is the
                         // only place `set_hook` may be called — never from inside
                         // the hook itself.
@@ -299,10 +340,30 @@ impl ScriptEngine {
                             LuaCommand::OnInput { session_id, text } => {
                                 set_current_session(Some(session_id.clone()));
                                 debugger::set_dispatch_context(&debug_state, Some(&session_id));
+                                debugger::set_dispatch_label(
+                                    text.split_whitespace().next().unwrap_or("input"),
+                                );
                                 debugger::hook::begin_dispatch(&hook_local);
 
                                 let extra = Some(serde_json::json!({"input": &text[..text.len().min(100)]}));
-                                dispatch_event_2(&lua, "on_input", &session_id, &text, &game_logger, &session_handler_for_log, extra);
+                                let suspended = dispatch_event_2(&lua, "on_input", &session_id, &text, &game_logger, &session_handler_for_log, extra, &debug_state, &hook_local);
+
+                                // A suspended dispatch is one player stopped at
+                                // a breakpoint. Park it and carry on; the loop
+                                // below serves the debugger and everyone else.
+                                #[cfg(not(feature = "luajit"))]
+                                if let Some(thread) = suspended {
+                                    debugger::parked::park(&lua, &mut parked, debugger::parked::ParkedDispatch {
+                                        id: debugger::hook::take_parked_id(&hook_local)
+                                            .unwrap_or(debugger::state::WORLD_STOP),
+                                        session: session_id.clone(),
+                                        verb: text.split_whitespace().next().unwrap_or("").to_string(),
+                                        system: false,
+                                        thread,
+                                    });
+                                }
+                                #[cfg(feature = "luajit")]
+                                let _ = suspended;
 
                                 // The verb is the first token; that is all the
                                 // timing table needs, and reading it here keeps
@@ -310,6 +371,7 @@ impl ScriptEngine {
                                 let verb = text.split_whitespace().next().unwrap_or("");
                                 debugger::hook::end_dispatch(&hook_local, &session_id, verb);
                                 debugger::set_dispatch_context(&debug_state, None);
+                                debugger::set_dispatch_label("");
                                 set_current_session(None);
                             }
                             LuaCommand::OnDisconnect { session_id } => {
@@ -337,7 +399,33 @@ impl ScriptEngine {
                                 // gated efun a daemon calls is denied — see
                                 // `efuns::enter_system_dispatch`.
                                 let _system = set_system_identity();
-                                dispatch_event(&lua, "on_timer", &[id], &game_logger, &session_handler_for_log);
+                                debugger::set_dispatch_context(&debug_state, None);
+                                debugger::set_dispatch_label(&format!("timer:{id}"));
+                                // On a coroutine, like a player command, so a
+                                // breakpoint in one can suspend rather than
+                                // block. This is not a rare case: combat rounds,
+                                // regeneration, effect ticks and every daemon
+                                // heartbeat arrive here, which makes a tick the
+                                // *likeliest* place to want a breakpoint. It was
+                                // a direct call at first, on the reasoning that a
+                                // tick has no session to report a stop against
+                                // and stopping in one would be rare — the second
+                                // half of which was simply wrong, and the cost
+                                // was that breaking in combat froze every player.
+                                let suspended = dispatch_timer(&lua, &id, &game_logger, &session_handler_for_log, &debug_state, &hook_local);
+                                #[cfg(not(feature = "luajit"))]
+                                if let Some(thread) = suspended {
+                                    debugger::parked::park(&lua, &mut parked, debugger::parked::ParkedDispatch {
+                                        id: debugger::hook::take_parked_id(&hook_local)
+                                            .unwrap_or(debugger::state::WORLD_STOP),
+                                        session: String::new(),
+                                        verb: format!("timer:{id}"),
+                                        system: true,
+                                        thread,
+                                    });
+                                }
+                                #[cfg(feature = "luajit")]
+                                let _ = suspended;
                             }
                             LuaCommand::ComputeResult {
                                 id, kind, value, error, tag, module, func,
@@ -468,6 +556,11 @@ impl ScriptEngine {
 /// code — which it does. `apply_sandbox` then removes the `jit` table outright,
 /// otherwise a single `jit.on()` in a room file would hand the compiler back
 /// and silently disarm the budget.
+///
+/// None of this applies to PUC Lua, which has no tracing compiler and always
+/// dispatches hooks — see the `not(feature = "luajit")` version below, where the
+/// budget and full-speed execution simply are not in tension.
+#[cfg(feature = "luajit")]
 fn disable_jit_for_budget(lua: &Lua, by_env: bool) -> bool {
     if let Err(e) = lua.load("jit.off()").set_name("=<oxigeon>/jit_off").exec() {
         tracing::error!("jit.off() failed: {}", e);
@@ -482,6 +575,24 @@ fn disable_jit_for_budget(lua: &Lua, by_env: bool) -> bool {
         tracing::info!(
             "LuaJIT compiler disabled so limits.lua_instruction_limit can be enforced \
              (set it to 0 to keep the compiler and drop the limit)"
+        );
+    }
+    true
+}
+
+/// On PUC Lua there is no compiler to disable, and nothing to trade away.
+///
+/// This is the whole of the `instruction_limit`-versus-speed argument
+/// disappearing: PUC Lua has no tracing JIT, so count hooks always fire and the
+/// budget is enforceable without giving anything up. `jit` does not exist here,
+/// so evaluating `jit.off()` would raise — hence a separate function rather
+/// than a runtime check.
+#[cfg(not(feature = "luajit"))]
+fn disable_jit_for_budget(_lua: &Lua, by_env: bool) -> bool {
+    if by_env {
+        tracing::warn!(
+            "OXIGEON_JIT=off has no effect on this build — it runs PUC Lua, which \
+             has no compiler to disable"
         );
     }
     true
@@ -629,6 +740,63 @@ fn dispatch_event(
     }
 }
 
+/// Dispatch `on_timer` on a coroutine, so a breakpoint in a tick can suspend.
+///
+/// Separate from [`dispatch_event_2`] only because a tick takes one argument and
+/// has no session; everything about how it suspends is the same.
+fn dispatch_timer(
+    lua: &Lua,
+    id: &str,
+    gl: &Arc<crate::core::logging::GameLogger>,
+    sh: &Arc<std::sync::RwLock<crate::core::session::SessionHandler>>,
+    #[cfg_attr(feature = "luajit", allow(unused_variables))] st: &debugger::SharedDebugState,
+    #[cfg_attr(feature = "luajit", allow(unused_variables))] hl: &std::rc::Rc<
+        std::cell::RefCell<debugger::HookLocal>,
+    >,
+) -> Option<LuaThread> {
+    let Ok(f) = lua.globals().get::<LuaFunction>("on_timer") else {
+        tracing::trace!("No Lua function 'on_timer' defined");
+        return None;
+    };
+
+    #[cfg(feature = "luajit")]
+    {
+        if let Err(e) = f.call::<()>(id.to_string()) {
+            tracing::error!("Lua error in on_timer: {}", e);
+            log_lua_error(gl, sh, "on_timer", &e, None);
+        }
+        None
+    }
+
+    #[cfg(not(feature = "luajit"))]
+    {
+        let thread = match lua.create_thread(f) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::error!("could not create a timer coroutine: {}", e);
+                return None;
+            }
+        };
+        // Hooks are per-thread on PUC Lua. Without this a tick would run with no
+        // breakpoints and no instruction budget.
+        debugger::arm_thread(&thread, st, hl);
+
+        match thread.resume::<()>(id.to_string()) {
+            Ok(()) => {
+                if thread.status() == mlua::ThreadStatus::Resumable {
+                    return Some(thread);
+                }
+                None
+            }
+            Err(e) => {
+                tracing::error!("Lua error in on_timer: {}", e);
+                log_lua_error(gl, sh, "on_timer", &e, None);
+                None
+            }
+        }
+    }
+}
+
 /// Dispatch a two-arg Lua event with structured error logging.
 fn dispatch_event_2(
     lua: &Lua,
@@ -638,17 +806,65 @@ fn dispatch_event_2(
     gl: &Arc<crate::core::logging::GameLogger>,
     sh: &Arc<std::sync::RwLock<crate::core::session::SessionHandler>>,
     extra_meta: Option<serde_json::Value>,
-) {
+    // Only the coroutine path needs these — it arms the new thread's hook with
+    // them — but the signature is shared so the call site does not fork.
+    #[cfg_attr(feature = "luajit", allow(unused_variables))] st: &debugger::SharedDebugState,
+    #[cfg_attr(feature = "luajit", allow(unused_variables))] hl: &std::rc::Rc<
+        std::cell::RefCell<debugger::HookLocal>,
+    >,
+) -> Option<LuaThread> {
     let func: LuaResult<LuaFunction> = lua.globals().get(fn_name);
-    match func {
-        Ok(f) => {
-            if let Err(e) = f.call::<()>((arg1.to_string(), arg2.to_string())) {
+    let Ok(f) = func else {
+        tracing::trace!("No Lua function '{}' defined", fn_name);
+        return None;
+    };
+
+    // ── LuaJIT: a plain call ─────────────────────────────────────────────
+    // Nothing can suspend it, because the hook cannot yield, so there is no
+    // reason to pay for a coroutine.
+    #[cfg(feature = "luajit")]
+    {
+        if let Err(e) = f.call::<()>((arg1.to_string(), arg2.to_string())) {
+            tracing::error!("Lua error in {}: {}", fn_name, e);
+            log_lua_error(gl, sh, fn_name, &e, extra_meta);
+        }
+        None
+    }
+
+    // ── Lua 5.3+: on a coroutine, so a breakpoint can suspend it ─────────
+    //
+    // Player commands only. A timer or a connect handler still runs as a direct
+    // call: they have no session to report a stop against, and a breakpoint in
+    // one is rare enough that blocking there is the better trade than making
+    // every tick allocate a thread.
+    #[cfg(not(feature = "luajit"))]
+    {
+        let thread = match lua.create_thread(f) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::error!("could not create a dispatch coroutine: {}", e);
+                return None;
+            }
+        };
+
+        // Hooks are per-thread on PUC Lua: without this the coroutine runs with
+        // no breakpoints and, more importantly, no instruction budget.
+        debugger::arm_thread(&thread, st, hl);
+
+        match thread.resume::<()>((arg1.to_string(), arg2.to_string())) {
+            Ok(()) => {
+                // Suspended rather than finished means the hook yielded — the
+                // debugger has it, and the engine parks it.
+                if thread.status() == mlua::ThreadStatus::Resumable {
+                    return Some(thread);
+                }
+                None
+            }
+            Err(e) => {
                 tracing::error!("Lua error in {}: {}", fn_name, e);
                 log_lua_error(gl, sh, fn_name, &e, extra_meta);
+                None
             }
-        }
-        Err(_) => {
-            tracing::trace!("No Lua function '{}' defined", fn_name);
         }
     }
 }

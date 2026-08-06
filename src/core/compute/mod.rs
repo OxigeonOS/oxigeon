@@ -1,38 +1,47 @@
-//! Running long Lua computations off the game thread.
+//! Running long Lua computations off the game thread — and out of the game
+//! process.
 //!
 //! The whole game runs on one Lua thread. Anything expensive on it — a
 //! pathfind across a large map, generating an area, a simulation pass — freezes
 //! every connected player for its duration. This is the escape hatch: hand the
-//! work to a pool of worker threads, each with its own LuaJIT VM, and get the
-//! answer back later through a mudlib hook.
+//! work to a pool of `oxigeon-compute` child processes, each with its own LuaJIT
+//! VM, and get the answer back later through a mudlib hook.
 //!
 //! It is deliberately shaped like [`crate::core::auth`], which solves the same
 //! problem for Argon2: a bounded queue, a fixed pool, and a round trip through
 //! [`LuaCommand`]. Two things differ. The work is arbitrary game code rather
 //! than one fixed operation, so it has to be identified and loaded. And its
-//! arguments and results must be *copied* between two VMs, because mlua's
-//! `Lua` is `!Send` and no Lua value may cross a thread — see [`marshal`].
+//! arguments and results must be *copied* between two VMs, because no Lua value
+//! may leave the VM that made it — see [`oxigeon_lua::marshal`], framed for the
+//! pipe by [`oxigeon_lua::wire`].
+//!
+//! # Why a process and not a thread
+//!
+//! Workers used to be threads in this process, and that cost two things.
+//!
+//! **They had to be the same Lua.** `mlua-sys` permits one Lua version per
+//! binary, so a server built for Lua 5.5 — which is what makes debugging without
+//! freezing the world possible — dragged its compute pool onto 5.5 too, giving
+//! up the LuaJIT compiler on precisely the arithmetic-heavy work this facility
+//! exists for.
+//!
+//! **They could not be stopped.** Rust cannot kill a thread. With no instruction
+//! budget armed there is no hook to interrupt a runaway job, so one burned its
+//! worker for the life of the *server*, permanently, and the only mitigation was
+//! to count it. A process can be terminated: a job that overruns its deadline
+//! now costs one job and a respawn.
 //!
 //! # The contract
 //!
 //! If [`ComputeBridge::submit`] returns an id, **exactly one** result is
 //! delivered for it. If it returns an error, none is. Everything operational —
 //! a full queue, a timeout, a cancel, a module that will not load, a job that
-//! raises — arrives through the result path, because the mudlib's cleanup is
-//! identical for all of them and making a caller handle "the efun told me" and
-//! "the hook told me" as separate cases is how that cleanup gets forgotten.
-//!
-//! # What isolation you actually get
-//!
-//! A wedged job costs **one worker, not the game**. Rust cannot kill a thread,
-//! so with the compiler on (the default) a runaway job burns its worker for
-//! the life of the process; the deadline unblocks the *caller* but does not
-//! stop the job. Arming `compute.instruction_limit` makes workers recoverable,
-//! at the cost of the compiler in that VM. Both are documented and neither is
-//! silent: wedged workers are counted and surfaced in `server_info()`.
+//! raises, a worker that died — arrives through the result path, because the
+//! mudlib's cleanup is identical for all of them and making a caller handle "the
+//! efun told me" and "the hook told me" as separate cases is how that cleanup
+//! gets forgotten.
 
-pub mod marshal;
-pub mod vm;
+pub mod worker;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -47,8 +56,12 @@ use crate::config::server_config::ComputeConfig;
 use crate::core::lock::MutexExt;
 use crate::core::scripting::engine::LuaCommand;
 
-pub use marshal::{Limits, LuaData, MarshalError};
-pub use vm::Ending;
+/// Copying a Lua value out of the game VM and back in again. Lives in
+/// `oxigeon-lua` because the worker process needs exactly the same code.
+pub use oxigeon_lua::marshal;
+pub use oxigeon_lua::marshal::{Limits, LuaData, MarshalError};
+pub use oxigeon_lua::vm::Ending;
+pub use worker::WorkerPath;
 
 /// Correlates a submission with its result.
 pub type JobId = u64;
@@ -87,12 +100,12 @@ impl std::fmt::Display for SubmitError {
     }
 }
 
-struct Job {
-    id: JobId,
-    module: String,
-    func: String,
-    args: LuaData,
-    deadline: Instant,
+pub(crate) struct Job {
+    pub id: JobId,
+    pub module: String,
+    pub func: String,
+    pub args: LuaData,
+    pub deadline: Instant,
 }
 
 /// A job the pool has accepted and not yet answered for.
@@ -104,13 +117,16 @@ struct Live {
     deadline: Instant,
     started: Option<Instant>,
     cancelled: bool,
+    /// Which worker picked it up, so a cancel or a kill reaches the right child.
+    worker: Option<usize>,
 }
 
 /// Counters behind `server_info().compute`.
 ///
-/// `wedged` is the one an operator should watch: it counts jobs that blew
-/// their deadline while still running, which — with the compiler on — means a
-/// worker thread that is never coming back.
+/// `wedged` is the one an operator should watch: it counts jobs that blew their
+/// deadline while still running. Each of those killed and respawned a worker
+/// process — recoverable, unlike the thread pool this replaced, but still a sign
+/// that a job is doing something it should not.
 #[derive(Default, Clone, Debug)]
 pub struct Stats {
     pub submitted: u64,
@@ -120,6 +136,8 @@ pub struct Stats {
     pub refused: u64,
     pub cancelled: u64,
     pub wedged: u64,
+    /// Worker processes started, including respawns after a kill or a crash.
+    pub spawned: u64,
 }
 
 /// A point-in-time view of the pool, for `server_info()`.
@@ -144,16 +162,19 @@ pub struct ComputeBridge {
     /// thread, not only from a worker.
     cmd_tx: UnboundedSender<LuaCommand>,
     next_id: Arc<AtomicU64>,
-    /// Bumped on every reload; workers rebuild their VM when it moves.
+    /// Bumped on every reload; a worker is replaced before its next job.
     epoch: Arc<AtomicU64>,
     live: Arc<Mutex<HashMap<JobId, Live>>>,
     stats: Arc<Mutex<Stats>>,
+    /// The child process behind each worker slot, for cancels and kills.
+    workers: Arc<Vec<worker::Handle>>,
     cfg: Arc<ComputeConfig>,
 }
 
 impl ComputeBridge {
     /// Start the pool. Returns `None` when compute is disabled, which is what
-    /// keeps the efuns unregistered and the feature free when unused.
+    /// keeps the efuns unregistered, the feature free when unused, and — since
+    /// workers are processes now — guarantees no child is ever spawned.
     pub fn start(
         cfg: ComputeConfig,
         mudlib: PathBuf,
@@ -164,6 +185,7 @@ impl ComputeBridge {
             return None;
         }
 
+        let count = cfg.workers.max(1);
         let (tx, rx) = sync_channel::<Job>(cfg.queue_depth.max(1));
         let bridge = Self {
             tx,
@@ -172,53 +194,59 @@ impl ComputeBridge {
             epoch: Arc::new(AtomicU64::new(0)),
             live: Arc::new(Mutex::new(HashMap::new())),
             stats: Arc::new(Mutex::new(Stats::default())),
+            workers: Arc::new((0..count).map(|_| worker::Handle::default()).collect()),
             cfg: Arc::new(cfg),
         };
 
         let rx = Arc::new(Mutex::new(rx));
-        for n in 0..bridge.cfg.workers.max(1) {
-            bridge.spawn_worker(n, rx.clone(), mudlib.clone(), game.clone(), cmd_tx.clone());
+        for n in 0..count {
+            bridge.spawn_worker(n, rx.clone(), mudlib.clone(), game.clone());
         }
         bridge.spawn_watchdog();
 
         tracing::info!(
-            "compute: {} worker(s), queue {}, instruction limit {} ({})",
-            bridge.cfg.workers,
+            "compute: {} worker process(es), queue {}, instruction limit {} ({})",
+            count,
             bridge.cfg.queue_depth,
             bridge.cfg.instruction_limit,
             if bridge.cfg.instruction_limit > 0 {
-                "compiler off, runaway jobs recoverable"
+                "compiler off, a runaway job stops itself"
             } else {
-                "compiler on, a runaway job burns its worker permanently"
+                "compiler on, a runaway job is killed at its deadline"
             }
         );
 
         Some(bridge)
     }
 
-    fn spawn_worker(
-        &self,
-        n: usize,
-        rx: Arc<Mutex<Receiver<Job>>>,
-        mudlib: PathBuf,
-        game: PathBuf,
-        cmd_tx: UnboundedSender<LuaCommand>,
-    ) {
+    /// One host thread per worker slot: pull a job, hand it to that slot's child
+    /// process, wait for the answer.
+    ///
+    /// The thread is cheap and does no Lua; all it does is own one pipe. Keeping
+    /// a thread per child is what lets the read be a plain blocking read instead
+    /// of a poll loop over every worker.
+    fn spawn_worker(&self, n: usize, rx: Arc<Mutex<Receiver<Job>>>, mudlib: PathBuf, game: PathBuf) {
         let cfg = self.cfg.clone();
         let epoch = self.epoch.clone();
         let live = self.live.clone();
         let stats = self.stats.clone();
+        let cmd_tx = self.cmd_tx.clone();
+        let handle = self.workers[n].clone();
 
         std::thread::Builder::new()
             .name(format!("oxigeon-compute-{n}"))
             .spawn(move || {
-                // The VM is built lazily and rebuilt whenever the epoch moves,
-                // so compute costs nothing until it is used and a reload is
-                // picked up without any `package.loaded` surgery. Throwing the
-                // whole VM away is always safe here precisely because it holds
-                // no state anyone is allowed to depend on — which is the
-                // property the game VM lacks.
-                let mut built: Option<(u64, vm::ComputeVm)> = None;
+                // Built lazily and replaced whenever the epoch moves, so compute
+                // costs nothing until it is used and a reload is picked up
+                // without any `package.loaded` surgery. Throwing the whole VM
+                // away is always safe here precisely because it holds no state
+                // anyone is allowed to depend on — which is the property the
+                // game VM lacks.
+                let mut at_epoch: Option<u64> = None;
+                // The reading end of the current child's pipe. Held here rather
+                // than in the slot so a blocking read cannot stop a cancel or a
+                // kill — see `worker`'s module docs.
+                let mut reader: Option<worker::Reader> = None;
 
                 loop {
                     let job = match rx.lock_recover().recv() {
@@ -232,6 +260,7 @@ impl ComputeBridge {
                         match live.get_mut(&job.id) {
                             Some(entry) if !entry.cancelled => {
                                 entry.started = Some(Instant::now());
+                                entry.worker = Some(n);
                                 true
                             }
                             _ => false,
@@ -242,11 +271,22 @@ impl ComputeBridge {
                     }
 
                     let current = epoch.load(Ordering::Relaxed);
-                    if built.as_ref().is_none_or(|(e, _)| *e != current) {
-                        match vm::build(&cfg, &mudlib, &game, (n as u64) ^ (current << 8)) {
-                            Ok(new) => built = Some((current, new)),
+                    if at_epoch != Some(current) || !handle.is_running() {
+                        handle.shut_down();
+                        reader = None;
+                        at_epoch = None;
+                    }
+                    if reader.is_none() {
+                        stats.lock_recover().spawned += 1;
+                        match handle.start(&cfg, &mudlib, &game, (n as u64) ^ (current << 8)) {
+                            Ok(r) => {
+                                reader = Some(r);
+                                at_epoch = Some(current);
+                            }
                             Err(e) => {
-                                tracing::error!("compute: could not build a VM: {e}");
+                                tracing::error!(
+                                    "compute: could not start a worker process: {e}"
+                                );
                                 Self::answer(
                                     &cmd_tx, &live, &stats, job.id,
                                     Ending::LoadError,
@@ -254,18 +294,32 @@ impl ComputeBridge {
                                     Some(format!("compute worker could not start: {e}")),
                                     Vec::new(),
                                 );
+                                // Do not spin: with no worker binary every job
+                                // fails the same way, and the log line above is
+                                // the one that matters.
+                                std::thread::sleep(Duration::from_millis(250));
                                 continue;
                             }
                         }
                     }
 
-                    let machine = &built.as_ref().unwrap().1;
-                    let out = machine.run(&job.module, &job.func, &job.args, Some(job.deadline));
+                    let out = handle.run(reader.as_mut().expect("just started"), &job);
+                    if handle.is_broken() {
+                        // The child died mid-job — killed at its deadline, or it
+                        // crashed. Drop it so the next job gets a fresh one;
+                        // whoever killed it has usually answered already, and
+                        // `answer` is a no-op if so.
+                        handle.shut_down();
+                        reader = None;
+                        at_epoch = None;
+                    }
                     Self::answer(
                         &cmd_tx, &live, &stats, job.id,
                         out.ending, out.value, out.error, out.logs,
                     );
                 }
+
+                handle.shut_down();
             })
             .expect("failed to spawn a compute worker");
     }
@@ -351,6 +405,7 @@ impl ComputeBridge {
                 deadline,
                 started: None,
                 cancelled: false,
+                worker: None,
             },
         );
         self.stats.lock_recover().submitted += 1;
@@ -385,18 +440,25 @@ impl ComputeBridge {
     }
 
     /// Ask a job to stop. Returns whether it was still live.
+    ///
+    /// The flag alone only reaches a job that checks `compute_cancelled()` or
+    /// runs under a budget, so a cancel for a job already in a worker is also
+    /// sent down that worker's pipe.
     pub fn cancel(&self, id: JobId) -> bool {
         let mut live = self.live.lock_recover();
         match live.get_mut(&id) {
             Some(entry) => {
                 entry.cancelled = true;
+                if let Some(w) = entry.worker.and_then(|n| self.workers.get(n)) {
+                    w.cancel(id);
+                }
                 true
             }
             None => false,
         }
     }
 
-    /// Rebuild every worker's VM before its next job. Called on reload.
+    /// Replace every worker's VM before its next job. Called on reload.
     pub fn recycle(&self) {
         self.epoch.fetch_add(1, Ordering::Relaxed);
     }
@@ -424,30 +486,34 @@ impl ComputeBridge {
             .expect("failed to spawn the compute watchdog");
     }
 
-    /// Answer for every job whose deadline has passed.
+    /// Answer for every job whose deadline has passed, and kill the worker of
+    /// any that was still running.
     ///
-    /// Called on a timer by the driver. The deadline unblocks the **caller**;
-    /// it does not stop the job. With the compiler on there is no hook to
-    /// interrupt one, so a job that overran is still burning its worker — that
-    /// is what `wedged` counts, and why it is worth alerting on.
+    /// The deadline unblocks the caller. What is new since compute moved out of
+    /// process is that it also *ends the job*: with no budget armed there is no
+    /// hook inside the VM to interrupt one, and the only thing that reliably
+    /// stops a runaway `while true do end` is terminating the process running
+    /// it. That is what `wedged` counts now — a worker killed and replaced,
+    /// rather than a worker lost for the life of the server.
     pub fn reap_expired(&self) {
         let now = Instant::now();
-        let expired: Vec<(JobId, bool)> = self
+        let expired: Vec<(JobId, Option<usize>)> = self
             .live
             .lock_recover()
             .iter()
             .filter(|(_, e)| e.deadline <= now)
-            .map(|(id, e)| (*id, e.started.is_some()))
+            .map(|(id, e)| (*id, e.started.map(|_| e.worker.unwrap_or(usize::MAX))))
             .collect();
 
-        for (id, was_running) in expired {
-            if was_running {
+        for (id, running_on) in expired {
+            if let Some(n) = running_on {
                 self.stats.lock_recover().wedged += 1;
                 tracing::error!(
-                    "compute: job {id} passed its deadline while running — the worker is \
-                     still executing it and will not come back unless \
-                     [compute] instruction_limit is set"
+                    "compute: job {id} passed its deadline while running — killing worker {n}"
                 );
+                if let Some(w) = self.workers.get(n) {
+                    w.kill();
+                }
             }
             Self::answer(
                 &self.cmd_tx,
@@ -482,6 +548,12 @@ impl ComputeBridge {
     /// Limits for copying arguments out of the game VM.
     pub fn arg_limits(&self) -> Limits {
         Limits { depth: self.cfg.max_arg_depth, nodes: self.cfg.max_arg_nodes }
+    }
+
+    /// How many worker child processes are alive right now. For tests that need
+    /// to assert compute spawned nothing.
+    pub fn live_worker_count(&self) -> usize {
+        self.workers.iter().filter(|w| w.is_running()).count()
     }
 }
 

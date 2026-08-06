@@ -1,3 +1,19 @@
+# ─── Workspace ───────────────────────────────────────────────────────────────
+#
+# `oxigeon-compute` is deliberately *not* a default member. It links LuaJIT
+# unconditionally, and cargo unifies features across everything one invocation
+# builds — so listing it here would hand `mlua-sys` two Lua versions and stop
+# the whole workspace compiling. It is built separately:
+#
+#   cargo build --release                        # the server
+#   cargo build --release -p oxigeon-compute     # the compute worker
+#
+# The server runs fine without it; a worker binary is only needed when
+# `[compute] enabled = true`, which is not the default.
+[workspace]
+members = ["crates/oxigeon-lua", "crates/oxigeon-compute"]
+default-members = [".", "crates/oxigeon-lua"]
+
 [package]
 name = "oxigeon"
 version = "0.1.0"
@@ -13,6 +29,35 @@ path = "src/main.rs"
 name = "oxigeon-tui"
 path = "src/bin/tui/main.rs"
 
+# ─── Which Lua runs the game thread ──────────────────────────────────────────
+#
+# mlua enforces exactly one Lua version per crate instance, and LuaJIT and PUC
+# Lua export the same C symbols, so two runtimes cannot be linked into one
+# binary. The choice is therefore made at build time.
+#
+#   cargo build                                        # Lua 5.5
+#   cargo build --no-default-features --features luajit
+#
+# **The default is Lua 5.5**, and not for performance: on real command dispatch
+# the two are within a few percent of each other either way, because
+# `limits.lua_instruction_limit` already calls `jit.off()` at boot (a compiled
+# trace dispatches no hooks) and the game thread has been running interpreted
+# all along. See docs/src/lua-api/performance.md.
+#
+# What 5.5 buys is a debug hook that can *yield*. On LuaJIT a breakpoint has
+# nowhere to suspend to, so it is implemented by blocking the only Lua thread and
+# every player on the server freezes until you continue. On 5.5 the engine parks
+# that one command as a coroutine and everyone else keeps playing. Plus integers,
+# uncatchable errors and better diagnostics.
+#
+# The compiler is not given up: it moves to where it was actually worth
+# something. `oxigeon-compute` links LuaJIT unconditionally, so the 2.10x it is
+# worth on tight arithmetic still applies to the jobs that do tight arithmetic.
+[features]
+default = ["lua55"]
+luajit = ["mlua/luajit", "oxigeon-lua/luajit"]
+lua55 = ["mlua/lua55", "oxigeon-lua/lua55"]
+
 [dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -20,8 +65,15 @@ tokio-util = { version = "0.7", features = ["codec"] }
 # Sink/Stream extension traits for the DAP Framed transport
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 
-# Lua scripting (LuaJIT, vendored build)
-mlua = { version = "0.10", features = ["luajit", "vendored"] }
+# Lua scripting, vendored build. Which runtime is a build-time choice — see
+# [features] below. mlua permits exactly one Lua version per crate instance.
+mlua = { version = "0.11", features = ["vendored"], default-features = false }
+
+# Everything that touches a Lua VM and is also needed by the compute worker: the
+# sandbox, the value marshaller, the worker VM, the wire protocol. It builds
+# against whichever Lua this crate selected; the worker builds the same code
+# against LuaJIT, in its own cargo invocation.
+oxigeon-lua = { path = "crates/oxigeon-lua", default-features = false }
 
 # Database (Diesel with both backends compiled in for MultiConnection)
 diesel = { version = "2", features = ["sqlite", "r2d2", "chrono"] }

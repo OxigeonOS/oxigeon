@@ -5,8 +5,8 @@ local M = {}
 M.name       = "trace"
 M.aliases    = {}
 M.category   = "admin"
-M.summary    = "Trace Lua execution. Usage: trace <on|off|calls|lines|time|show|timings|status|clear> [all]"
-M.permission = "admin"
+M.summary    = "Trace Lua execution. Usage: trace <on|off|calls|lines|time|show|timings|status|clear|freeze> [all]"
+M.permission = "cmd.trace"
 
 --- Split the argument list into a subcommand, a numeric argument, and a scope.
 --- Factored out so it can be unit-tested without a Player.
@@ -29,19 +29,18 @@ end
 local MODES = { on = true, calls = true, lines = true, time = true, off = true }
 
 --- Send a plain-text body, paging it if it is long.
---- The body must not contain {colour} tags: DAEMON.pager.page writes through the
---- raw send() efun and skips Player:_process_output, so tags would show up as-is.
+---
+--- Colour tags are safe here now. They were not: `DAEMON.pager.page` writes
+--- through the raw `send` efun and skips `Player:_process_output`, so a tag in a
+--- paged body reached the client unrendered — and this function carried a
+--- warning telling callers not to use colour, which is the wrong end to fix it.
+--- `Player:send_paged` colourises to the player's own preference first.
 local function send_body(player, session_id, lines)
     if #lines == 0 then
         player:send("{dim}(nothing recorded){/}")
         return
     end
-    local body = table.concat(lines, "\r\n")
-    if DAEMON and DAEMON.pager and #lines > 20 then
-        DAEMON.pager.page(session_id, body, 20)
-    else
-        player:send_raw(body)
-    end
+    player:send_paged(table.concat(lines, "\r\n"), { page_length = 20 })
 end
 
 local function show_status(player)
@@ -55,6 +54,18 @@ local function show_status(player)
         table.insert(out, "  scope:     {yellow}all sessions{/}")
     else
         table.insert(out, "  scope:     {yellow}" .. #st.sessions .. "{/} session(s)")
+    end
+    -- What a breakpoint will do to everyone else. Worth saying before you set
+    -- one on a server with people on it, not after.
+    if st.stop_the_world then
+        table.insert(out, "  breaks:    {yellow}freeze the whole game{/}")
+    else
+        table.insert(out, "  breaks:    {yellow}suspend one dispatch{/} " ..
+            "{dim}(other players keep playing){/}")
+    end
+    if (st.suspended or 0) > 0 then
+        table.insert(out, "  suspended: {yellow}" .. st.suspended ..
+            "{/} dispatch(es) waiting at a breakpoint")
     end
     table.insert(out, "  records:   {yellow}" .. st.records .. "{/} / " .. st.capacity)
     table.insert(out, "  timings:   {yellow}" .. st.timings .. "{/}")
@@ -92,6 +103,35 @@ function M.execute(session_id, args_str, args)
         return
     end
 
+    if sub == "freeze" then
+        -- Read `args` rather than `parse_args`, which only knows about `all` and
+        -- a count and would drop `on`/`off` on the floor.
+        local want = args[2] and args[2]:lower() or nil
+        if want == nil then
+            player:send("Breakpoints currently " ..
+                (trace_freeze() and "{yellow}freeze the whole game{/}."
+                                or "{yellow}suspend one dispatch{/}."))
+            return
+        end
+        if want ~= "on" and want ~= "off" then
+            player:send("{red}Usage: trace freeze on|off{/}")
+            return
+        end
+        local ok, err = pcall(trace_freeze, want == "on")
+        if not ok then
+            player:send("{red}" .. tostring(err) .. "{/}")
+            return
+        end
+        if want == "on" then
+            player:send("{yellow}Breakpoints now freeze the whole game.{/} " ..
+                "Every player stops until you continue.")
+        else
+            player:send("{yellow}Breakpoints now suspend only the dispatch that hit " ..
+                "them.{/} Everyone else keeps playing.")
+        end
+        return
+    end
+
     if sub == "show" then
         player:send_raw("{cyan}── Trace ──{/}")
         send_body(player, session_id, trace_show(count or 40))
@@ -120,6 +160,7 @@ function M.execute(session_id, args_str, args)
     table.insert(usage, "  trace show [n]          last n trace records (default 40)")
     table.insert(usage, "  trace timings [n]       per-command timings (default 20)")
     table.insert(usage, "  trace clear             empty both buffers")
+    table.insert(usage, "  trace freeze on|off     whether a breakpoint stops the whole game")
     player:send(table.concat(usage, "\r\n"))
 end
 

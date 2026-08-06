@@ -53,12 +53,52 @@ fn a_subdirectory_command_keeps_its_permission() {
     assert_eq!(
         vm.eval("return tostring(require('lib.commands').registry()['spawn'].permission)")
             .unwrap(),
-        "admin"
+        "cmd.spawn"
     );
     assert_eq!(
         vm.eval("return tostring(require('lib.commands').registry()['olc'].permission)")
             .unwrap(),
-        "olc"
+        "cmd.olc"
+    );
+}
+
+/// Every gated command names `cmd.<verb>`, and the verb is its own name.
+///
+/// There was no scheme, and the cost was silent: `setup_roles.lua` granted
+/// `cmd.olc` while this command required `olc`, `cmd.verify` while `verify`
+/// required `efun.verify`, and `efun.write_file` while `permissions.toml` said
+/// `efun.file.write`. Not one grant in the builder role matched anything, so the
+/// role was decorative and the only account that could build was account 1, by
+/// the `is_admin` bypass. Every part of that was individually invisible.
+///
+/// Requiring the string to *contain the verb* is the half that matters. A
+/// uniform prefix alone would still let `dig` ask for `cmd.olc` — which it did,
+/// so `dig` could not be granted separately from `olc`.
+#[test]
+fn every_gated_command_names_cmd_dot_its_own_verb() {
+    let mut vm = RealVm::boot_real_mudlib_with_probe();
+
+    let bad = vm
+        .eval(
+            "local out = {} \
+             for name, mod in pairs(require('lib.commands').registry()) do \
+               local p = mod.permission \
+               if p ~= nil then \
+                 if type(p) ~= 'string' or not p:match('^cmd%.[%w_]+$') \
+                    and not p:match('^cmd%.[%w_]+%.[%w_]+$') then \
+                   out[#out+1] = name .. '=' .. tostring(p) \
+                 elseif p:match('^cmd%.([%w_]+)') ~= name then \
+                   out[#out+1] = name .. '=' .. p .. '(wrong verb)' \
+                 end \
+               end \
+             end \
+             table.sort(out) return table.concat(out, ' ')",
+        )
+        .unwrap();
+
+    assert_eq!(
+        bad, "",
+        "commands whose permission is not `cmd.<their own verb>`: {bad}"
     );
 }
 

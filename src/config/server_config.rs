@@ -107,6 +107,15 @@ pub struct ComputeConfig {
     pub max_arg_depth: usize,
     #[serde(default = "default_compute_max_nodes")]
     pub max_arg_nodes: usize,
+    /// Where the `oxigeon-compute` binary is.
+    ///
+    /// A worker is a separate process because it links a different Lua — see
+    /// `core::compute` — so it is a separate binary, built with
+    /// `cargo build -p oxigeon-compute`. Unset means "beside the server binary",
+    /// which is how a release is laid out; set it when they are not, such as
+    /// under `cargo test`.
+    #[serde(default)]
+    pub worker_path: Option<String>,
 }
 
 fn default_compute_workers() -> usize { 2 }
@@ -131,6 +140,7 @@ impl Default for ComputeConfig {
             roots: default_compute_roots(),
             max_arg_depth: default_compute_max_depth(),
             max_arg_nodes: default_compute_max_nodes(),
+            worker_path: None,
         }
     }
 }

@@ -1,6 +1,6 @@
 # Oxigeon
 
-**Oxigeon** is a modern MUD driver written in Rust, using LuaJIT as its game scripting engine.
+**Oxigeon** is a modern MUD driver written in Rust, with Lua as its game scripting engine.
 
 It provides the infrastructure — networking, protocol handling, sessions, databases — so you can focus on writing the game in Lua.
 
@@ -36,7 +36,7 @@ cargo doc --no-deps --open
 - **Lua does the game. Rust does the plumbing.**
 - **Configuration over code** — change behavior via TOML files, not recompilation.
 - **Liskov-substitutable components** — swap any subsystem via traits.
-- **LuaJIT (5.1 API)** — fast, simple, accessible to non-coder creators.
+- **Lua** — simple, and accessible to non-coder creators. Lua 5.5 by default; LuaJIT is a build-time option. See [the Lua API reference](./lua-api/README.md#lua-version).
 
 ## Three-Layer Architecture
 

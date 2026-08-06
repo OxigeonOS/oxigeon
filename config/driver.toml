@@ -34,23 +34,48 @@ port = 4000
 # Omit this section, or leave enabled = false, to keep the VM exactly as it is
 # without the debugger.
 #
-# FREEZE-THE-WORLD: hitting a breakpoint stops the entire Lua VM. Every player
-# is frozen until you continue — connections stay alive and input queues, but no
-# game logic runs. Repeating timers accumulate during the pause and fire as a
-# burst on resume. Game time does not pass: `os_time()` excludes the frozen
-# interval, so regeneration, cooldowns and effects are where you left them.
-# This is a development tool.
+# WHAT A BREAKPOINT COSTS depends on which Lua this build links.
+#
+#   LuaJIT (default)  FREEZE-THE-WORLD. A stop halts the entire VM: every player
+#                     is frozen until you continue — connections stay alive and
+#                     input queues, but no game logic runs. Repeating timers
+#                     accumulate and fire as a burst on resume. LuaJIT's hook
+#                     API cannot yield, so blocking is the only way to hold
+#                     execution. A development tool.
+#
+#   lua55             Only the stopped player waits, *if you ask for it* — see
+#                     stop_the_world below. The hook yields, the engine parks
+#                     that one command and keeps serving everyone else, so
+#                     timers, regeneration and other players' commands carry on
+#                     normally. You can debug a live game.
+#
+# Both: game time does not pass while something is stopped — `os_time()`
+# excludes the frozen interval, so regeneration, cooldowns and effects are where
+# you left them. And a stop that Lua cannot suspend blocks on either runtime:
+# connect handlers, GMCP and hot reloads (not on a coroutine), and anything
+# called by C such as a sort comparator or a gsub replacement (a C frame in the
+# way). Player commands and timer ticks — so combat, regeneration and effects —
+# are coroutines and suspend on their own.
 #
 # While a client is attached the hook stays installed, which forces LuaJIT onto
 # the interpreter. Detach when you are done.
 #
-# [servers.debug]
-# enabled = false
-# bind = "127.0.0.1"        # NEVER expose: grants unauthenticated VM control
-# port = 4711
-# auto_continue_secs = 300  # resume if the editor goes silent (0 = never)
-# trace_capacity = 5000     # `trace show` ring size
-# timing_capacity = 200     # `trace timings` ring size
+[servers.debug]
+enabled = true
+bind = "127.0.0.1"        # NEVER expose: grants unauthenticated VM control
+port = 4711
+auto_continue_secs = 300  # resume if the editor goes silent (0 = never)
+# Whether a breakpoint holds the whole VM, or only the dispatch that hit it.
+# True is what every debugger does, and all LuaJIT can do.
+#
+# Set false on a lua55 build to debug a game with people on it: one player's
+# command — or one tick — waits, and everyone else keeps playing. Expect a
+# *stream* of stops if you break on a line a ticker reaches every round, because
+# the ticker keeps ticking; a logpoint is usually what you wanted there instead.
+# Changeable while running with `trace freeze on|off`.
+stop_the_world = true
+trace_capacity = 5000     # `trace show` ring size
+timing_capacity = 200     # `trace timings` ring size
 
 [logging]
 # Level: "trace", "debug", "info", "warn", "error"

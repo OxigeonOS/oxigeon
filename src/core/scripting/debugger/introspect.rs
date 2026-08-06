@@ -83,6 +83,53 @@ pub fn variables(lua: &Lua, var_ref: i64) -> Vec<DapVariable> {
         .unwrap_or_default()
 }
 
+/// Freeze the paused frames, so they can be answered for after the thread that
+/// owns them has been parked.
+///
+/// Only meaningful from inside the hook, before yielding: it walks the *current*
+/// stack. Returns a capture id, or 0 when there was nothing to capture.
+pub fn capture(lua: &Lua, levels: i64) -> i64 {
+    call::<_, i64>(lua, "capture", levels).unwrap_or(0)
+}
+
+/// Drop a capture and everything it froze. Called on resume.
+pub fn release(lua: &Lua, cap: i64) {
+    if cap != 0 {
+        let _ = call::<_, ()>(lua, "release", cap);
+    }
+}
+
+/// Scopes for a frame of a captured stop.
+pub fn capture_scopes(lua: &Lua, cap: i64, frame: i64) -> Vec<DapScope> {
+    let Some(rows) = call::<_, LuaTable>(lua, "cap_scopes", (cap, frame)) else {
+        return Vec::new();
+    };
+    rows.sequence_values::<LuaTable>()
+        .filter_map(Result::ok)
+        .map(|r| DapScope {
+            name: r.get("name").unwrap_or_default(),
+            var_ref: r.get("ref").unwrap_or(0),
+            expensive: r.get("expensive").unwrap_or(false),
+        })
+        .collect()
+}
+
+/// Evaluate against a captured frame's environment.
+pub fn capture_evaluate(lua: &Lua, cap: i64, frame: i64, expr: &str) -> Result<DapVariable, String> {
+    let Some((ok, text, ty, var_ref)) = call::<_, (bool, String, String, i64)>(
+        lua,
+        "cap_eval",
+        (cap, frame, expr.to_string()),
+    ) else {
+        return Err("evaluate is unavailable — the debug library is not loaded".into());
+    };
+    if ok {
+        Ok(DapVariable { name: String::new(), value: text, ty, var_ref })
+    } else {
+        Err(text)
+    }
+}
+
 /// Returns the rendered result, or the error text the client should show.
 pub fn evaluate(lua: &Lua, frame: i64, expr: &str) -> Result<DapVariable, String> {
     let Some((ok, text, ty, var_ref)) =

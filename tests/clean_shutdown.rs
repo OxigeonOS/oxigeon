@@ -27,16 +27,16 @@ const GENEROUS: Duration = Duration::from_secs(10);
 fn gated_efun() -> PermissionConfig {
     let mut efuns = HashMap::new();
     efuns.insert("journal_read".to_string(), "admin".to_string());
-    PermissionConfig { efuns, directories: HashMap::new() }
+    PermissionConfig { efuns, ..Default::default() }
 }
 
 fn gated_writes() -> PermissionConfig {
     let mut directories = HashMap::new();
     directories.insert(
-        "/logs".to_string(),
+        "/mudlib/logs".to_string(),
         DirPerms { read: None, write: Some("admin".to_string()) },
     );
-    PermissionConfig { efuns: HashMap::new(), directories }
+    PermissionConfig { directories, ..Default::default() }
 }
 
 /// The bug itself: the mudlib is never told the server is going away.

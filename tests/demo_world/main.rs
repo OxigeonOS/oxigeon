@@ -25,6 +25,7 @@
 mod common;
 
 mod authored_mob_health;
+mod authoring;
 mod board;
 mod gmcp_game;
 mod combat;

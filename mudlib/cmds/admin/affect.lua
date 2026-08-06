@@ -3,7 +3,7 @@ M.name = 'affect'
 M.aliases = {}
 M.category = 'admin'
 M.summary = 'Inspect and drive the trait and effect systems.'
-M.permission = 'admin'
+M.permission = "cmd.affect"
 
 --- The admin window onto traits and effects.
 ---

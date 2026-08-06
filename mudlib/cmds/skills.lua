@@ -5,6 +5,8 @@
 -- having swordsmanship is the point of sparseness, so this list is short at
 -- character creation and grows as things are learned.
 
+local Strings = require('lib.strings')
+
 local M = {}
 M.name = 'skills'
 M.aliases = { 'skill', 'sk' }
@@ -19,14 +21,16 @@ local function render(trait)
     local line
     if trait.max then
         line = string.format("  %-18s %5s / %-5s", trait.label,
-            tostring(trait.value), tostring(trait.max))
+            Strings.number(trait.value), Strings.number(trait.max))
     else
-        line = string.format("  %-18s %5s", trait.label, tostring(trait.value))
+        line = string.format("  %-18s %5s", trait.label, Strings.number(trait.value))
     end
     if trait.value ~= trait.base then
+        -- `%s`, not `%d` — see score.lua: a `round = "none"` trait can carry a
+        -- fraction, and `%d` on one raises from 5.3 on.
         local delta = trait.value - trait.base
-        line = line .. string.format("  {yellow}(%s%d from effects){/}",
-            delta > 0 and "+" or "", delta)
+        line = line .. string.format("  {yellow}(%s%s from effects){/}",
+            delta > 0 and "+" or "", Strings.number(delta))
     elseif trait.kind == "derived" then
         line = line .. "  {cyan}(derived){/}"
     end

@@ -8,7 +8,7 @@ M.name       = "announce"
 M.aliases    = {}
 M.category   = "admin"
 M.summary    = "Send a server-wide announcement to all players. Usage: announce <message>"
-M.permission = "daemon.announce"
+M.permission = "cmd.announce"
 
 function M.execute(session_id, args_str, args)
     local player = get_player(session_id)

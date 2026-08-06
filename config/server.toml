@@ -115,30 +115,44 @@ input_buffer_bytes = 4096
 # Compute — running long Lua off the game thread
 # ============================================================
 # The whole game runs on one Lua thread, so anything expensive on it freezes
-# every player for its duration. `compute()` hands a job to a worker thread
+# every player for its duration. `compute()` hands a job to a worker PROCESS
 # with its own LuaJIT VM and delivers the answer later via the mudlib hook
 # `on_compute_result`.
+#
+# A worker is a separate binary and has to be built:
+#
+#   cargo build --release -p oxigeon-compute
+#
+# It links LuaJIT whatever the server was built with — the server defaults to
+# Lua 5.5, for a debug hook that can yield, and a compute job wants the compiler
+# instead. One binary cannot link both. A separate process also means a runaway
+# job can be killed, which a thread never could.
 #
 # Worker VMs have NO efuns at all. A job gets its arguments and returns a
 # value; it cannot see sessions, the world, the database, or object state.
 # See docs/src/lua-api/compute.md.
 [compute]
-# Off by default: a feature nobody uses should cost nothing.
-enabled = false
+# Off by default: a feature nobody uses should cost nothing. With this false no
+# worker process is ever started.
+enabled = true
 
-# Threads, each with its own VM, built lazily on first use. Keep well under the
-# core count — compute competes with the game thread, and the game thread is
-# the one players are waiting on.
+# Worker processes, each with its own VM, started lazily on first use. Keep well
+# under the core count — compute competes with the game thread, and the game
+# thread is the one players are waiting on.
 workers = 2
+
+# Where the oxigeon-compute binary is. Unset means "beside the server binary",
+# which is where a release build puts it.
+# worker_path = "/opt/oxigeon/bin/oxigeon-compute"
 
 # Jobs allowed to wait before new ones are refused. Shallow on purpose: a
 # compute job is expected to take a while, so a deep queue only produces
 # answers that arrive long after they stopped mattering.
 queue_depth = 16
 
-# Wall clock a job gets before the CALLER is told it timed out. The worker may
-# still be running after this — the deadline unblocks the caller, it does not
-# stop the job. See instruction_limit.
+# Wall clock a job gets before it is given up on. The caller is told, and a job
+# still running at that point has its worker process KILLED and replaced — with
+# the compiler on there is nothing inside the VM that could stop it.
 default_deadline_ms = 5000
 max_deadline_ms = 60000
 
@@ -147,11 +161,11 @@ max_deadline_ms = 60000
 #
 # The default is 0 — the opposite of limits.lua_instruction_limit — because
 # this facility exists to run expensive code fast, and the compiler is worth
-# 2.1x on exactly the arithmetic-heavy work that belongs here. The cost of
-# that choice is real: a runaway job burns one of `workers` threads for the
-# life of the process, since Rust cannot kill a thread. Set a limit to make
-# workers recoverable, and to make deadlines and compute_cancel enforceable
-# rather than advisory. Watch server_info().compute.wedged either way.
+# 2.1x on exactly the arithmetic-heavy work that belongs here. The cost is that
+# a runaway job can only be ended by killing its worker at the deadline, which
+# loses whatever it had done. Set a limit to let a job stop itself, and to make
+# compute_cancel enforceable rather than advisory. Watch
+# server_info().compute.wedged either way.
 instruction_limit = 0
 
 # Memory ceiling per worker VM, in megabytes. 0 = no ceiling.

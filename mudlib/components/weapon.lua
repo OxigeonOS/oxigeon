@@ -77,6 +77,58 @@ function M.from_data(data)
     }
 end
 
+--- The flat authoring fields this component reads, in emit order.
+---
+--- Here rather than in a central table, and discovered the way `is` and `order`
+--- already are: a component describes itself by existing. `CLAUDE.md` gives the
+--- reason under the trait rules — a list somewhere else of what applies where is
+--- the thing that rots.
+M.fields = {
+    { name = "damage", type = "range", default = { min = 1, max = 1 }, editable = true,
+      help = "Spread per swing. A single number means min == max." },
+    { name = "speed", type = "number", default = 1.0, min = 0.1, max = 5, editable = true,
+      help = "Swings per unit time; higher is faster. Multiplies into dps." },
+    { name = "weapon_type", type = "string", editable = true,
+      help = "dagger, sword, axe. Free text; skills and examine read it." },
+    { name = "damage_type", type = "string", default = "physical", editable = true,
+      help = "What an armour resist table is matched against." },
+    { name = "two_handed", type = "boolean", default = false, editable = true,
+      help = "Clears the offhand when wielded." },
+    { name = "range", type = "enum", values = { "melee", "thrown", "ranged" },
+      default = "melee", editable = true },
+    { name = "hit_message", type = "lfun", editable = false,
+      help = "On a hit. {target} expands. A function belongs in custom.lua." },
+    { name = "miss_message", type = "lfun", editable = false },
+    { name = "crit_message", type = "lfun", editable = false },
+}
+
+--- What this component makes true of the item itself when nothing says
+--- otherwise. `M.new` did this inline; `components.build` reads it from here, so
+--- the loader and the archetype cannot disagree about what a weapon defaults to.
+M.item_defaults = { slot = "weapon" }
+
+--- The inverse of `from_data`.
+---
+--- Next to it deliberately: two halves of one mapping kept in two files is two
+--- mappings, and the second one is always the one that is out of date.
+--- @param item table
+--- @return table|nil  flat authoring fields
+function M.to_data(item)
+    if not M.is(item) then return nil end
+    local w = item.weapon
+    return {
+        damage       = { min = w.min, max = w.max },
+        speed        = w.speed,
+        weapon_type  = w.weapon_type,
+        damage_type  = w.damage_type,
+        two_handed   = w.two_handed,
+        range        = w.range,
+        hit_message  = w.hit_message,
+        miss_message = w.miss_message,
+        crit_message = w.crit_message,
+    }
+end
+
 -- ─── The system ──────────────────────────────────────────────────────────────
 
 --- Does this item carry a weapon component?

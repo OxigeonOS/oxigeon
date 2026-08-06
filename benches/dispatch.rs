@@ -53,10 +53,22 @@ enum Jit {
 }
 
 /// Every configuration worth measuring, in report order.
+///
+/// On PUC Lua there is no compiler, so `jit-on` and `jit-off` would be the same
+/// run twice under two names. What is left worth measuring is the interpreter
+/// with and without the instruction budget — and the comparison that actually
+/// decides the default runtime is between the two *builds*, not within one.
+#[cfg(feature = "luajit")]
 const CONFIGS: &[(&str, Jit, u64)] = &[
     ("jit-on", Jit::On, 0),
     ("jit-off", Jit::Off, 0),
     ("jit-off+budget", Jit::Off, 1_000_000),
+];
+
+#[cfg(not(feature = "luajit"))]
+const CONFIGS: &[(&str, Jit, u64)] = &[
+    ("lua55", Jit::Off, 0),
+    ("lua55+budget", Jit::Off, 1_000_000),
 ];
 
 /// Boot a VM with the compiler in a known state.
@@ -86,6 +98,14 @@ fn with_jit<T>(jit: Jit, boot: impl FnOnce() -> T) -> T {
 /// benchmark, because its numbers still look authoritative. This times a tight
 /// arithmetic loop — the shape LuaJIT is best at, measured at 1.86x on a bare
 /// VM — under both settings and refuses to continue if they come out alike.
+#[cfg(not(feature = "luajit"))]
+fn assert_the_jit_toggle_works() {
+    // Nothing to assert: this build has no compiler, so there is no toggle that
+    // could silently stop working and no compiler claim to be wrong about.
+    eprintln!("JIT toggle check: skipped — this build runs PUC Lua");
+}
+
+#[cfg(feature = "luajit")]
 fn assert_the_jit_toggle_works() {
     const DEFINE: &str = "_probe = function() local s = 0 \
                           for i = 1, 200000 do s = s + i % 7 end return s end return 'ok'";

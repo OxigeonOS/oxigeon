@@ -236,6 +236,24 @@ function M.dispatch(session_id, text)
         return
     end
 
+    -- Editor interception, immediately after the pager's rather than merged
+    -- with it. Two interceptors in a fixed order is easier to reason about than
+    -- one that arbitrates between them — and the order matters: a `--More--`
+    -- prompt raised *by* the editor's `.l` has to be answered before the
+    -- editor sees another line.
+    --
+    -- Above the empty-line check, deliberately: a blank line is a paragraph
+    -- break in prose, and swallowing it would make it impossible to type one.
+    if DAEMON and DAEMON.editor and DAEMON.editor.is_editing(session_id) then
+        DAEMON.editor.handle_input(session_id, text)
+        -- Exactly one prompt per input line, as for every command. Which prompt
+        -- is `prompt_d`'s business: `] ` while a buffer is open, the ordinary
+        -- one after it closes. The editor sending its own produced two, and the
+        -- second arrived after the reply it belonged to.
+        render_prompt(session_id)
+        return
+    end
+
     if text == "" then
         render_prompt(session_id)
         return

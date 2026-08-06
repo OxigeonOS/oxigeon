@@ -17,6 +17,8 @@ They share a single Lua hook, because a `lua_State` has exactly one hook slot.
 | See every line executed | `trace lines` then `trace show` |
 | Stop on a line and inspect variables | VS Code + `[servers.debug]` |
 | Stop for one player only | A [conditional breakpoint](#conditional-breakpoints) |
+| Watch a line without stopping | A [logpoint](#logpoints) |
+| Debug without freezing the other players | `trace freeze off` (needs a `lua55` build) |
 | Play and debug in one window | [`oxigeon-tui`](../tui.md) |
 | See what a *derived* trait actually resolves to | [`oxigeon-tui`](../tui.md), Inspect tab |
 
@@ -36,6 +38,7 @@ trace off [all]         stop
 trace show [n]          last n records, oldest first (default 40)
 trace timings [n]       per-command elapsed and counts (default 20)
 trace clear             empty both ring buffers
+trace freeze on|off     whether a breakpoint stops the whole game
 ```
 
 Worked example — tracing the `who` command, verbatim:
@@ -46,6 +49,7 @@ Trace status
   mode:      off
   hook:      removed (no overhead)
   scope:     0 session(s)
+  breaks:    freeze the whole game
   records:   0 / 5000
 
 > trace calls
@@ -302,33 +306,128 @@ error to the Debug Console.
 > they cost nothing on lines without a breakpoint. But a condition on a hot line
 > runs on every pass: prefer the cheapest test that identifies what you want.
 
-### ⚠ Freeze-the-world
+### Logpoints
 
-**Hitting a breakpoint stops the entire game.** Every player is frozen until you
-continue. This is not a limitation that can be engineered away here: the whole
-mudlib runs on one thread in one VM, and mlua's hook API offers no yield on
-LuaJIT — returning `VmState::Yield` there raises *"attempt to yield from a
-hook"*. Blocking that thread is the only way to pause.
+A breakpoint on a line execution reaches over and over — a combat round, a
+regeneration tick, a movement handler — is a stop over and over. Often what you
+actually wanted was to *watch* it. Set a **logMessage** on the breakpoint instead
+and it reports and keeps running:
 
-What that means in practice:
+```
+line:       mudlib/daemons/combat_d.lua:235
+condition:  target.name == 'rat'
+logMessage: {attacker.name} hits {target.name} for {raw}
+```
+
+```
+sheridan hits rat for 7
+sheridan hits rat for 4
+rat hits sheridan for 2
+```
+
+- **It is a template, not an expression.** Every `{...}` is evaluated in the
+  frame, exactly as the Debug Console would, and substituted; everything else is
+  printed as written. A message of `player.is_alive()` therefore logs that text
+  verbatim — what you wanted is `alive={player.is_alive()}`.
+- **The condition and hit count still apply**, which is where this earns its
+  keep: one player, one mob template, every third pass. The gates are what turn
+  "print everything" into a question.
+- **Methods need a colon.** `player.is_alive()` passes no `self`, so it fails
+  *inside* the callee — `mobile.lua:114: attempt to index a nil value (local
+  'self')`, a file and a line with nothing to do with what you typed. Write
+  `player:is_alive()`. The evaluator adds "did you mean :is_alive()?" when it
+  can see that is what happened.
+- An expression that cannot be resolved renders as `expr=<error>` in place
+  rather than killing the line. A logpoint that went silent the moment one field
+  went nil would be worse than useless on the line it is watching.
+- Nothing stops, so this works the same on both runtimes and whatever
+  `stop_the_world` says.
+- Bounded at 200 lines per dispatch; the last one says so. A logpoint inside a
+  loop is otherwise thousands of console events for a single command.
+
+This is standard DAP, so VS Code's own Logpoint (right-click the gutter → *Add
+Logpoint*) sets it with no extra configuration, and `oxigeon-tui` sets one with
+`⇧F9` — see [the cockpit](../tui.md#logpoints).
+
+### ⚠ What a breakpoint costs
+
+**On a LuaJIT build, hitting a breakpoint stops the entire game.** Every player
+is frozen until you continue. That is not a limitation that can be engineered
+away there: the whole mudlib runs on one thread in one VM, and mlua's hook API
+offers no yield on LuaJIT — returning `VmState::Yield` raises *"attempt to yield
+from a hook"*. Blocking that thread is the only way to pause.
+
+**On a `lua55` build you choose.** `[servers.debug] stop_the_world` defaults to
+`true`, which behaves exactly as above — the expected debugger, and the only one
+LuaJIT can offer. Set it `false`, or run `trace freeze off`, and the hook yields
+instead: the engine parks that one command as a suspended coroutine and goes back
+to its loop, so other players' commands, timers, regeneration and effect ticks
+all carry on. That is what the runtime option is for — see
+[LuaJIT against Lua 5.5](./performance.md#luajit-against-lua-55). Debugging a
+server with people on it is a reasonable thing to do there, and is not on LuaJIT.
+
+```
+> trace freeze off
+Breakpoints now suspend only the dispatch that hit them. Everyone else keeps playing.
+
+> trace status
+  breaks:    suspend one dispatch (other players keep playing)
+  suspended: 2 dispatch(es) waiting at a breakpoint
+```
+
+Two things to expect once you do:
+
+- **Several dispatches can be stopped at once**, each reported as its own DAP
+  thread and named for what it is — `sheridan: hit`, `timer:combat.round`. Break
+  on a line a combat round reaches and you get a stop *per round*, because the
+  rounds keep coming. They are separately inspectable and separately resumable.
+  If what you wanted was to watch rather than to stop, see
+  [Logpoints](#logpoints).
+- **The world moves while you read.** Whatever you are stepping through is being
+  changed underneath you by everything that is still running. That is the trade;
+  `stop_the_world = true` is the other side of it.
+- **The garbage collector is held off for as long as anything is parked.** Not a
+  tuning choice: a thread suspended at a hook yield sits with its stack `top`
+  below its own live registers, and a collection nils them as a dead slice — the
+  frame comes back with its parameters gone. Nothing outside the VM can raise a
+  suspended thread's `top`, so the collector waits instead. The Lua heap
+  therefore only grows while a stop is open; `auto_continue_secs` bounds how long
+  that can last, and freezing (`stop_the_world = true`) never reaches it, because
+  nothing allocates while the world is blocked.
+
+Two things are the same on both:
+
+- **A stop that cannot yield blocks either way.** Player commands *and ticks*
+  run on coroutines, so breakpoints in combat, regeneration and effect ticks all
+  suspend just the one dispatch. What is left blocking is connect and disconnect
+  handlers, GMCP messages, hot reloads — and anything called *by C*, which cannot
+  yield past that frame even on a coroutine: a `table.sort` comparator, a `gsub`
+  replacement function, an `__index` metamethod. The hook asks `lua_isyieldable`
+  and blocks whenever the answer is no, so both are correct rather than merely
+  tolerable.
+- **Game time does not pass while anything is stopped.**
+
+What freezing means in practice, on LuaJIT or in one of the cases above:
 
 - Connections stay alive and player input queues; nothing is dropped.
 - Output already queued still flushes.
 - **Repeating timers accumulate** during the pause and fire as a burst on resume.
-- **Game time does not pass.** `os_time()` excludes every interval the world
-  spent frozen, so regeneration, cooldowns and effect durations are where you
-  left them. Without that they ran on the wall clock while the VM sat blocked in
-  the hook: a rat beaten down to 5 hit points came back to 20 over a few steps —
+- **`os_time()` excludes the frozen interval.** `os_time()` excludes every interval the world
+  Regeneration, cooldowns and effect durations are therefore where you left
+  them. Without it they ran on the wall clock while the VM sat blocked in the
+  hook: a rat beaten down to 5 hit points came back to 20 over a few steps —
   1 hit point per 3 seconds of *reading a stack trace* — and combat looked
   endless for no visible reason. The counter is only ever non-zero on a server
   with the adapter enabled, so nothing about production timekeeping changes.
   One consequence worth knowing: an expiry written *during* a debugging session
   is stamped on the shifted clock, so after a restart it sits slightly in the
   future. On a development server that is not worth correcting.
-- `auto_continue_secs` (default 300) resumes the VM if the editor stops
-  responding, so a crashed VS Code cannot wedge the server permanently.
+- `auto_continue_secs` (default 300) resumes if the editor stops responding. On
+  LuaJIT that is a safety valve against a crashed VS Code wedging the whole
+  server; on `lua55` nothing is wedged, and what it rescues is the one player
+  left at a dead prompt.
 
-Use this on a development server.
+On LuaJIT, use this on a development server.
 
 ### Limitations
 

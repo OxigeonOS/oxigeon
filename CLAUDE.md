@@ -144,6 +144,75 @@ Two corollaries worth stating outright:
 
 See `docs/src/lua-api/state-cache.md`.
 
+## Permission Strings Have One Shape
+
+Every gated command declares `cmd.<its own verb>`, or `cmd.<verb>.<capability>`
+for a sub-power. Efuns are `efun.<name>`, spelled exactly as the Lua global.
+Directory rules are `dir.<op>.<root>.<top>` and match the `[directories]` key,
+which names its root because the jail has two. Anything that is none of those is
+`<thing>.<capability>` — `alert.receive`, `board.moderate`, `channel.staff`.
+
+This is enforced, not suggested, because the alternative already happened:
+`setup_roles.lua` granted `cmd.olc` while the command required `olc`, and
+`efun.write_file` while `permissions.toml` said `efun.file.write`. Not one of the
+builder role's grants matched anything, so the role was decorative and only
+account 1's `is_admin` bypass could build. Both halves looked right in isolation.
+
+Two tests, asking different questions:
+
+- `tests/command_layout.rs` — the *shape*: `cmd.<own verb>`. The "own verb" half
+  is what stopped `dig` asking for `cmd.olc`, which it did, so `dig` could not be
+  granted separately.
+- `tests/demo_world/roles.rs` — that somebody can actually *be given* it: every
+  permission a command names is granted by some role. It lives with the game
+  layer because which roles exist is a game decision.
+
+A command gate and an efun gate are separate and both apply. `cmd.verify` lets
+you type the verb; `efun.verify_file` lets mudlib code call the efun.
+
+## The File Jail Has Two Roots
+
+`mudlib/` and `game/`. A path may name one — `write_file("game:areas/crypt/rooms.lua", …)`.
+Unprefixed, a **read** searches game-then-mudlib the way `require` does, and a
+**write** stays in the mudlib.
+
+- **A file a daemon owns must name its root.** Writes default to the mudlib and
+  reads prefer the game layer, so a stray `game/logs/audit_watch.json` would
+  shadow the one `audit_d` writes, permanently and silently.
+- **The file efuns return failure; they do not raise it.** `pcall(write_file, …)`
+  gives `ok = true, err = false` — the call succeeded and the refusal is in a
+  return value the `pcall` discarded. `codegen_d` was written that way and
+  reported success for refused writes for as long as it existed. Call them
+  directly and read both values.
+
+See `docs/src/lua-api/file-access.md`.
+
+## Authored Content Has One Description
+
+`mudlib/schema/{room,item,mob}.lua` say what an authorable thing is: every field
+with its type, default, editability and help. Four consumers read it — codegen
+emits from it, `olc set` validates through it, `verify` checks against it,
+`objdump -s` annotates with it — and none of them holds its own copy.
+
+- **Component fields live in the component file**, beside the `from_data` that
+  reads them, discovered the way `is`/`order` already are. Never a central list;
+  see the trait rules above for why.
+- **The flat authoring form is the interchange format**, not the built object.
+  `Weapon{…}` → `Item:new` + `from_data` is one-way, so an Item cannot be written
+  back to a file. OLC reads and writes the *input* to that.
+- **`schema.set` is the only string-to-value converter.** A second one disagrees
+  with the first eventually, and the disagreement surfaces as a field that
+  round-trips wrong six months later rather than as an error.
+- **A field no schema names is kept and reported, never dropped.** Silently
+  losing a field nobody declared is indistinguishable from a typo.
+- **`lfun = true` is a flag, not a type.** A room's `description` is prose
+  whether written out or computed; a function is legal content and makes the
+  field `lossy`. `type = "lfun"` is different — a field OLC may never set.
+
+OLC regenerates `rooms.lua`/`items.lua`/`mobs.lua` wholesale. That is only safe
+because `custom.lua` — hand-written, never read or written by OLC — holds
+everything that cannot be expressed as data. See `docs/src/lua-api/olc.md`.
+
 ## Lua Coding Conventions
 
 - Use `\r\n` for player-facing text sent via `send()`
@@ -170,7 +239,9 @@ See `docs/src/lua-api/state-cache.md`.
 
 ## Testing
 
-Run `cargo test` before committing. All tests must pass. Current count: 816 (631 of them independent of `game/`).
+Run `cargo test` before committing. All tests must pass. Current count: 1034, green on both the default `lua55` and `--no-default-features --features luajit` (650 of them independent of `game/`).
+
+`cargo test` does not build `oxigeon-compute` — it is a separate workspace member that links LuaJIT unconditionally, and cargo unifies features across one invocation. The harness builds it on demand into `target/compute-worker/`.
 
 ### A mudlib test must not depend on this game
 
@@ -180,7 +251,11 @@ world at all, uses `RealVm::boot_with_fixture_world` rather than Thornhollow.
 The check:
 
 ```bash
-git stash push game tests/demo_world && cargo test && git stash pop
+# `git stash push <path>` only reverts changes — it does not remove the
+# directory, so it never tested anything. Move them out of the tree instead.
+mkdir ../away && mv game ../away/ && mv tests/demo_world ../away/
+cargo test --no-fail-fast
+mv ../away/game . && mv ../away/demo_world tests/ && rmdir ../away
 ```
 
 See `docs/src/testing.md`.

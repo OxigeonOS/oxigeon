@@ -32,7 +32,7 @@ M.usage = {
     "role deny <role> <permission>",
     "role refresh <player>            rebuild their permission cache",
 }
-M.permission = 'admin'
+M.permission = "cmd.role"
 
 --- An online character by exact name. Prefix matching on a command that hands
 --- out permissions is a bug waiting for two names that share three letters.

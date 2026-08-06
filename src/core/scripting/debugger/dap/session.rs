@@ -12,7 +12,7 @@ use tokio_util::codec::Framed;
 use super::codec::DapCodec;
 use crate::core::scripting::debugger::paths;
 use crate::core::scripting::debugger::state::{
-    BreakpointSpec, DebugEventMsg, ResumeKind, SharedDebugState, VmRequest,
+    BreakpointSpec, DebugEventMsg, ResumeKind, SharedDebugState, StopId, VmRequest, WORLD_STOP,
 };
 
 /// How long to wait for the Lua thread to answer a VM-touching request. It is
@@ -20,8 +20,34 @@ use crate::core::scripting::debugger::state::{
 /// against it having resumed in the meantime.
 const VM_REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The single synthetic thread we report. The mudlib is one VM on one thread.
-const THREAD_ID: i64 = 1;
+/// Which stop a request is about.
+///
+/// The protocol carries `threadId` on everything that inspects or resumes, and
+/// with several dispatches suspended at once that is the only thing telling
+/// them apart. A request without one — or naming a stop that has since
+/// resumed — falls back to the most recent, which is what a client that has not
+/// caught up would have meant.
+fn thread_of(args: &Value, st: &SharedDebugState) -> StopId {
+    let asked = args.get("threadId").and_then(Value::as_i64);
+    let parked = st.parked_list();
+    match asked {
+        Some(id) if parked.iter().any(|(p, _, _)| *p == id) => id,
+        // The freezing path reports one thread and parks nothing, so anything
+        // it asks about is the world stop.
+        _ if parked.is_empty() => WORLD_STOP,
+        _ => parked.last().map(|(id, _, _)| *id).unwrap_or(WORLD_STOP),
+    }
+}
+
+/// Whether anything is stopped: the whole VM, or any single dispatch.
+///
+/// `DebugState::stopped` alone is not the question any more — it means "the
+/// world is frozen", and on a server debugging without freezing it is false
+/// while several dispatches sit at breakpoints. Gating the inspect requests on
+/// it would refuse every one of them.
+fn anything_stopped(st: &SharedDebugState) -> bool {
+    st.stopped.load(Ordering::Acquire) || st.parked_count.load(Ordering::Acquire) > 0
+}
 
 pub fn detach(st: &SharedDebugState) {
     st.clients.store(0, Ordering::Relaxed);
@@ -60,19 +86,33 @@ pub async fn run(stream: TcpStream, st: SharedDebugState) -> std::io::Result<()>
             }
             Some(evt) = evt_rx.recv() => {
                 let m = match evt {
-                    DebugEventMsg::Stopped(reason) => event(next_seq(), "stopped", json!({
-                        "reason": reason.as_str(),
-                        "threadId": THREAD_ID,
-                        "allThreadsStopped": true,
-                    })),
-                    DebugEventMsg::Continued => event(next_seq(), "continued", json!({
-                        "threadId": THREAD_ID,
-                        "allThreadsContinued": true,
-                    })),
-                    DebugEventMsg::Output(text) => event(next_seq(), "output", json!({
-                        "category": "console",
-                        "output": text,
-                    })),
+                    DebugEventMsg::Stopped { stop, reason, world } => {
+                        event(next_seq(), "stopped", json!({
+                            "reason": reason.as_str(),
+                            "threadId": stop,
+                            // Was hard-coded true, which stopped being true the
+                            // moment a stop could hold one dispatch and let the
+                            // rest of the game run.
+                            "allThreadsStopped": world,
+                        }))
+                    }
+                    DebugEventMsg::Continued { stop, world } => {
+                        event(next_seq(), "continued", json!({
+                            "threadId": stop,
+                            "allThreadsContinued": world,
+                        }))
+                    }
+                    DebugEventMsg::Output { text, important } => {
+                        event(next_seq(), "output", json!({
+                            // The protocol's own distinction: `important` is for
+                            // what the user should look at, `console` for
+                            // ordinary reporting. A logpoint is the latter, and
+                            // rendering it as a warning made a working one look
+                            // broken.
+                            "category": if important { "important" } else { "console" },
+                            "output": text,
+                        }))
+                    }
                 };
                 framed.send(m).await?;
             }
@@ -86,6 +126,10 @@ pub async fn run(stream: TcpStream, st: SharedDebugState) -> std::io::Result<()>
 /// `hitCondition` is a free-form string in the protocol (`">5"`, `"%3"`, …).
 /// Only a plain count is supported — anything else is ignored rather than
 /// guessed at, since a misread gate would silently change where you stop.
+///
+/// `logMessage` turns the breakpoint into a *logpoint*: it reports and keeps
+/// running. VS Code sends it for what it calls a Logpoint, so this needs no
+/// bespoke client support on either side.
 fn parse_bp_spec(b: &Value) -> BreakpointSpec {
     let non_empty = |v: Option<&Value>| {
         v.and_then(Value::as_str)
@@ -98,6 +142,7 @@ fn parse_bp_spec(b: &Value) -> BreakpointSpec {
         hit_condition: non_empty(b.get("hitCondition"))
             .and_then(|s| s.trim_start_matches(['>', '=', ' ']).parse::<u32>().ok())
             .filter(|n| *n > 1),
+        log_message: non_empty(b.get("logMessage")),
     }
 }
 
@@ -216,12 +261,34 @@ async fn handle(
             vec![ok_response(next_seq(), req, Value::Null)]
         }
 
-        "threads" => vec![ok_response(next_seq(), req, json!({
-            "threads": [{ "id": THREAD_ID, "name": "mudlib" }],
-        }))],
+        // One entry per suspended dispatch, named for what it is, so a client
+        // can tell "sheridan: hit" from "timer:combat.round" and pick between
+        // them. Falls back to the single thread when nothing is parked — which
+        // is always the case on the freezing path, where the VM itself is the
+        // one thing that is stopped.
+        "threads" => {
+            let parked = st.parked_list();
+            let threads: Vec<Value> = if parked.is_empty() {
+                vec![json!({ "id": WORLD_STOP, "name": "mudlib" })]
+            } else {
+                parked
+                    .into_iter()
+                    .map(|(id, session, what)| {
+                        let name = match (session.is_empty(), what.is_empty()) {
+                            (true, true) => "mudlib".to_string(),
+                            (true, false) => what,
+                            (false, true) => session,
+                            (false, false) => format!("{session}: {what}"),
+                        };
+                        json!({ "id": id, "name": name })
+                    })
+                    .collect()
+            };
+            vec![ok_response(next_seq(), req, json!({ "threads": threads }))]
+        }
 
         "stackTrace" => {
-            if !st.stopped.load(Ordering::Acquire) {
+            if !anything_stopped(st) {
                 return vec![err_response(next_seq(), req, "not stopped")];
             }
             let levels = args
@@ -231,7 +298,7 @@ async fn handle(
                 .unwrap_or(64) as usize;
 
             let (tx, rx) = tokio::sync::oneshot::channel();
-            if !st.send_vm(VmRequest::StackTrace { levels, reply: tx }) {
+            if !st.send_vm(VmRequest::StackTrace { stop: thread_of(&args, st), levels, reply: tx }) {
                 return vec![err_response(next_seq(), req, "debug channel closed")];
             }
             match tokio::time::timeout(VM_REPLY_TIMEOUT, rx).await {
@@ -261,12 +328,12 @@ async fn handle(
         }
 
         "scopes" => {
-            if !st.stopped.load(Ordering::Acquire) {
+            if !anything_stopped(st) {
                 return vec![err_response(next_seq(), req, "not stopped")];
             }
             let frame = args.get("frameId").and_then(Value::as_i64).unwrap_or(0);
             let (tx, rx) = tokio::sync::oneshot::channel();
-            if !st.send_vm(VmRequest::Scopes { frame, reply: tx }) {
+            if !st.send_vm(VmRequest::Scopes { stop: thread_of(&args, st), frame, reply: tx }) {
                 return vec![err_response(next_seq(), req, "debug channel closed")];
             }
             match tokio::time::timeout(VM_REPLY_TIMEOUT, rx).await {
@@ -286,7 +353,7 @@ async fn handle(
         }
 
         "variables" => {
-            if !st.stopped.load(Ordering::Acquire) {
+            if !anything_stopped(st) {
                 return vec![err_response(next_seq(), req, "not stopped")];
             }
             let var_ref = args.get("variablesReference").and_then(Value::as_i64).unwrap_or(0);
@@ -303,13 +370,13 @@ async fn handle(
         }
 
         "evaluate" => {
-            if !st.stopped.load(Ordering::Acquire) {
+            if !anything_stopped(st) {
                 return vec![err_response(next_seq(), req, "not stopped")];
             }
             let frame = args.get("frameId").and_then(Value::as_i64).unwrap_or(0);
             let expr = args.get("expression").and_then(Value::as_str).unwrap_or("").to_string();
             let (tx, rx) = tokio::sync::oneshot::channel();
-            if !st.send_vm(VmRequest::Evaluate { frame, expr, reply: tx }) {
+            if !st.send_vm(VmRequest::Evaluate { stop: thread_of(&args, st), frame, expr, reply: tx }) {
                 return vec![err_response(next_seq(), req, "debug channel closed")];
             }
             match tokio::time::timeout(VM_REPLY_TIMEOUT, rx).await {
@@ -326,7 +393,7 @@ async fn handle(
         }
 
         "continue" | "next" | "stepIn" | "stepOut" => {
-            if !st.stopped.load(Ordering::Acquire) {
+            if !anything_stopped(st) {
                 return vec![err_response(next_seq(), req, "not stopped")];
             }
             let kind = match command {
@@ -335,10 +402,14 @@ async fn handle(
                 "stepOut" => ResumeKind::StepOut,
                 _ => ResumeKind::Continue,
             };
-            if !st.send_vm(VmRequest::Resume(kind)) {
+            let stop = thread_of(&args, st);
+            if !st.send_vm(VmRequest::Resume { stop, kind }) {
                 return vec![err_response(next_seq(), req, "debug channel closed")];
             }
-            vec![ok_response(next_seq(), req, json!({ "allThreadsContinued": true }))]
+            // Only the named dispatch continues; the others stay where they are.
+            vec![ok_response(next_seq(), req, json!({
+                "allThreadsContinued": st.freezes(),
+            }))]
         }
 
         "pause" => {

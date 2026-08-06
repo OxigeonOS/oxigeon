@@ -12,10 +12,10 @@ M.name       = "audit"
 M.aliases    = {}
 M.category   = "admin"
 M.summary    = "Audit log: read entries and manage the command watch list."
-M.permission = "daemon.audit_d.read"
+M.permission = "cmd.audit"
 
 -- Permissions for the management subcommands (checked inline)
-local MANAGE_PERM = "daemon.audit_d.manage"
+local MANAGE_PERM = "cmd.audit.manage"
 
 --- Format a raw audit JSON line for display.
 local function format_entry(raw)

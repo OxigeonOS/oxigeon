@@ -19,6 +19,7 @@ mod dap;
 mod dap_live_tests;
 mod inspect_payload;
 mod journal;
+mod lua_syntax;
 mod telnet;
 mod ui;
 

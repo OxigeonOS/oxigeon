@@ -51,11 +51,34 @@ The boundary is one function — `apply_sandbox` in `src/core/scripting/sandbox.
 
 **`debug` removed**: The `debug` library allows inspecting and modifying closures, upvalues, and metatables — it can be used to break out of any sandbox by patching internal state. When the debug adapter is enabled the library is loaded but stashed in the registry and removed from `_G` before any mudlib code runs, so the game still cannot see it.
 
-**Binary bytecode blocked**: Pre-compiled Lua bytecode is not validated by LuaJIT and can trigger memory corruption. `load` and `loadstring` are replaced with wrappers that reject any chunk starting with `\x1B`, and report it the way `load` always has — `nil` plus a message.
+**Binary bytecode blocked**: Pre-compiled Lua bytecode is not validated by the
+VM and can trigger memory corruption. `load` — and `loadstring`, on the runtimes
+that have it — is replaced with a wrapper that rejects any chunk starting with
+`\x1B`, and reports it the way `load` always has: `nil` plus a message.
+
+The wrapper is otherwise transparent, and both halves of that matter:
+
+- **`mode` is ignored.** Asking for `"b"` does not re-open the door the wrapper
+  exists to shut; text is the only thing that compiles, whatever was requested.
+- **`env` is honoured.** `load(src, name, "t", env)` sets the chunk's
+  environment, which on Lua 5.2+ is the *only* way to do it — `setfenv` is gone.
+  The wrapper used to drop that argument, and the failure was silent: the chunk
+  still compiled and still ran, it just resolved every name against the globals.
+  That quietly broke the whole debug evaluator — watch expressions, breakpoint
+  conditions, the REPL and logpoints all compile a snapshot of the paused frame
+  as the chunk's environment, so a local read as a global and came back `nil`.
+  `tests/sandbox.rs` pins both properties.
 
 ## The `require` Jail
 
 `require` is available but restricted to Lua sources found on `package.path`, which the engine sets to the game and mudlib roots only. The native-module loaders are removed, so `require` cannot load a `.dll`/`.so` at all.
+
+> The searcher list is called `package.loaders` in Lua 5.1 and `package.searchers`
+> from 5.2. The sandbox clears **both** names, and refuses to start if it finds
+> neither — an unrecognised searcher list is a module loader nobody has audited.
+> Reading only the 5.1 name meant that on any 5.2+ runtime it found nothing, did
+> nothing, and left the C loader installed: a sandbox that failed open, with no
+> error and no failing test.
 
 ```lua
 -- ✅ Allowed — loads from mudlib/lib/strings.lua
@@ -108,7 +131,8 @@ Applied to the VM at startup. An allocation past the ceiling raises a normal, ca
 
 A limit greater than zero installs a `every_nth_instruction` debug hook that charges each dispatch against a budget and raises a Lua error past it. The budget is per dispatch: a command that blows it does not affect the next one.
 
-**Enforcing this disables the LuaJIT compiler.** LuaJIT dispatches no debug hooks from inside a compiled trace, so with the JIT on, a one-line `while true do s = s + 1 end` delivers *no* hook events at all — not count, not line, not call. There is no hook mask that catches it. The engine therefore calls `jit.off()` at startup whenever a limit is configured, and `apply_sandbox` removes the `jit` table so game code cannot turn the compiler back on.
+**On a LuaJIT build, enforcing this disables the compiler.** (Lua 5.5 has none to
+disable, so the budget costs only the hook there.) LuaJIT dispatches no debug hooks from inside a compiled trace, so with the JIT on, a one-line `while true do s = s + 1 end` delivers *no* hook events at all — not count, not line, not call. There is no hook mask that catches it. The engine therefore calls `jit.off()` at startup whenever a limit is configured, and `apply_sandbox` removes the `jit` table so game code cannot turn the compiler back on.
 
 Measured through the real mudlib with `scripts/bench.ps1`:
 

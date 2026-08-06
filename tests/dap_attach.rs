@@ -137,6 +137,20 @@ fn spawn_vm(
 
         while go_rx.recv().is_ok() {
             debugger::sync_hook(&lua, &st, &mut installed, &hl);
+            // Hooks are per-thread on PUC Lua and a stop is a *yield*, so the
+            // chunk runs on a coroutine and the park loop serves the client
+            // while it is suspended — exactly what `engine.rs` does.
+            #[cfg(not(feature = "luajit"))]
+            {
+                let f = lua
+                    .load(code.as_str())
+                    .set_name(&chunk_name)
+                    .into_function()
+                    .unwrap();
+                let thread = lua.create_thread(f).unwrap();
+                debugger::parked::run_blocking(&lua, &st, &hl, thread, "probe");
+            }
+            #[cfg(feature = "luajit")]
             lua.load(code.as_str()).set_name(&chunk_name).exec().unwrap();
             let _ = done_tx.send(());
         }
@@ -174,6 +188,20 @@ fn spawn_vm_with_debug_lib(
 
         while go_rx.recv().is_ok() {
             debugger::sync_hook(&lua, &st, &mut installed, &hl);
+            // Hooks are per-thread on PUC Lua and a stop is a *yield*, so the
+            // chunk runs on a coroutine and the park loop serves the client
+            // while it is suspended — exactly what `engine.rs` does.
+            #[cfg(not(feature = "luajit"))]
+            {
+                let f = lua
+                    .load(code.as_str())
+                    .set_name(&chunk_name)
+                    .into_function()
+                    .unwrap();
+                let thread = lua.create_thread(f).unwrap();
+                debugger::parked::run_blocking(&lua, &st, &hl, thread, "probe");
+            }
+            #[cfg(feature = "luajit")]
             lua.load(code.as_str()).set_name(&chunk_name).exec().unwrap();
             let _ = done_tx.send(());
         }

@@ -111,6 +111,11 @@ pub fn register_debug_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
                 sessions.set(i + 1, sid.as_str())?;
             }
             t.set("sessions", sessions)?;
+            // Whether a breakpoint holds the whole VM or only the dispatch that
+            // hit it. Reported here because it changes what an admin is about to
+            // do to everyone else on the server.
+            t.set("stop_the_world", s.freezes())?;
+            t.set("suspended", s.parked_count.load(std::sync::atomic::Ordering::Acquire))?;
 
             trace::with_rings(|r| -> LuaResult<()> {
                 t.set("records", r.trace.len())?;
@@ -120,6 +125,38 @@ pub fn register_debug_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
                 Ok(())
             })?;
             Ok(t)
+        })?,
+    )?;
+
+    // trace_freeze(on|nil) -> boolean
+    //
+    // Whether a breakpoint stops the world. Passing nothing reads it; passing a
+    // boolean sets it and returns the value that was in force before.
+    //
+    // Changeable at runtime because the answer depends on what you are doing
+    // rather than on how the server was started: freeze to step through a
+    // problem on a quiet box, unfreeze to look at a live one without taking
+    // every player down with you. Under LuaJIT it can only ever be true — that
+    // hook cannot yield — so setting false there warns and does nothing.
+    let s = st.clone();
+    let g = guard.clone();
+    globals.set(
+        "trace_freeze",
+        lua.create_function(move |_, on: Option<bool>| {
+            g.check("trace_freeze")?;
+            Ok(match on {
+                None => s.freezes(),
+                Some(want) => {
+                    #[cfg(feature = "luajit")]
+                    if !want {
+                        return Err(mlua::Error::RuntimeError(
+                            "this build links LuaJIT, whose debug hook cannot yield: a stop                              can only ever block the whole VM. Build with the `lua55`                              feature to debug without freezing the game."
+                                .to_string(),
+                        ));
+                    }
+                    s.set_freezes(want)
+                }
+            })
         })?,
     )?;
 

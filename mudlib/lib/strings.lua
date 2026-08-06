@@ -95,6 +95,28 @@ function M.wrap(text, width)
     return table.concat(output, "\r\n")
 end
 
+--- Render a number for a player, identically on every Lua.
+---
+--- `tostring(6.0)` is `"6"` on LuaJIT — where every number is a double — and
+--- `"6.0"` from Lua 5.3 on, where integers are a real subtype. A trait declared
+--- `round = "none"` genuinely holds a float, so `score` printed
+--- `Attunement 6.0` on one runtime and `Attunement 6` on the other for the same
+--- character. This is the seam, in one place.
+---
+--- Integral values print without a decimal point; a real fraction keeps enough
+--- digits to be worth reading and no more.
+--- @param n number
+--- @return string
+function M.number(n)
+    if type(n) ~= "number" then return tostring(n) end
+    -- NaN and the infinities have no integral form and must not reach `%d`.
+    if n ~= n or n == math.huge or n == -math.huge then return tostring(n) end
+    if n % 1 == 0 then
+        return string.format("%d", math.floor(n))
+    end
+    return string.format("%.4g", n)
+end
+
 --- Format a number with thousands separators
 function M.format_number(n)
     local s = tostring(math.floor(n))

@@ -48,6 +48,41 @@ function M.from_data(data)
     }
 end
 
+--- The flat authoring fields this component reads, in emit order.
+---
+--- Note the spelling trap this file already carries: the module is `armor.lua`,
+--- `M.component` is `"armour"`, and the flat field is `armor_type`. Everything
+--- keys off `M.component`; `olc comp add` accepts both spellings and always
+--- writes the one here.
+M.fields = {
+    { name = "defense", type = "number", default = 1, min = 0, editable = true,
+      help = "Flat damage reduction before resists." },
+    { name = "armor_type", type = "enum", values = { "cloth", "light", "medium", "heavy" },
+      default = "medium", editable = true,
+      help = "Weight class. Feeds the movement and dexterity penalty." },
+    { name = "resist", type = "map", of = "number", default = {}, editable = true,
+      help = "damage_type -> reduction. Negative is a weakness." },
+    { name = "stat_bonus", type = "map", of = "number", key_source = "trait",
+      default = {}, editable = true,
+      help = "trait id -> bonus, applied while worn." },
+}
+
+M.item_defaults = { slot = "chest" }
+
+--- The inverse of `from_data`. See the note in `weapon.lua`.
+--- @param item table
+--- @return table|nil
+function M.to_data(item)
+    if not M.is(item) then return nil end
+    local a = item.armour
+    return {
+        defense    = a.defense,
+        armor_type = a.armor_type,
+        resist     = a.resist,
+        stat_bonus = a.stat_bonus,
+    }
+end
+
 -- ─── The system ──────────────────────────────────────────────────────────────
 
 --- Does this item carry an armour component?

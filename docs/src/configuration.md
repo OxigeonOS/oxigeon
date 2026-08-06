@@ -59,7 +59,8 @@ the Lua debug adapter for VS Code. See
 | `enabled` | bool | `false` | Listen for DAP clients and load the Lua `debug` stdlib |
 | `bind` | string | `"127.0.0.1"` | Bind address. **Never expose** — see below |
 | `port` | integer | `4711` | Listen port |
-| `auto_continue_secs` | integer | `300` | Resume the VM if the editor stops responding while stopped (`0` = never) |
+| `auto_continue_secs` | integer | `300` | Give up and resume if the client stops responding (`0` = never) |
+| `stop_the_world` | bool | `true` | Whether a breakpoint holds the whole VM, or only the dispatch that hit it |
 | `trace_capacity` | integer | `5000` | `trace show` ring buffer size, in records |
 | `timing_capacity` | integer | `200` | `trace timings` ring buffer size |
 
@@ -68,12 +69,18 @@ the Lua debug adapter for VS Code. See
 enabled = true
 bind = "127.0.0.1"
 port = 4711
+stop_the_world = true
 ```
 
-> **Freeze-the-world.** Hitting a breakpoint stops the entire Lua VM — every
-> player is frozen until you continue. Connections stay alive and input queues,
-> but repeating timers accumulate during the pause and fire as a burst on
-> resume. This is a development tool.
+> **What a breakpoint costs depends on `stop_the_world`.** Left `true` — the
+> default, and all a LuaJIT build can do — hitting one stops the entire VM:
+> every player is frozen until you continue, connections stay alive and input
+> queues, and repeating timers accumulate and fire as a burst on resume.
+>
+> Set it `false` on a Lua 5.5 build and a stop suspends only the dispatch that
+> hit it; everyone else keeps playing. That is what makes debugging a server
+> with people on it possible. Changeable while running with `trace freeze
+> on|off`. See [What a breakpoint costs](./lua-api/debugging.md#-what-a-breakpoint-costs).
 
 > **Security.** The adapter grants unauthenticated arbitrary Lua execution in
 > the game VM: `evaluate` is a REPL with no login. Enabling it also loads the
@@ -198,16 +205,52 @@ See [`config()`](./lua-api/efuns.md#configkey--any).
 | Key | Type | Description |
 |-----|------|-------------|
 | `lua_memory_mb` | integer | Max Lua VM memory in megabytes. Enforced; `0` = no ceiling |
-| `lua_instruction_limit` | integer | Max Lua instructions per dispatch. `0` disables it. **Enforcing this disables the LuaJIT compiler** — see below |
+| `lua_instruction_limit` | integer | Max Lua instructions per dispatch. `0` disables it. On a LuaJIT build, enforcing it disables the compiler — see below |
 | `input_buffer_bytes` | integer | Max bytes in a single input line |
 
 > [!IMPORTANT]
-> `lua_instruction_limit` and the LuaJIT compiler are mutually exclusive:
-> LuaJIT dispatches no debug hooks from inside a compiled trace, so a runaway
-> loop is invisible to any hook while the JIT is on. Measured through the real
-> mudlib, enforcing costs 2-7% on commands and the compiler is worth ~1.00x on
-> them, so it ships **on**. See
+> On a **LuaJIT** build, `lua_instruction_limit` and the compiler are mutually
+> exclusive: LuaJIT dispatches no debug hooks from inside a compiled trace, so a
+> runaway loop is invisible to any hook while the JIT is on, and the engine calls
+> `jit.off()` whenever a limit is configured. Measured through the real mudlib,
+> enforcing costs 2-7% on commands and the compiler is worth ~1.00x on them, so
+> it ships **on**.
+>
+> On the default **Lua 5.5** build there is no compiler to give up, and errors
+> raised from a hook are uncatchable — so `while true do pcall(f) end`, which
+> could swallow the budget error on 5.1, cannot survive it. See
 > [Performance & the JIT Trade-off](./lua-api/performance.md).
+
+### `[compute]`
+
+Running long Lua off the game thread, in worker *processes*. Off by default;
+with `enabled = false` no child process is ever started. Full guide:
+[Compute — Off-Thread Lua](./lua-api/compute.md).
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Register the `compute()` efun and start the pool |
+| `workers` | integer | `2` | Worker processes, started lazily on first use |
+| `worker_path` | string | *beside the server* | Where the `oxigeon-compute` binary is |
+| `queue_depth` | integer | `16` | Jobs allowed to wait before new ones are refused |
+| `default_deadline_ms` | integer | `5000` | Wall clock a job gets before it is given up on |
+| `max_deadline_ms` | integer | `60000` | Ceiling a caller may ask for |
+| `instruction_limit` | integer | `0` | Instructions one job may run. `0` keeps the LuaJIT compiler |
+| `memory_mb` | integer | `256` | Memory ceiling per worker VM. `0` = no ceiling |
+| `roots` | string[] | `["compute"]` | Module prefixes an entry point may live under |
+| `max_arg_depth` | integer | `64` | Nesting limit when copying a value between VMs |
+| `max_arg_nodes` | integer | `100000` | Size limit for the same |
+
+> [!IMPORTANT]
+> **A worker is a separate binary** and has to be built:
+> `cargo build --release -p oxigeon-compute`. It links LuaJIT whatever the server
+> was built with — the server defaults to Lua 5.5 for the debugger, and a compute
+> job wants the compiler instead; one binary cannot link both. It is looked for
+> beside the server binary unless `worker_path` says otherwise.
+
+A job that overruns its deadline has its worker process **killed and replaced**,
+and is counted in `server_info().compute.wedged`. Setting `instruction_limit`
+lets a job stop itself instead, at the cost of the compiler in that VM.
 
 ---
 
@@ -219,7 +262,7 @@ See the [full permissions.toml reference](./configuration/permissions-toml.md) f
 ```toml
 [efuns]
 reload     = "efun.reload"
-write_file = "efun.file.write"
+write_file = "efun.write_file"
 broadcast  = "efun.broadcast"
 
 [directories]

@@ -103,7 +103,8 @@ fn required_module_chunk_name_matches_the_file_on_disk() {
             }
         }
         Ok(VmState::Continue)
-    });
+    })
+    .expect("the hook must install, or this test asserts nothing");
 
     // `lib.strings` is pure Lua with no efun dependencies, so it loads standalone.
     lua.load("require('lib.strings')").exec().unwrap();

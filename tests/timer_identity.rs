@@ -20,10 +20,10 @@ use oxigeon::config::permissions_config::{DirPerms, PermissionConfig};
 fn gated_writes() -> PermissionConfig {
     let mut directories = HashMap::new();
     directories.insert(
-        "/logs".to_string(),
+        "/mudlib/logs".to_string(),
         DirPerms { read: None, write: Some("admin".to_string()) },
     );
-    PermissionConfig { efuns: HashMap::new(), directories }
+    PermissionConfig { directories, ..Default::default() }
 }
 
 fn gated_efun() -> PermissionConfig {
@@ -31,7 +31,7 @@ fn gated_efun() -> PermissionConfig {
     // `journal_read` rather than `broadcast`: it is gated the same way but
     // sends nothing to the probe session, so the reply stream stays clean.
     efuns.insert("journal_read".to_string(), "admin".to_string());
-    PermissionConfig { efuns, directories: HashMap::new() }
+    PermissionConfig { efuns, ..Default::default() }
 }
 
 /// The trap the review described: a daemon that writes on a tick.

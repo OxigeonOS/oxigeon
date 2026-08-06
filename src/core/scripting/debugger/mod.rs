@@ -14,6 +14,8 @@ pub mod dap;
 pub mod efuns;
 pub mod hook;
 pub mod introspect;
+#[cfg(not(feature = "luajit"))]
+pub mod parked;
 pub mod paths;
 pub mod state;
 pub mod trace;
@@ -35,6 +37,30 @@ thread_local! {
     /// session against `TraceConfig` on every hook event would mean a `RefCell`
     /// borrow plus a `String` clone thousands of times per command.
     static DISPATCH_TRACED: Cell<bool> = const { Cell::new(false) };
+    /// Which session the dispatch in flight belongs to, so a stop can say whose
+    /// it is. Set alongside `DISPATCH_TRACED`.
+    static DISPATCH_SESSION: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+    /// What the dispatch in flight *is*, for a client's thread list: the verb a
+    /// player typed, or `timer:<id>`. A suspended dispatch is only meaningfully
+    /// pickable out of a list if it is named, and "thread 1" names nothing.
+    static DISPATCH_LABEL: std::cell::RefCell<String> =
+        const { std::cell::RefCell::new(String::new()) };
+}
+
+/// The session whose dispatch is running, if any.
+pub fn current_dispatch_session() -> Option<String> {
+    DISPATCH_SESSION.with(|c| c.borrow().clone())
+}
+
+/// What the dispatch in flight is, for naming a stop.
+pub fn current_dispatch_label() -> String {
+    DISPATCH_LABEL.with(|c| c.borrow().clone())
+}
+
+/// Name the dispatch about to run. Cleared with `""` when it ends.
+pub fn set_dispatch_label(label: &str) {
+    DISPATCH_LABEL.with(|c| *c.borrow_mut() = label.to_string());
 }
 
 #[inline]
@@ -48,6 +74,7 @@ pub(crate) fn dispatch_is_traced() -> bool {
 pub fn set_dispatch_context(st: &SharedDebugState, session_id: Option<&str>) {
     let traced = st.armed.load(Ordering::Relaxed) && st.trace_config().covers(session_id);
     DISPATCH_TRACED.with(|c| c.set(traced));
+    DISPATCH_SESSION.with(|c| *c.borrow_mut() = session_id.map(str::to_string));
 }
 
 /// Which triggers the VM's single hook slot should be armed with.
@@ -128,6 +155,35 @@ impl InstalledHook {
     }
 }
 
+/// Give a dispatch coroutine the same hook the main thread has.
+///
+/// **PUC Lua hooks are per-thread.** `lua_sethook` sets them on one
+/// `lua_State`, and a coroutine created from it inherits nothing — so a
+/// dispatch running on its own thread would have no breakpoints, no stepping,
+/// and, worse, no instruction budget: `while true do end` would simply wedge
+/// the game with nothing to interrupt it.
+///
+/// This is why the coroutine path arms every thread it creates. It found the
+/// bug the hard way — the budget tests hung.
+#[cfg(not(feature = "luajit"))]
+pub fn arm_thread(
+    thread: &LuaThread,
+    st: &SharedDebugState,
+    hl: &Rc<RefCell<HookLocal>>,
+) {
+    let shape = HookShape::for_state(st);
+    if shape.is_off() {
+        return;
+    }
+    let st2 = st.clone();
+    let hl2 = hl.clone();
+    if let Err(e) = thread.set_hook(shape.triggers(), move |lua, dbg| {
+        hook::on_event(lua, dbg, &st2, &hl2)
+    }) {
+        tracing::error!("debugger: could not arm the dispatch coroutine: {}", e);
+    }
+}
+
 /// Install, replace or remove the hook to match [`DebugState`].
 ///
 /// Must only be called from the Lua thread, and never from inside the hook
@@ -156,9 +212,16 @@ pub fn sync_hook(
     } else {
         let st2 = st.clone();
         let hl2 = hl.clone();
-        lua.set_hook(shape.triggers(), move |lua, dbg| {
+        // mlua 0.11 reports failure rather than panicking. A hook that did not
+        // install is a debugger that never stops and a budget that never fires,
+        // and the old signature let that pass silently.
+        if let Err(e) = lua.set_hook(shape.triggers(), move |lua, dbg| {
             hook::on_event(lua, dbg, &st2, &hl2)
-        });
+        }) {
+            tracing::error!("debugger: could not install the hook: {}", e);
+            installed.shape = HookShape::default();
+            return;
+        }
         tracing::debug!("debugger: hook installed ({:?})", shape);
     }
     installed.shape = shape;

@@ -318,9 +318,20 @@ pub fn register_document_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
             move |_, (collection, id, field, delta): (String, String, String, Option<f64>)| {
                 guard()?;
                 let path = JsonPath::parse(&field).or_else(|e| fail(e))?;
-                store
+                let next = store
                     .incr(&collection, &id, &path, delta.unwrap_or(1.0))
-                    .or_else(|e| fail(e))
+                    .or_else(|e| fail(e))?;
+
+                // The store counts in `f64`, but this is a counter API — its
+                // documented use is a sequence number — so hand back an integer
+                // when the result is one. On LuaJIT both are doubles and this
+                // reads the same either way; from 5.3 on, returning the float
+                // makes `db_incr` answer `1.0` where every caller expects `1`.
+                Ok(if next.fract() == 0.0 && next.abs() < 9.007_199_254_740_992e15 {
+                    LuaValue::Integer(next as i64)
+                } else {
+                    LuaValue::Number(next)
+                })
             },
         )?;
         globals.set("db_incr", f)?;

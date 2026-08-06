@@ -82,13 +82,70 @@ function M.register(item)
         return
     end
     M._items[item.id] = item
+
+    -- Feed the tag index, which `room_d` and `mob_d` have always done and this
+    -- never did — so `DAEMON.tag.find("item", "weapon")` came back empty for
+    -- every item in the game, while `Item.tags` was widely authored and
+    -- `Item:has_tag` worked. Two ways to ask one question, one of which was
+    -- always wrong.
+    if DAEMON and DAEMON.tag and type(item.tags) == "table" then
+        pcall(DAEMON.tag.index, "item", item.id, item.tags)
+    end
+
     log("debug", "ITEM_D: Registered item '" .. item.id .. "'")
 end
 
+--- Flat authoring data in, a registered-ready Item out.
+---
+--- `Weapon{...}` is the hand-authoring door and is a one-way function: an Item
+--- cannot be written back to a file. Everything OLC reads and writes is the flat
+--- form this takes, so this is the loader's door.
+--- @param data table
+--- @return table|nil item, string|nil err
+function M.from_data(data)
+    local components = require('components')
+    return components.build(data)
+end
+
+--- An array of flat data or built Items in, an array of Items out.
+---
+--- An entry that already carries a metatable is passed through untouched.
+--- `Object.new` sets one on everything it builds, so that is a reliable "has
+--- this been constructed already" test — and it is what lets a hand-authored
+--- `Weapon{...}` file and a generated flat file go through the same loader
+--- without either having to declare which it is.
+--- @param list table
+--- @return table  array of Items
+function M.build_all(list)
+    local out = {}
+    for _, entry in ipairs(list or {}) do
+        if type(entry) ~= "table" then
+            log_error("ITEM_D: build_all found a " .. type(entry) .. " in the list")
+        elseif getmetatable(entry) ~= nil then
+            out[#out + 1] = entry
+        else
+            local item, err = M.from_data(entry)
+            if item then
+                out[#out + 1] = item
+            else
+                log_error("ITEM_D: could not build item '"
+                    .. tostring(entry.id) .. "': " .. tostring(err))
+            end
+        end
+    end
+    return out
+end
+
 --- Register multiple items at once.
--- @param items table  Array of Item objects
+---
+--- Takes either shape — built Items or flat authoring data — because
+--- `build_all` can tell them apart. Registration is not the place to decide
+--- whether something is an Item: a flat table has an `id` and would register
+--- perfectly happily, then quietly lack `display_name`, `has_tag` and every
+--- `Item:new` default until something asked for one.
+-- @param items table  Array of Item objects or flat authoring tables
 function M.register_all(items)
-    for _, item in ipairs(items) do
+    for _, item in ipairs(M.build_all(items)) do
         M.register(item)
     end
 end

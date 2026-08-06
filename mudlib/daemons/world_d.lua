@@ -419,25 +419,63 @@ local function log_error(message)
     end
 end
 
---- Register the Lua module paths for an area so it can be reloaded later.
+--- Register everything needed to rebuild one area from source.
+---
+--- Replaces `register_area_source`, which knew only two module paths — the rooms
+--- and the items. That was already wrong for `thornhollow`, whose mobs and shops
+--- a reset silently dropped, and it could not describe a generated area at all
+--- (four data files plus a hand-written `custom.lua`).
+---
+--- `spec.load` is a function rather than a module path for the same reason: what
+--- "load this area" means belongs to `lib/areaload.lua`, which knows about
+--- passes and patches, not to the reset path.
+--- @param area_name string
+--- @param spec table  { modules = { "areas.x.rooms", ... },  -- purged on reset
+---                      load    = function(area_name) -> ok, err }
+function M.register_area_spec(area_name, spec)
+    if type(area_name) ~= "string" or area_name == "" then
+        log("warn", "world_d: register_area_spec requires a non-empty area name")
+        return
+    end
+    if type(spec) ~= "table" or type(spec.load) ~= "function" then
+        log("warn", "world_d: register_area_spec for '" .. area_name
+            .. "' needs a `load` function")
+        return
+    end
+    M._area_sources[area_name] = {
+        modules = spec.modules or {},
+        load    = spec.load,
+    }
+    log("debug", "world_d: Registered area spec '" .. area_name .. "' ("
+        .. #(spec.modules or {}) .. " modules)")
+end
+
+--- The two-module form, kept as an adapter.
+---
+--- Three lines so `reset_area` has one code path rather than two. Anything still
+--- calling this gets a reset that reloads its rooms and items and nothing else,
+--- which is exactly what it got before.
 -- @param area_name     string  e.g. "wizard_workshop"
 -- @param room_module   string  require-path for rooms, e.g. "areas.wizard_workshop.rooms"
 -- @param items_module  string|nil  optional require-path for items
 function M.register_area_source(area_name, room_module, items_module)
-    if type(area_name) ~= "string" or area_name == "" then
-        log("warn", "world_d: register_area_source requires a non-empty area name")
-        return
-    end
     if type(room_module) ~= "string" or room_module == "" then
         log("warn", "world_d: register_area_source requires a non-empty room module path")
         return
     end
-    M._area_sources[area_name] = {
-        module       = room_module,
-        items_module = items_module,
-    }
-    log("debug", "world_d: Registered area source '" .. area_name
-        .. "' (module=" .. room_module .. ")")
+    local modules = { room_module }
+    if items_module then modules[#modules + 1] = items_module end
+
+    M.register_area_spec(area_name, {
+        modules = modules,
+        load = function()
+            if items_module and DAEMON.items then
+                DAEMON.items.register_all(require(items_module))
+            end
+            M.register_area(DAEMON.room.load_area(require(room_module)))
+            return true
+        end,
+    })
 end
 
 --- Get all room IDs belonging to a given area (prefix match on room_id).
@@ -506,34 +544,32 @@ function M.reset_area(area_name)
         end
     end
 
-    -- 5. Purge the require cache so the module is re-evaluated fresh
-    package.loaded[source.module] = nil
-    if source.items_module then
-        package.loaded[source.items_module] = nil
+    -- 5. Purge the require cache so every one of the area's modules is
+    --    re-evaluated fresh. Every `.lua` in its directory, not just the two
+    --    entry points: an area assembled from several room files (thornhollow)
+    --    would otherwise reload its `init.lua` and get the *cached* room files
+    --    it requires, so a reset showed none of your edits.
+    for _, path in ipairs(source.modules or {}) do
+        package.loaded[path] = nil
     end
 
-    -- 6. Re-require items (must come before rooms in case rooms reference items)
-    if source.items_module and DAEMON.items then
-        local ok, err = pcall(function()
-            local items = require(source.items_module)
-            DAEMON.items.register_all(items)
-        end)
-        if not ok then
-            log_error("world_d: Failed to reload items for area '"
-                .. area_name .. "': " .. tostring(err))
-        end
-    end
-
-    -- 7. Re-require the area module, rebuild rooms, register them
-    local ok, err = pcall(function()
-        local area_data = require(source.module)
-        local rooms = DAEMON.room.load_area(area_data)
-        M.register_area(rooms)
-    end)
+    -- 6. Rebuild. What that means belongs to `lib/areaload.lua`, which knows
+    --    about items-before-rooms, `custom.lua` patches and the `on_load` hook.
+    --
+    --    Both failure shapes are handled: a raise, and a `false, message`
+    --    return. `areaload.load` uses the second, and a guard that only checked
+    --    the first would report a failed reload as a success — the same shape as
+    --    the `pcall(write_file, ...)` bug this work started from.
+    local ok, loaded, load_err = pcall(source.load, area_name)
     if not ok then
         log_error("world_d: Failed to reload area '" .. area_name
-            .. "': " .. tostring(err))
-        return false, "Reload failed: " .. tostring(err)
+            .. "': " .. tostring(loaded))
+        return false, "Reload failed: " .. tostring(loaded)
+    end
+    if loaded == false then
+        log_error("world_d: Failed to reload area '" .. area_name
+            .. "': " .. tostring(load_err))
+        return false, "Reload failed: " .. tostring(load_err)
     end
 
     -- 8. Re-place characters into the new Room objects

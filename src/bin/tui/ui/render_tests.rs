@@ -71,10 +71,16 @@ fn populated() -> (App, UnboundedReceiver<Action>) {
 }
 
 /// Stopped at a breakpoint, with a stack and locals.
+///
+/// Frozen, which is the default policy and what the pause banner is about. A
+/// server that suspends one dispatch instead sets `stopped` without
+/// `world_frozen`, and draws no banner — see
+/// `a_suspended_dispatch_does_not_claim_the_world_is_frozen`.
 fn paused() -> (App, UnboundedReceiver<Action>) {
     let (mut app, rx) = populated();
     app.dbg.attached = true;
     app.dbg.stopped = true;
+    app.dbg.world_frozen = true;
     app.dbg.stopped_at = Some(std::time::Instant::now());
     app.dbg.stop_reason = "breakpoint".into();
     app.dbg.frames = vec![Frame {
@@ -153,6 +159,36 @@ fn the_pause_banner_names_the_cost_and_counts_down() {
     assert!(screen.contains("who.lua:19"), "where it stopped:\n{screen}");
 }
 
+/// A suspended dispatch must not be drawn as a frozen world.
+///
+/// The report this comes from: an admin set a breakpoint in combat on a server
+/// built to suspend one dispatch, and the *other* player's cockpit put up the
+/// freeze banner over a game they were still playing — they could type, and the
+/// screen said everything had stopped. The banner is a claim about the world, so
+/// it is drawn from `world_frozen` and nothing else.
+#[test]
+fn a_suspended_dispatch_does_not_claim_the_world_is_frozen() {
+    let (mut app, _rx) = paused();
+    app.dbg.world_frozen = false;
+    let screen = render(&mut app, 120, 40);
+
+    assert!(
+        !screen.contains("VM PAUSED"),
+        "the freeze banner was drawn over a game that is still running:
+{screen}"
+    );
+    assert!(
+        !screen.contains("every player on this server is frozen"),
+        "{screen}"
+    );
+    // Still visibly stopped — the status chip says which kind.
+    assert!(
+        screen.contains("suspended"),
+        "a suspended dispatch should still be reported, just not as a freeze:
+{screen}"
+    );
+}
+
 #[test]
 fn a_disabled_auto_continue_says_so_rather_than_counting_from_zero() {
     let (mut app, _rx) = paused();
@@ -204,12 +240,197 @@ fn the_debug_tab_marks_the_stopped_line_and_the_breakpoint_gutter() {
         .breakpoints
         .entry(std::path::PathBuf::from("mudlib/cmds/who.lua"))
         .or_default()
-        .insert(19);
+        .insert(19, None);
 
     let screen = render(&mut app, 160, 50);
     assert!(screen.contains("▶"), "the stopped line needs a marker:\n{screen}");
     assert!(screen.contains("●"), "the breakpoint gutter:\n{screen}");
     assert!(screen.contains("M.execute"), "the stack frame:\n{screen}");
+}
+
+/// The file pane is a tree, not a list of paths.
+///
+/// It used to render every `.lua` file under `mudlib/` and `game/` as its full
+/// path — several hundred rows, all of them starting `mudlib/`. Nesting means
+/// each row shows only its own name, and a closed folder shows nothing at all.
+#[test]
+fn the_file_pane_nests_rather_than_listing_every_path() {
+    let (mut app, _rx) = paused();
+    app.tab = Tab::Debug;
+    // `paused()` reveals `who.lua`, which scrolls the tree to it. Look at the
+    // top of the tree instead.
+    app.dbg.file_sel = 0;
+    let screen = render(&mut app, 160, 50);
+
+    assert!(
+        screen.contains("▾ mudlib") || screen.contains("▸ mudlib"),
+        "a root directory with a disclosure arrow:\n{screen}"
+    );
+    // Children sit under their parent, indented, showing only their own name.
+    // Read the files column alone: the source pane's *title* is a full path,
+    // and legitimately so.
+    // Content rows only: a pane's *border* line carries its title, and both the
+    // source pane's title and the repl's key legend contain slashes.
+    let files_column: String = screen
+        .lines()
+        .filter(|l| l.starts_with('│'))
+        .map(|l| l.chars().take(30).collect::<String>())
+        .filter(|l| l.ends_with('│'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        files_column.contains("  ▸ ") || files_column.contains("  ▾ "),
+        "a nested entry, indented under its parent:\n{files_column}"
+    );
+    assert!(
+        !files_column.contains('/'),
+        "a path separator in the tree means it is still a flat list:\n{files_column}"
+    );
+}
+
+/// A folder that is closed still shows that something inside it has a
+/// breakpoint — otherwise collapsing the tree would hide them.
+#[test]
+fn a_closed_folder_still_shows_that_it_holds_a_breakpoint() {
+    let (mut app, _rx) = paused();
+    app.tab = Tab::Debug;
+    app.dbg
+        .breakpoints
+        .entry(std::path::PathBuf::from("mudlib/cmds/who.lua"))
+        .or_default()
+        .insert(19, None);
+
+    let screen = render(&mut app, 160, 50);
+    // `mudlib` is a root and stays open, but it is drawn as a folder row and
+    // carries the mark for what is underneath it.
+    assert!(screen.contains("●"), "the mark should reach the folder:\n{screen}");
+}
+
+/// The `:` and `/` prompts take over the footer row, and say what they do.
+#[test]
+fn the_source_prompts_are_visible_and_labelled() {
+    let (mut app, _rx) = paused();
+    app.tab = Tab::Debug;
+
+    app.dbg.source_prompt = Some(oxigeon_tui_prompt_goto());
+    let screen = render(&mut app, 160, 50);
+    assert!(screen.contains("go to line"), "{screen}");
+    assert!(screen.contains(":42"), "the typed text:\n{screen}");
+
+    app.dbg.source_prompt = Some(oxigeon_tui_prompt_search());
+    let screen = render(&mut app, 160, 50);
+    assert!(screen.contains("search"), "{screen}");
+    assert!(screen.contains("n/N next/prev"), "the keys that follow:\n{screen}");
+}
+
+/// Focusing the variables pane gives it the middle column.
+///
+/// A 38-column strip beside the source is enough to see *that* a local exists
+/// and not much else, and reading values is most of what a debugger is for.
+#[test]
+fn focusing_the_variables_pane_gives_it_the_middle() {
+    let (mut app, _rx) = paused();
+    app.tab = Tab::Debug;
+
+    let narrow = render(&mut app, 160, 50);
+    let source_col = narrow.lines().nth(1).unwrap_or_default().to_string();
+    assert!(
+        source_col.contains("who.lua"),
+        "the source pane starts in the middle:
+{narrow}"
+    );
+
+    app.dbg.focus = crate::dap::Focus::Vars;
+    let wide = render(&mut app, 160, 50);
+    let middle = wide.lines().nth(1).unwrap_or_default().to_string();
+    assert!(
+        middle.contains("variables"),
+        "focusing variables should move it to the middle:
+{wide}"
+    );
+    // And the source is still visible, just not in the middle.
+    assert!(wide.contains("who.lua"), "the file should not vanish:
+{wide}");
+}
+
+/// Lua is coloured, and the tokenizer must not lose or duplicate text.
+///
+/// Colour does not survive into the text dump, so this pins the thing that
+/// actually breaks when a hand-rolled scanner is wrong: characters going missing
+/// as runs are split and re-joined.
+#[test]
+fn syntax_highlighting_does_not_lose_or_duplicate_text() {
+    let (mut app, _rx) = paused();
+    app.tab = Tab::Debug;
+    app.dbg.source = vec![
+        "local function greet(who) -- a comment".into(),
+        r#"  player:send("if you end this then")"#.into(),
+    ];
+    app.dbg.blocks = vec![None, None];
+    app.dbg.cursor = 0;
+
+    let screen = render(&mut app, 160, 50);
+    assert!(screen.contains("local function greet(who) -- a comment"), "{screen}");
+    assert!(screen.contains(r#"player:send("if you end this then")"#), "{screen}");
+}
+
+/// Syntax colouring and search highlighting have to compose: a match inside a
+/// string or a comment is still marked, and splitting the run at it must not
+/// drop characters.
+#[test]
+fn a_search_hit_inside_a_string_survives_syntax_colouring() {
+    let (mut app, _rx) = paused();
+    app.tab = Tab::Debug;
+    app.dbg.source = vec![r#"  send("the end of the world")  -- end"#.into()];
+    app.dbg.blocks = vec![None];
+    app.dbg.cursor = 0;
+    app.dbg.search = "end".into();
+
+    let screen = render(&mut app, 160, 50);
+    assert!(
+        screen.contains(r#"send("the end of the world")  -- end"#),
+        "text was lost splitting runs at the match:
+{screen}"
+    );
+}
+
+fn oxigeon_tui_prompt_goto() -> crate::dap::SourcePrompt {
+    crate::dap::SourcePrompt::Goto("42".into())
+}
+
+fn oxigeon_tui_prompt_search() -> crate::dap::SourcePrompt {
+    crate::dap::SourcePrompt::Search("send".into())
+}
+
+/// A search highlights the term itself, not just the line it moved to.
+#[test]
+fn a_search_marks_the_matching_text() {
+    let (mut app, _rx) = paused();
+    app.tab = Tab::Debug;
+    app.dbg.source = vec!["local x = 1".into(), "  send(player, msg)".into()];
+    app.dbg.cursor = 0; // the fixture points at line 19 of a longer file
+    app.dbg.search = "send".into();
+
+    // The assertion is only that it still renders the line: colour does not
+    // survive into the text dump, so this pins that highlighting cannot panic
+    // or drop content — which is the failure mode of splitting spans by index.
+    let screen = render(&mut app, 160, 50);
+    assert!(screen.contains("send(player, msg)"), "{screen}");
+}
+
+/// Highlighting must not mangle a line whose lowercase form is a different
+/// length — `İ` lowercases to two chars, and slicing by the lowered offsets
+/// would panic or cut a character in half.
+#[test]
+fn highlighting_leaves_awkward_unicode_alone() {
+    let (mut app, _rx) = paused();
+    app.tab = Tab::Debug;
+    app.dbg.source = vec!["İstanbul send".into()];
+    app.dbg.cursor = 0;
+    app.dbg.search = "send".into();
+
+    let screen = render(&mut app, 160, 50);
+    assert!(screen.contains("İstanbul send"), "{screen}");
 }
 
 #[test]
@@ -261,7 +482,7 @@ fn screenshot() {
                 .breakpoints
                 .entry(std::path::PathBuf::from("mudlib/cmds/who.lua"))
                 .or_default()
-                .insert(19);
+                .insert(19, None);
         }
         println!("\n╔══ {name} ══\n{}\n", render(&mut app, 118, 34));
     }

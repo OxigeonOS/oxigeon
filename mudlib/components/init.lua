@@ -163,6 +163,173 @@ function M.equip_specs(item, ctx)
     return specs
 end
 
+-- ─── Authoring: flat data in, a built Item out ───────────────────────────────
+--
+-- `Weapon{...}` is the hand-authoring front door and stays that way. It is also
+-- a one-way function: `Item:new` plus `from_data` cannot be run backwards, so an
+-- Item cannot be written back to a file. Everything OLC reads and writes is the
+-- *flat authoring form* — the table `Weapon{...}` takes — and this is where that
+-- form is turned into an object.
+
+--- Every component name, in display order.
+--- @return table  array of strings
+function M.names()
+    local out = {}
+    for _, mod in ipairs(discover()) do out[#out + 1] = mod.component end
+    return out
+end
+
+--- Each component's authoring schema, keyed by component name.
+---
+--- For `lib/schema.lua`, which flattens these into the item schema. Assembled
+--- from the modules rather than held anywhere, so a new component file is
+--- authorable the moment it exists.
+--- @return table  { [component] = { fields, implicit, order, hand_written } }
+function M.schemas()
+    local out = {}
+    for _, mod in ipairs(discover()) do
+        if type(mod.fields) == "table" then
+            out[mod.component] = {
+                fields       = mod.fields,
+                implicit     = mod.implicit == true,
+                order        = mod.order or DEFAULT_ORDER,
+                hand_written = mod.hand_written or {},
+            }
+        end
+    end
+    return out
+end
+
+--- Which components this flat authoring data asks for.
+---
+--- Everything named in `data.components`, plus every component declaring
+--- `implicit` that finds one of its fields present.
+---
+--- **Explicit rather than inferred**, and that is the load-bearing decision.
+--- Inferring from field presence would make `speed = 1.1` silently weaponise a
+--- lantern, and clearing `damage` silently un-weapon a sword. `from_data` also
+--- fills every default unconditionally, so it is not injective: without the
+--- declaration there is no way to tell "no weapon component" from "a weapon with
+--- every default".
+--- @param data table
+--- @return table  array of modules, in order
+function M.claimed(data)
+    if type(data) ~= "table" then return {} end
+
+    local named = {}
+    for _, name in ipairs(data.components or {}) do
+        named[tostring(name)] = true
+    end
+
+    local out = {}
+    for _, mod in ipairs(discover()) do
+        local wanted = named[mod.component]
+        if not wanted and mod.implicit and type(mod.fields) == "table" then
+            for _, f in ipairs(mod.fields) do
+                if data[f.name] ~= nil then wanted = true break end
+            end
+        end
+        if wanted then out[#out + 1] = mod end
+    end
+    return out
+end
+
+--- Flat authoring data in, an Item carrying its components out.
+---
+--- Uses only `from_data`, which every component has. `new` and `apply` are the
+--- hand-authoring doors and differ between components — `weapon` has `new`,
+--- `drinkable` has `apply`, `requires` has neither. This is the *loader's* door
+--- and has to work for all of them.
+--- @param data table
+--- @return table|nil item, string|nil err
+function M.build(data)
+    if type(data) ~= "table" then return nil, "component data must be a table" end
+    if not data.id then return nil, "an item needs an id" end
+
+    local claimed = M.claimed(data)
+
+    -- Component defaults first, so `Item:new` sees the same input the archetype
+    -- would have handed it. This is where `weapon.new`'s `slot = "weapon"` and
+    -- `armor.new`'s `slot = "chest"` live now.
+    local merged = {}
+    for k, v in pairs(data) do merged[k] = v end
+    for _, mod in ipairs(claimed) do
+        for k, v in pairs(mod.item_defaults or {}) do
+            if merged[k] == nil then merged[k] = v end
+        end
+    end
+
+    local Item = require('lib.item')
+    local ok, item = pcall(Item.new, Item, merged)
+    if not ok then return nil, tostring(item) end
+
+    for _, mod in ipairs(claimed) do
+        local built_ok, built = pcall(mod.from_data, merged)
+        if not built_ok then
+            return nil, mod.component .. ".from_data raised: " .. tostring(built)
+        end
+        -- `requires.from_data` returns nil when nothing is required, and that
+        -- nil is the answer: an empty table would be indistinguishable from a
+        -- real constraint of zero.
+        item[mod.component] = built
+    end
+
+    return item
+end
+
+--- A built Item back to flat authoring data, and everything that will not fit.
+---
+--- The return that matters is the second one. A field that cannot survive the
+--- trip has to be *reported*, not dropped — dropping it silently is the bug
+--- class this whole design exists to end, and `olc adopt` is built on this.
+--- @param item table
+--- @return table data, table lossy  lossy = { { path = "weapon.hit_message", why = "function" } }
+function M.to_data(item)
+    local data, lossy = {}, {}
+    if type(item) ~= "table" then return data, lossy end
+
+    local claimed = {}
+    for _, mod in ipairs(discover()) do
+        local ok, yes = pcall(mod.is, item)
+        if ok and yes then claimed[#claimed + 1] = mod end
+    end
+
+    if #claimed > 0 then
+        data.components = {}
+        for _, mod in ipairs(claimed) do
+            -- An implicit component is not named in `components`: it is
+            -- re-derived from its own fields, and naming it too would emit a
+            -- declaration the author never wrote.
+            if not mod.implicit then
+                data.components[#data.components + 1] = mod.component
+            end
+        end
+        if #data.components == 0 then data.components = nil end
+    end
+
+    for _, mod in ipairs(claimed) do
+        if type(mod.to_data) == "function" then
+            local ok, flat = pcall(mod.to_data, item)
+            if ok and type(flat) == "table" then
+                for k, v in pairs(flat) do
+                    if type(v) == "function" then
+                        lossy[#lossy + 1] = { path = mod.component .. "." .. k, why = "function" }
+                    else
+                        data[k] = v
+                    end
+                end
+            end
+        end
+        for _, name in ipairs(mod.hand_written or {}) do
+            if item[name] ~= nil then
+                lossy[#lossy + 1] = { path = name, why = "hand-written" }
+            end
+        end
+    end
+
+    return data, lossy
+end
+
 --- Drop the cache so a hot reload picks up a new or edited component.
 --- Called from `mudlib/init.lua`'s `on_load`, next to `commands.flush_cache`.
 function M.flush_cache()

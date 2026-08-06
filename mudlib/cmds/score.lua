@@ -1,3 +1,5 @@
+local Strings = require('lib.strings')
+
 local M = {}
 M.name = 'score'
 M.aliases = { 'sc', 'stats' }
@@ -9,14 +11,18 @@ local ORDER = { "vitals", "attributes", "derived", "general" }
 
 --- Show base and effective side by side, so a modified number explains itself.
 local function render(trait)
-    local line = string.format("  %-14s %5s", trait.label, tostring(trait.value))
+    local line = string.format("  %-14s %5s", trait.label, Strings.number(trait.value))
     if trait.kind == "gauge" and trait.max then
         line = string.format("  %-14s %5s / %-5s", trait.label,
-            tostring(trait.value), tostring(trait.max))
+            Strings.number(trait.value), Strings.number(trait.max))
     elseif trait.value ~= trait.base then
+        -- `%s` on a tostring, not `%d` on the number. A trait with
+        -- `round = "none"` holds a real fraction, and `%d` on one raises
+        -- "number has no integer representation" from Lua 5.3 on — a crash in
+        -- a command every player types.
         local delta = trait.value - trait.base
-        line = line .. string.format("  {yellow}(%s%d from %s){/}",
-            delta > 0 and "+" or "", delta,
+        line = line .. string.format("  {yellow}(%s%s from %s){/}",
+            delta > 0 and "+" or "", Strings.number(delta),
             trait.kind == "derived" and "effects" or "effects")
     elseif trait.kind == "derived" then
         line = line .. "  {cyan}(derived){/}"

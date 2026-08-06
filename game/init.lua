@@ -132,117 +132,30 @@ end
 -- for later resets.
 
 if DAEMON.world and DAEMON.room then
-    -- wizard_workshop
-    ok, err = pcall(function()
-        -- Load items first so they're available if rooms reference them
-        if DAEMON.items then
-            local ww_items = require('areas.wizard_workshop.items')
-            DAEMON.items.register_all(ww_items)
-            -- Weapons, armour and containers. Separate from `items.lua`
-            -- because that file is the workshop's puzzle and this is the
-            -- gear that makes the equipment half of the object model real.
-            DAEMON.items.register_all(require('areas.wizard_workshop.gear'))
-        end
+    -- Areas are **discovered**, not listed.
+    --
+    -- This block used to name every one of them: a `pcall` per area, each
+    -- requiring its rooms, items, mobs and shops by hand and then calling
+    -- `register_area_source`. Two costs. An area OLC created was invisible until
+    -- somebody edited this file — and OLC never called `register_area_source`
+    -- at all, so `areas reset <new_area>` answered "No registered source" for
+    -- every area it had ever made.
+    --
+    -- `areaload.load_all` runs in passes across all areas — items, then rooms,
+    -- then mobs, then shops — which also removes a hazard this list had:
+    -- `thornhollow.smithy` has a `down` exit into `collapsed_mine.adit`, and
+    -- that worked only because the areas happened to be listed in the right
+    -- order. See `mudlib/lib/areaload.lua`.
+    local areaload = require('lib.areaload')
 
-        local area_data = require('areas.wizard_workshop.rooms')
-        local rooms = DAEMON.room.load_area(area_data)
-        DAEMON.world.register_area(rooms)
-        DAEMON.world.register_area_source(
-            "wizard_workshop",
-            "areas.wizard_workshop.rooms",
-            "areas.wizard_workshop.items"
-        )
-
-        -- Creature *templates*. Populating happens once at the end, after
-        -- every area has registered its rooms — a template whose `spawn_room`
-        -- is in an area that has not loaded yet cannot be spawned.
-        if DAEMON.mobs then
-            DAEMON.mobs.register_all(require('areas.wizard_workshop.mobs'))
+    local loaded, failures = areaload.load_all()
+    for _, f in ipairs(failures) do
+        log("error", "Failed to load area '" .. f.area .. "': " .. tostring(f.err))
+        if DAEMON.journal then
+            pcall(DAEMON.journal.error, "AREALOAD: " .. f.area .. ": " .. tostring(f.err))
         end
-    end)
-    if not ok then
-        log("error", "Failed to load area 'wizard_workshop': " .. tostring(err))
     end
-
-    -- thornhollow — one area across three room files, joined by ROOM_D.merge.
-    ok, err = pcall(function()
-        if DAEMON.items then
-            DAEMON.items.register_all(require('areas.thornhollow.items'))
-        end
-
-        local rooms = DAEMON.room.load_area(require('areas.thornhollow.init'))
-        DAEMON.world.register_area(rooms)
-        DAEMON.world.register_area_source(
-            "thornhollow",
-            "areas.thornhollow.init",
-            "areas.thornhollow.items"
-        )
-
-        if DAEMON.mobs then
-            DAEMON.mobs.register_all(require('areas.thornhollow.mobs'))
-        end
-
-        -- Shops after the rooms they stand in: `register` indexes by room, and
-        -- a shop pointing at a room that does not exist yet is a shop nobody
-        -- can find and no error anywhere.
-        if DAEMON.shop then
-            DAEMON.shop.register_all(require('areas.thornhollow.shops'))
-        end
-
-        -- The town strongbox is an *instance* in a room rather than a template
-        -- in a registry: a particular chest with particular contents, not the
-        -- idea of a chest. Idempotent, because an area reset re-runs this.
-        if DAEMON.items then
-            local vault_room = DAEMON.items.location("room", "thornhollow.undercroft")
-            local already = false
-            for _, entry in ipairs(DAEMON.items.in_room("thornhollow.undercroft")) do
-                if entry.template == "vault_chest" then already = true break end
-            end
-            if not already then
-                DAEMON.items.spawn("vault_chest", vault_room)
-            end
-        end
-    end)
-    if not ok then
-        log("error", "Failed to load area 'thornhollow': " .. tostring(err))
-    end
-
-    -- greywater_marsh — lfun descriptions keyed on the weather, aggressive
-    -- creatures, and the durable herb cooldown.
-    ok, err = pcall(function()
-        local rooms = DAEMON.room.load_area(require('areas.greywater_marsh.rooms'))
-        DAEMON.world.register_area(rooms)
-        DAEMON.world.register_area_source(
-            "greywater_marsh",
-            "areas.greywater_marsh.rooms"
-        )
-        if DAEMON.mobs then
-            DAEMON.mobs.register_all(require('areas.greywater_marsh.mobs'))
-        end
-    end)
-    if not ok then
-        log("error", "Failed to load area 'greywater_marsh': " .. tostring(err))
-    end
-
-    -- collapsed_mine — dark rooms, a locked door, a lever puzzle and the boss.
-    ok, err = pcall(function()
-        if DAEMON.items then
-            DAEMON.items.register_all(require('areas.collapsed_mine.items'))
-        end
-        local rooms = DAEMON.room.load_area(require('areas.collapsed_mine.rooms'))
-        DAEMON.world.register_area(rooms)
-        DAEMON.world.register_area_source(
-            "collapsed_mine",
-            "areas.collapsed_mine.rooms",
-            "areas.collapsed_mine.items"
-        )
-        if DAEMON.mobs then
-            DAEMON.mobs.register_all(require('areas.collapsed_mine.mobs'))
-        end
-    end)
-    if not ok then
-        log("error", "Failed to load area 'collapsed_mine': " .. tostring(err))
-    end
+    log("info", "Loaded " .. loaded .. " area(s) by discovery.")
 
     -- Quests after the rooms, creatures and items they name: a `visit`
     -- objective naming a room that does not exist is a quest nobody can finish

@@ -102,7 +102,7 @@ journal [count] [level]
 > journal warn
 ```
 
-**Requires:** `daemon.journal_d.read` permission
+**Requires:** `efun.journal_read` permission
 
 ### Journal Log Entry Format
 
@@ -179,8 +179,8 @@ audit add <command> <condition>   -- watch a command
 audit rm <command>                -- stop watching a command
 ```
 
-**Reading** requires: `daemon.audit_d.read`
-**Managing** (add/rm) requires: `daemon.audit_d.manage`
+**Reading** requires: `efun.audit_read`
+**Managing** (add/rm) requires: `cmd.audit.manage`
 
 #### Examples
 
@@ -256,7 +256,9 @@ local info = server_info()
 -- info.uptime_secs     1842.3       (float seconds since start)
 -- info.dropped_output  0            (output lost to full session channels)
 -- info.lua             { ... }      (the Lua heap — see below)
--- info.compute         { ... }      (absent when compute is off)
+-- info.compute         { ... }      (absent when compute is off;
+--                                    .spawned counts worker processes started,
+--                                    .wedged counts jobs killed at their deadline)
 ```
 
 ### The Lua heap
@@ -323,7 +325,7 @@ No permission required — any player can check uptime.
 
 ### `alert` — Staff Alert
 
-Sends a message only to online sessions holding the `daemon.alert` permission.
+Sends a message only to online sessions holding the `alert.receive` permission.
 Use this for staff coordination: reboots, emergencies, coordination.
 
 ```
@@ -335,7 +337,7 @@ Use this for staff coordination: reboots, emergencies, coordination.
 [STAFF ALERT from Gandalf] Server reboot in 5 minutes for maintenance.
 ```
 
-**Requires:** `daemon.alert` permission
+**Requires:** `alert.receive` permission
 
 ### `announce` — Server-Wide Announcement
 
@@ -351,7 +353,7 @@ Use this for player-facing announcements.
 [ANNOUNCEMENT from Gandalf] The dungeon of doom has been reopened!
 ```
 
-**Requires:** `daemon.announce` permission
+**Requires:** `cmd.announce` permission
 
 ### `broadcast_to_perm()` Efun
 
@@ -359,11 +361,11 @@ For Lua-driven selective broadcasts:
 
 ```lua
 -- Send to all sessions with a given permission
-local count = broadcast_to_perm("daemon.alert", "\r\n[ALERT] Emergency server shutdown in 60s\r\n")
+local count = broadcast_to_perm("alert.receive", "\r\n[ALERT] Emergency server shutdown in 60s\r\n")
 DAEMON.journal.info("Alert sent to " .. count .. " staff members")
 ```
 
-**Requires:** `daemon.broadcast` permission on the calling session
+**Requires:** `efun.broadcast_to_perm` permission on the calling session
 
 ---
 
@@ -400,22 +402,22 @@ end
 
 | Permission | Required for |
 |------------|--------------|
-| `daemon.journal_d.read` | Reading journal entries (`journal` command, `journal_read()`) |
-| `daemon.audit_d.read` | Reading audit entries (`audit` command, `audit_read()`) |
-| `daemon.audit_d.manage` | Adding/removing audit watches (`audit add`, `audit rm`) |
-| `daemon.alert` | Sending staff alerts (`alert` command, `broadcast_to_perm("daemon.alert", ...)`) |
-| `daemon.announce` | Server-wide announcements (`announce` command) |
-| `daemon.broadcast` | Using `broadcast_to_perm()` efun |
+| `efun.journal_read` | Reading journal entries (`journal` command, `journal_read()`) |
+| `efun.audit_read` | Reading audit entries (`audit` command, `audit_read()`) |
+| `cmd.audit.manage` | Adding/removing audit watches (`audit add`, `audit rm`) |
+| `alert.receive` | Sending staff alerts (`alert` command, `broadcast_to_perm("alert.receive", ...)`) |
+| `cmd.announce` | Server-wide announcements (`announce` command) |
+| `efun.broadcast_to_perm` | Using `broadcast_to_perm()` efun |
 | `efun.verify` | Using `verify` command and `verify_file()` efun |
 
 Grant these like any other permission:
 
 ```lua
-grant_permission("admin",   "daemon.audit_d.read")
-grant_permission("admin",   "daemon.audit_d.manage")
-grant_permission("admin",   "daemon.journal_d.read")
-grant_permission("admin",   "daemon.alert")
-grant_permission("admin",   "daemon.announce")
-grant_permission("builder", "daemon.journal_d.read")
-grant_permission("builder", "efun.verify")
+grant_permission("admin",   "efun.audit_read")
+grant_permission("admin",   "cmd.audit.manage")
+grant_permission("admin",   "efun.journal_read")
+grant_permission("admin",   "alert.receive")
+grant_permission("admin",   "cmd.announce")
+grant_permission("builder", "efun.journal_read")
+grant_permission("builder", "efun.verify_file")
 ```

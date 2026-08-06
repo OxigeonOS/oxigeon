@@ -93,4 +93,14 @@ items[#items + 1] = Item:new({
     tags        = {"material", "rare"},
 })
 
+-- Gear lives in its own file because `items.lua` is the workshop's puzzle and
+-- that is the equipment half of the object model. It is appended here rather
+-- than loaded separately, because the area loader has exactly five entry names
+-- — rooms/init, items, mobs, shops, custom — and anything else in the directory
+-- is included by one of them. One convention beats a special case in the loader,
+-- and thornhollow's `init.lua` already does the same thing for its room files.
+for _, entry in ipairs(require('areas.wizard_workshop.gear')) do
+    items[#items + 1] = entry
+end
+
 return items

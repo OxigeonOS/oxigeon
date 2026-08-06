@@ -1,0 +1,16 @@
+[package]
+name = "oxigeon-compute"
+version = "0.1.0"
+edition = "2021"
+description = "One Oxigeon compute worker: a LuaJIT VM that runs jobs handed to it on stdin."
+
+[[bin]]
+name = "oxigeon-compute"
+path = "src/main.rs"
+
+# LuaJIT, always. That is the entire reason this is a separate process: the
+# server may be built against Lua 5.5 for a debug hook that can yield, and a
+# compute job wants the compiler, which is worth 2.10x on the arithmetic-heavy
+# work this facility exists for. Two runtimes cannot share one binary.
+[dependencies]
+oxigeon-lua = { path = "../oxigeon-lua", features = ["luajit"], default-features = false }
