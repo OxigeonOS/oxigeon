@@ -11,7 +11,7 @@ use crate::config::driver_config::DatabaseBackend;
 use crate::config::PermissionConfig;
 use crate::core::{
     TelnetListener,
-    Session, SessionOutput, SessionHandler,
+    Session, SessionId, SessionOutput, SessionHandler,
     ScriptEngine, LuaCommand, EfunContext,
 };
 use crate::core::logging::{GameLogger, utc_now};
@@ -343,9 +343,11 @@ async fn handle_connection(
                                     }
                                     TelnetEvent::Negotiate { verb, option } => {
                                         handle_negotiation(&mut conn, &session_id_str, verb, option, &cmd_tx).await;
+                                        publish_capabilities(&session_handler, session_id, &conn.capabilities);
                                     }
                                     TelnetEvent::Subnegotiation { option, data } => {
                                         handle_subnegotiation(&mut conn, &session_id_str, option, &data, &cmd_tx).await;
+                                        publish_capabilities(&session_handler, session_id, &conn.capabilities);
                                     }
                                     TelnetEvent::Command(_) => {}
                                 }
@@ -420,6 +422,35 @@ async fn handle_connection(
 
     let _ = conn.close().await;
     tracing::info!("Connection closed: {} ({})", session_id_str, addr);
+}
+
+/// Copy what negotiation discovered onto the **Session**.
+///
+/// Negotiation writes to `TelnetConnection.capabilities`; the mudlib reads
+/// `Session.capabilities`, through `get_session`. They are two structs on two
+/// objects and nothing joined them, so `Session.capabilities` sat at
+/// `Default::default()` for the life of every session that has ever connected.
+///
+/// The consequences were all silent. `gmcp_d` guards every one of its four
+/// senders on `sess.gmcp_supported`, so **no GMCP was ever pushed to any
+/// client** — the TUI's Room.Info, Char.Vitals and Effects panes could not
+/// populate, and the `Core.Hello` a client does receive comes straight from
+/// `handle_negotiation` and never touches Lua, which is what made the link look
+/// healthy. `window_width` was nil too, so output was wrapped to a default
+/// regardless of the terminal's real size.
+///
+/// Called after every negotiation and subnegotiation rather than once at the
+/// end: NAWS arrives again on every resize, and TTYPE can arrive well after the
+/// first GMCP message.
+fn publish_capabilities(
+    session_handler: &Arc<RwLock<SessionHandler>>,
+    session_id: SessionId,
+    caps: &crate::core::network::telnet::ClientCapabilities,
+) {
+    let mut handler = session_handler.write_recover();
+    if let Some(session) = handler.get_mut(&session_id) {
+        session.capabilities = caps.clone();
+    }
 }
 
 /// Handle a Telnet negotiation event.

@@ -10,6 +10,7 @@
 
 local olc    = require('lib.olc')
 local schema = require('lib.schema')
+local proto  = require('lib.prototype')
 
 local M = {}
 
@@ -30,9 +31,11 @@ M.usage = {
     "  olc where                 cursor, versus where you are standing",
     "{cyan}Create{/}",
     "  olc new room|item|mob <id> [from <base>]",
+    "  olc new mob <id> from proto:<prototype>    inherit; the record is 2 keys",
     "  olc bases [item|mob|room]",
     "{cyan}Inspect{/}",
-    "  olc show [<target>]       current values",
+    "  olc show [<target>]       current values (`olc show proto:<id>` for a prototype)",
+    "  olc protos [kind]         prototypes, with parent and how many use them",
     "  olc fields [<kind>]       what could be set, with types",
     "  olc help <field>          what one field is for",
     "  olc list rooms|items|mobs",
@@ -40,7 +43,9 @@ M.usage = {
     "{cyan}Change{/}",
     "  olc set <field> <value>   ... or `olc set <field>` to open the editor",
     "  olc set on <target> <field> <value>",
-    "  olc unset <field>",
+    "  olc unset <field>         clear it here — an inherited value comes back",
+    "  olc strike <field>        remove an inherited field entirely",
+    "  olc thin                  drop what only restates the prototype",
     "  olc add|remove <field> <value>      for lists",
     "  olc tag|untag <tag>...",
     "  olc comp add|remove|list <component>",
@@ -86,6 +91,27 @@ local function target_of(spec)
     local kind, id = spec:match("^(%a+):(.+)$")
     if kind and schema.of(kind) then return kind, id end
     return classify(spec), spec
+end
+
+--- `proto:<id>` — a prototype rather than a record. Nil if the spec is not one.
+---
+--- Which kind is asked of the cursor first, so `olc show proto:beast` while
+--- editing a creature means the mob prototype even if an item shares the name.
+--- @return string|nil kind, string|nil id, table|nil data
+local function proto_target(session_id, spec)
+    local id = type(spec) == "string" and spec:match("^proto:(.+)$")
+    if not id then return nil end
+
+    local protos = require('prototypes')
+    local cursor = DAEMON.olc.cursor(session_id)
+    if cursor and protos.get(cursor.kind, id) then
+        return cursor.kind, id, protos.get(cursor.kind, id)
+    end
+    for _, kind in ipairs(schema.kinds()) do
+        local data = protos.get(kind, id)
+        if data then return kind, id, data end
+    end
+    return nil, id
 end
 
 --- The thing `set` acts on: an explicit target, or the cursor.
@@ -180,6 +206,19 @@ function subs.show(player, session_id, args_str)
     if not area_of(player, session_id) then return end
 
     local kind, id, draft
+    if args_str:match("^proto:") then
+        -- A prototype is a record minus its id, so `olc.show` renders it with no
+        -- adaptation at all. This is the answer to "what am I inheriting".
+        local pkind, pid, data = proto_target(session_id, args_str)
+        if not pkind then
+            return fail(player, "No prototype '" .. tostring(pid) .. "'. `olc protos` lists them.")
+        end
+        local lines = { "{cyan}" .. pkind .. " prototype{/} " .. pid
+            .. "  {dim}(hand-written; OLC never writes prototypes){/}" }
+        for _, line in ipairs(olc.show(pkind, data)) do lines[#lines + 1] = line end
+        return player:send_paged(table.concat(lines, "\r\n"))
+    end
+
     if args_str ~= "" then
         kind, id = target_of(args_str)
         if not kind then return fail(player, "Nothing called '" .. args_str .. "'.") end
@@ -215,15 +254,33 @@ end
 
 function subs.bases(player, session_id, args_str)
     local kind = args_str ~= "" and args_str or "item"
-    if kind ~= "item" then
-        return ok(player, "A " .. kind .. " has no bases — `olc new " .. kind .. " <id>`.")
+    if not schema.of(kind) then kind = "item" end
+
+    local lines = {}
+    if kind == "item" then
+        local components = require('components')
+        lines[#lines + 1] = "{cyan}Item components{/}  {dim}(`from <name>` or `from comp:<name>`){/}"
+        lines[#lines + 1] = "  item          the plain thing — no components"
+        for _, name in ipairs(components.names()) do
+            lines[#lines + 1] = string.format("  %-13s + %s", name, name)
+        end
     end
 
-    local components = require('components')
-    local lines = { "{cyan}Item bases{/}", "  item          the plain thing — no components" }
-    for _, name in ipairs(components.names()) do
-        lines[#lines + 1] = string.format("  %-13s + %s", name, name)
+    -- Two different things share one keyword, so both are listed under it. A
+    -- component says what an item *is*; a prototype says what a record starts
+    -- from. Only one of them survives into the file as a live link.
+    local protos = olc.protos(kind)
+    if #protos > 0 then
+        lines[#lines + 1] = "{cyan}" .. kind .. " prototypes{/}  {dim}(`from proto:<id>`){/}"
+        for _, p in ipairs(protos) do
+            lines[#lines + 1] = string.format("  %-26s %s", p.id,
+                p.parent and ("{dim}<- " .. p.parent .. "{/}") or "")
+        end
+    elseif kind ~= "item" then
+        return ok(player, "A " .. kind .. " has no components and no prototypes yet. "
+            .. "`olc new " .. kind .. " <id>`.")
     end
+
     player:send_lines(lines)
 end
 
@@ -304,11 +361,38 @@ function subs.set(player, session_id, args_str)
         })
     end
 
+    -- Setting the prototype itself is checked before it lands, because the
+    -- failure modes are ones a builder can neither see nor undo from the record
+    -- in front of them: a typo silently inherits nothing, and naming something
+    -- that names you back is a chain that never terminates.
+    if descriptor.name == "prototype" and value ~= "" then
+        local chain, why = proto.chain(kind, value, id)
+        if not chain then return fail(player, tostring(why)) end
+        for _, layer in ipairs(chain) do
+            if layer.id == id then
+                return fail(player, "'" .. value .. "' inherits from '" .. id
+                    .. "', so this would be a cycle.")
+            end
+        end
+    end
+
     local before = schema.render(descriptor, draft[descriptor.name])
     local set_ok, err = schema.set(kind, draft, field, value)
     if not set_ok then return fail(player, tostring(err)) end
 
     commit(player, session_id, kind, id, draft)
+
+    if descriptor.name == "prototype" then
+        local copy = {}
+        for k, v in pairs(draft) do copy[k] = v end
+        local redundant = #proto.thin(kind, copy)
+        ok(player, id .. " now inherits from " .. tostring(draft.prototype) .. ".")
+        if redundant > 0 then
+            player:send("  {yellow}" .. redundant .. " of its current values only restate "
+                .. "that prototype. `olc thin` drops them.{/}")
+        end
+        return
+    end
     ok(player, id .. "." .. field .. " = "
         .. schema.render(descriptor, draft[descriptor.name])
         .. "  {dim}(was " .. before .. "){/}")
@@ -326,7 +410,97 @@ function subs.unset(player, session_id, args_str)
 
     draft[descriptor.name] = nil
     commit(player, session_id, kind, id, draft)
+
+    -- Under a prototype, "unset" means "revert to inherited" rather than
+    -- "clear". Saying "cleared" and then showing the old value back is how a
+    -- builder concludes the command is broken.
+    local origin, source = proto.origin(kind, draft, descriptor.name)
+    if origin == "inherited" then
+        local merged = olc.effective(kind, draft)
+        return ok(player, id .. "." .. descriptor.name .. " is back to what "
+            .. tostring(source) .. " says: "
+            .. schema.render(descriptor, merged[descriptor.name])
+            .. "  {dim}`olc strike " .. descriptor.name .. "` removes it entirely.{/}")
+    end
     ok(player, id .. "." .. descriptor.name .. " cleared.")
+end
+
+--- Remove an inherited field entirely, rather than reverting to it.
+---
+--- `custom.lua` deliberately has no delete sentinel, and its reason is good: the
+--- generated file is the whole truth there, so "take it out in OLC" is always
+--- available. A prototyped record is incomplete by construction — the value is
+--- in the *parent's* file — so that argument does not carry across, and without
+--- this a child needing one field fewer has to stop inheriting or make the
+--- prototype worse.
+function subs.strike(player, session_id, args_str)
+    local kind, id, draft = current(player, session_id)
+    if not kind then return end
+
+    local descriptor = schema.field(kind, args_str, draft)
+    if not descriptor then return fail(player, "No field '" .. tostring(args_str) .. "'.") end
+    if descriptor.editable == false then
+        return fail(player, schema.why_not_editable(descriptor))
+    end
+    if draft.prototype == nil then
+        return fail(player, "'" .. id .. "' has no prototype, so nothing is inherited. "
+            .. "`olc unset " .. descriptor.name .. "` clears it.")
+    end
+
+    local without = {}
+    for k, v in pairs(draft) do without[k] = v end
+    without[descriptor.name] = nil
+    local origin = proto.origin(kind, without, descriptor.name)
+    if origin ~= "inherited" then
+        return fail(player, "Nothing inherits '" .. descriptor.name .. "'. "
+            .. "`olc unset " .. descriptor.name .. "` clears it.")
+    end
+
+    draft[descriptor.name] = proto.NONE
+    commit(player, session_id, kind, id, draft)
+    ok(player, id .. "." .. descriptor.name .. " struck — removed here, not inherited. "
+        .. "{dim}`olc unset " .. descriptor.name .. "` puts it back.{/}")
+end
+
+function subs.thin(player, session_id)
+    local kind, id = current(player, session_id)
+    if not kind then return end
+
+    local removed, err = olc.thin(session_id, kind, id)
+    if err then return fail(player, err) end
+    if #removed == 0 then
+        return ok(player, id .. " restates nothing its prototype already says.")
+    end
+    ok(player, "Dropped " .. #removed .. " redundant field(s) from " .. id .. ": "
+        .. table.concat(removed, ", "))
+    player:send("  {dim}They are back to inherited. Anything you set deliberately to "
+        .. "the same value went too — `olc set` it again to pin it.{/}")
+end
+
+function subs.protos(player, session_id, args_str)
+    local kind = (args_str:gsub("s$", "")):lower()
+    if not schema.of(kind) then
+        local cursor = DAEMON.olc.cursor(session_id)
+        kind = cursor and cursor.kind or "mob"
+    end
+
+    local list = olc.protos(kind)
+    if #list == 0 then
+        return ok(player, "No " .. kind .. " prototypes. They are hand-written, in "
+            .. "`game/prototypes/*.lua`.")
+    end
+
+    local lines = { "{cyan}" .. kind .. " prototypes{/} — " .. #list }
+    for _, p in ipairs(list) do
+        lines[#lines + 1] = string.format("  %-26s %-26s %s",
+            p.id,
+            p.parent and ("{dim}<- " .. p.parent .. "{/}") or "",
+            p.uses > 0 and ("{dim}" .. p.uses .. " use"
+                .. (p.uses == 1 and "" or "s") .. "{/}") or "{dim}unused{/}")
+    end
+    lines[#lines + 1] = "  {dim}`olc show proto:<id>` for one. `olc new " .. kind
+        .. " <id> from proto:<id>` to use one.{/}"
+    player:send_paged(table.concat(lines, "\r\n"))
 end
 
 --- `add` and `remove` for list fields.
@@ -352,7 +526,16 @@ local function list_op(player, session_id, args_str, adding)
         return fail(player, schema.why_not_editable(descriptor))
     end
 
-    local list = draft[descriptor.name] or {}
+    -- The *effective* list, copied. Arrays replace on a prototype merge rather
+    -- than union, and this is where that is paid for: a builder adding one tag
+    -- to an inherited list gets the whole resulting list written as an override,
+    -- rather than having to retype what the prototype already said.
+    local list = draft[descriptor.name]
+    if list == nil then
+        local merged = olc.effective(kind, draft)[descriptor.name]
+        list = {}
+        for _, v in ipairs(type(merged) == "table" and merged or {}) do list[#list + 1] = v end
+    end
     draft[descriptor.name] = list
 
     local at = nil

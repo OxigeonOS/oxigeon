@@ -20,11 +20,13 @@ Efuns are Rust functions exposed to Lua — they form the bridge between your mu
 - **[Shops & the Economy](./shops.md)** — stock, prices, restocking, a ledger
 - **[Traits](./traits.md)** — any numeric datum on any entity; presence decided by storage
 - **[Effects](./effects.md)** — buffs, debuffs, and the event pipeline
+- **[Abilities](./abilities.md)** — cost, cooldown, target, damage and effects as a data bag; a pared-down GAS for a MUD
 - **[Creatures & Combat](./combat.md)** — mobs, spawning, rounds
 - **[Debugging & Tracing](./debugging.md)** — the debug adapter and execution tracing
 - **[Interface](./interface.md)** — prompt templates, colour, the pager, channels, snooping, NAWS
 - **[Observability & Logging](./observability.md)** — journal_d, audit_d, server info, the Lua heap
 - **[OLC — Building In-Game](./olc.md)** — `olc`, `dig`, `codegen_d`, and the build → file → reload round trip
+- **[Prototypes](./prototypes.md)** — a named, inheritable skeleton a template names and overrides; resolved at area load
 - **[Permissions & Roles](./permissions.md)** — RBAC system, role management, permission checks
 - **[File & System Access](./file-access.md)** — `read_file()`, `write_file()`, `list_dir()`, `os_time()`, `os_date()`, etc.
 - **[Sandboxing & Security](./sandboxing.md)** — What is and isn't available, and why.

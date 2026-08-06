@@ -114,3 +114,10 @@ db_clear = "efun.db.clear"
 "/game/cmds"    = { write = "dir.write.game.cmds" }
 "/game/daemons" = { write = "dir.write.game.daemons" }
 "/game/lib"     = { write = "dir.write.game.lib" }
+
+# Prototypes hold functions, so writing one is a code change and not content —
+# the same reasoning as `/game/lib`, and the reason OLC never writes them. One
+# edit here changes every area that names it, which is the other half of the
+# argument. Reads stay open: `verify prototypes` and `olc show proto:<id>` are
+# for any builder.
+"/game/prototypes" = { write = "dir.write.game.prototypes" }

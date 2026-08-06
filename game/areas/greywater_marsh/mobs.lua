@@ -4,13 +4,8 @@
 -- The Wisp is the `unique` case *and* the `damage_type` case — it deals magic,
 -- which is what makes the warded cloak's resist table worth carrying.
 
-local function lurker_bite(mob, target)
-if DAEMON and DAEMON.effect and math.random(100) <= 25 then
-    DAEMON.effect.apply(target, "marsh_poison", {
-        source = "mob:" .. tostring(mob.id),
-    })
-end
-end
+-- `lurker_bite` used to live here, and a near-identical copy of it lived in the
+-- mine. It is now `marsh.venomous`'s `on_combat`, in game/prototypes/beasts.lua.
 
 local function wisp_mark_target(mob, target)
 -- `survives_death`, so respawning does not clear it. A curse you
@@ -25,7 +20,10 @@ end
 return {
     {
         id          = "marsh_lurker",
-        name        = "lurker",
+        -- Biting you gives you what it has. The hook comes with the prototype:
+        -- "this creature's attacks poison" is the creature's business and
+        -- combat should not grow a special case per monster.
+        prototype   = "marsh.venomous",
         short       = "a marsh lurker",
         description = "Long, flat and the colour of the bottom, with a mouth "
                    .. "that opens further back than a mouth should. It is only "
@@ -34,28 +32,18 @@ return {
                         constitution = 11, level = 5 },
         damage      = { min = 4, max = 9 },
         xp_award    = 60,
-        -- The first template in the game where this does anything.
-        aggressive  = true,
-        faction     = "marsh",
         spawn_room  = "greywater_marsh.stilt_village",
         count       = 2,
         respawn_time = 240,
-        tags        = { "beast", "marsh" },
 
         loot_table = {
             { item_id = "dried_marshroot", chance = 0.4 },
         },
-
-        -- Biting you gives you what it has. Applied from the death-adjacent
-        -- hook rather than from combat, because "this creature's attacks
-        -- poison" is the creature's business and combat should not grow a
-        -- special case per monster.
-        on_combat = lurker_bite,
     },
 
     {
         id          = "reed_crawler",
-        name        = "crawler",
+        prototype   = "marsh.crawler",
         short       = "a reed crawler",
         description = "Waist high, many-legged, and it walks on the reeds "
                    .. "rather than through them. It has no eyes anyone has "
@@ -64,12 +52,9 @@ return {
                         constitution = 9, level = 3 },
         damage      = { min = 2, max = 6 },
         xp_award    = 30,
-        aggressive  = true,
-        faction     = "marsh",
         spawn_room  = "greywater_marsh.herb_beds",
         count       = 3,
         respawn_time = 180,
-        tags        = { "beast", "marsh" },
     },
 
     {

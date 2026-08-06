@@ -23,6 +23,7 @@
 local schema    = require('lib.schema')
 local movement  = require('lib.movement')
 local serialize = require('lib.serialize')
+local proto     = require('lib.prototype')
 
 local M = {}
 
@@ -59,7 +60,12 @@ local function check_ids(out, kind, list, file)
     return seen
 end
 
---- Schema validation, plus what a save would drop.
+--- Does it work? Asked of the **resolved** record.
+---
+--- "Does this area work" has one right answer and it is the effective one: a
+--- child that inherits its `short` from a prototype is not missing a `short`,
+--- and reporting it as missing would gate `olc save` on every prototyped record
+--- in the file — which would make the feature unusable on the day it shipped.
 local function check_schema(out, kind, list, file)
     for _, data in ipairs(list or {}) do
         if type(data) == "table" and data.id then
@@ -67,7 +73,20 @@ local function check_schema(out, kind, list, file)
             for _, e in ipairs(errors) do
                 out[#out + 1] = finding("error", file, data.id, e.path .. " " .. e.message)
             end
+        end
+    end
+end
 
+--- What can this **file** hold? Asked of the raw record, always.
+---
+--- The split matters and it is the daemon's own distinction one level deeper.
+--- `check_schema` asks "what will the next reload do"; this asks "what does this
+--- file hold". An inherited function reported as "belongs in custom.lua" is both
+--- wrong — it already lives in a hand-written file that nothing regenerates —
+--- and unactionable, since there is nothing in *this* file to move.
+local function check_writable(out, kind, list, file)
+    for _, data in ipairs(list or {}) do
+        if type(data) == "table" and data.id then
             local lossy = schema.lossy(kind, data)
             for _, l in ipairs(lossy) do
                 out[#out + 1] = finding("lossy", file, data.id,
@@ -90,6 +109,57 @@ local function check_schema(out, kind, list, file)
                     out[#out + 1] = finding("lossy", file, data.id,
                         "cannot be written: " .. tostring(why)
                         .. ". It belongs in custom.lua.")
+                end
+            end
+        end
+    end
+end
+
+--- Prototypes: does the chain resolve, and what did this record strike?
+---
+--- Asked of the **raw** record, because a resolved one no longer has a chain to
+--- be broken or a sentinel to report.
+local function check_prototypes(out, kind, list, file)
+    for _, data in ipairs(list or {}) do
+        if type(data) == "table" and data.id and data.prototype ~= nil then
+            local _, err = proto.chain(kind, data.prototype, data.id)
+            if err then
+                out[#out + 1] = finding("error", file, data.id, err)
+            else
+                -- A record whose overrides say nothing its prototype does not
+                -- already say is a template that is its prototype with a
+                -- different id. That is a real defect and it cannot false-
+                -- positive, which is why it is here and why there is no
+                -- per-field "this restates the prototype" note: that one would
+                -- fire forever on legitimate content, and a linter people learn
+                -- to skim catches nothing at all.
+                local restated = {}
+                for key in pairs(data) do
+                    if key ~= "id" and key ~= "prototype" then restated[#restated + 1] = key end
+                end
+                if #restated > 0 then
+                    local copy = {}
+                    for k, v in pairs(data) do copy[k] = v end
+                    if #proto.thin(kind, copy) == #restated then
+                        out[#out + 1] = finding("note", file, data.id,
+                            "adds nothing its prototype '" .. tostring(data.prototype)
+                            .. "' does not already say")
+                    end
+                end
+            end
+
+            for key, value in pairs(data) do
+                if value == proto.NONE then
+                    out[#out + 1] = finding("note", file, data.id,
+                        "'" .. tostring(key) .. "' is struck: removed here, not inherited")
+                elseif type(value) == "table" then
+                    for k, v in pairs(value) do
+                        if v == proto.NONE then
+                            out[#out + 1] = finding("note", file, data.id,
+                                "'" .. tostring(key) .. "." .. tostring(k)
+                                .. "' is struck: removed here, not inherited")
+                        end
+                    end
                 end
             end
         end
@@ -342,22 +412,42 @@ function M.area(area_name, override)
         out[#out + 1] = finding("error", e.file, area_name, e.message)
     end
 
+    -- Two views of the same area, and every check below takes the one that
+    -- answers its own question. Copies, so `area` itself is untouched and a
+    -- caller inspecting the report's inputs still sees the file.
+    local resolved = {}
+    for k, v in pairs(area) do resolved[k] = v end
+    resolved.rooms = proto.resolved_copy("room", area.rooms)
+    resolved.items = proto.resolved_copy("item", area.items)
+    resolved.mobs  = proto.resolved_copy("mob",  area.mobs)
+
+    -- RAW — properties of the file itself.
     local rooms = check_ids(out, "room", area.rooms, "rooms.lua")
     check_ids(out, "item", area.items, "items.lua")
     check_ids(out, "mob",  area.mobs,  "mobs.lua")
 
-    check_schema(out, "room", area.rooms, "rooms.lua")
-    check_schema(out, "item", area.items, "items.lua")
-    check_schema(out, "mob",  area.mobs,  "mobs.lua")
+    check_writable(out, "room", area.rooms, "rooms.lua")
+    check_writable(out, "item", area.items, "items.lua")
+    check_writable(out, "mob",  area.mobs,  "mobs.lua")
 
-    check_exits(out, area.rooms, rooms)
-    check_reachable(out, area_name, area.rooms, area.meta)
-    check_references(out, area)
-    check_traits(out, "mob", area.mobs, "mobs.lua")
-    check_traits(out, "item", area.items, "items.lua")
-    check_components(out, area.items)
+    check_prototypes(out, "room", area.rooms, "rooms.lua")
+    check_prototypes(out, "item", area.items, "items.lua")
+    check_prototypes(out, "mob",  area.mobs,  "mobs.lua")
+
     check_custom(out, area)
-    check_style(out, area_name, area)
+
+    -- RESOLVED — properties of the world the next reload builds.
+    check_schema(out, "room", resolved.rooms, "rooms.lua")
+    check_schema(out, "item", resolved.items, "items.lua")
+    check_schema(out, "mob",  resolved.mobs,  "mobs.lua")
+
+    check_exits(out, resolved.rooms, rooms)
+    check_reachable(out, area_name, resolved.rooms, area.meta)
+    check_references(out, resolved)
+    check_traits(out, "mob", resolved.mobs, "mobs.lua")
+    check_traits(out, "item", resolved.items, "items.lua")
+    check_components(out, resolved.items)
+    check_style(out, area_name, resolved)
 
     local counts = { error = 0, warn = 0, note = 0, lossy = 0 }
     for _, f in ipairs(out) do counts[f.level] = (counts[f.level] or 0) + 1 end
@@ -379,6 +469,91 @@ function M.area(area_name, override)
     }
 end
 
+--- Lint the prototype library itself.
+---
+--- Worth asking once rather than N times as "does not exist" against each child:
+--- a broken prototype breaks every area that names it, and the area reports tell
+--- you which children noticed rather than what is actually wrong.
+--- @return table  the same report shape as `M.area`
+function M.prototypes()
+    local out = {}
+
+    local ok, protos = pcall(require, 'prototypes')
+    if not ok or not protos then
+        return { area = "prototypes", findings = { finding("error", "prototypes", "?",
+            "the prototype index is unavailable") }, counts = { error = 1, warn = 0, note = 0, lossy = 0 },
+            rooms = 0, items = 0, mobs = 0 }
+    end
+
+    for _, p in ipairs(protos.problems()) do
+        out[#out + 1] = finding(p.level, "prototypes", p.id, p.message)
+    end
+
+    local total = 0
+    for _, kind in ipairs(schema.kinds()) do
+        for _, id in ipairs(protos.ids(kind)) do
+            total = total + 1
+            local data = protos.get(kind, id)
+            local where = "prototypes/" .. kind
+
+            local _, err = proto.chain(kind, id)
+            if err then
+                out[#out + 1] = finding("error", where, id, err)
+            end
+
+            -- Validated with `required` relaxed and `id` skipped: a prototype
+            -- legitimately has neither, and reporting every one of them as
+            -- "id is required" would bury the findings that mean something.
+            for _, f in ipairs(schema.fields_for(kind, data)) do
+                if f.name ~= "id" and data[f.name] ~= nil then
+                    local probe = { [f.name] = data[f.name] }
+                    local _, errors = schema.validate(kind, probe)
+                    for _, e in ipairs(errors) do
+                        if e.path == f.name then
+                            out[#out + 1] = finding("error", where, id, e.path .. " " .. e.message)
+                        end
+                    end
+                end
+            end
+
+            for _, path in ipairs(schema.unknown(kind, data)) do
+                out[#out + 1] = finding("note", where, id,
+                    "'" .. path .. "' is in no schema. It is kept and merged into every "
+                    .. "child, but nothing validates it.")
+            end
+
+            -- Same id as a registered template. Different namespaces, so not an
+            -- error — but it is exactly how somebody writes
+            -- `prototype = "mine_crawler"` meaning "like the crawler" and gets
+            -- told it does not exist.
+            local clash =
+                (kind == "mob"  and DAEMON.mobs  and DAEMON.mobs.get(id)) or
+                (kind == "item" and DAEMON.items and DAEMON.items.get(id)) or
+                (kind == "room" and DAEMON.world and DAEMON.world.get_room(id))
+            if clash then
+                out[#out + 1] = finding("note", where, id,
+                    "a registered " .. kind .. " template has this id too. They are "
+                    .. "separate namespaces, so nothing is broken, but `prototype = \""
+                    .. id .. "\"` will not mean the template.")
+            end
+        end
+    end
+
+    local counts = { error = 0, warn = 0, note = 0, lossy = 0 }
+    for _, f in ipairs(out) do counts[f.level] = (counts[f.level] or 0) + 1 end
+
+    table.sort(out, function(a, b)
+        if a.where ~= b.where then return a.where < b.where end
+        if a.what ~= b.what then return tostring(a.what) < tostring(b.what) end
+        return a.message < b.message
+    end)
+
+    return {
+        area = "prototypes", findings = out, counts = counts,
+        rooms = 0, items = 0, mobs = 0, total = total,
+    }
+end
+
 local HEADINGS = {
     error = "{red}ERRORS{/}",
     warn  = "{yellow}WARNINGS{/}",
@@ -390,13 +565,19 @@ local HEADINGS = {
 --- @param report table
 --- @return table  array of strings
 function M.render(report)
-    local lines = {
-        "{cyan}" .. report.area .. "{/} — " .. report.rooms .. " room"
+    local lines = {}
+    if report.total ~= nil then
+        -- The prototype library, which is counted in prototypes rather than in
+        -- rooms and creatures.
+        lines[1] = "{cyan}prototypes{/} — " .. report.total
+            .. (report.total == 1 and " prototype" or " prototypes")
+    else
+        lines[1] = "{cyan}" .. report.area .. "{/} — " .. report.rooms .. " room"
             .. (report.rooms == 1 and "" or "s") .. ", "
             .. report.items .. " item" .. (report.items == 1 and "" or "s") .. ", "
             .. report.mobs .. " creature" .. (report.mobs == 1 and "" or "s")
-            .. (report.has_custom and ", custom.lua" or ""),
-    }
+            .. (report.has_custom and ", custom.lua" or "")
+    end
 
     for _, level in ipairs(M.LEVELS) do
         local n = report.counts[level] or 0

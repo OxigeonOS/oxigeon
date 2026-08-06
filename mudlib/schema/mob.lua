@@ -13,6 +13,13 @@ M.fields = {
     { name = "id", type = "id", target = "mob", required = true, editable = false,
       help = "Template id. `spawn` and loot tables name this." },
 
+    -- Second, because `schema.orderer` emits in schema order and this belongs on
+    -- line two of every generated record: it is the first thing a reader of the
+    -- file needs, since the rest of the record is only what *differs* from it.
+    { name = "prototype", type = "id", target = "prototype", editable = true,
+      help = "A prototype this inherits from, resolved at area load. This record "
+          .. "holds only what differs from it. See docs/src/lua-api/prototypes.md." },
+
     { name = "name", type = "string", editable = true,
       help = "The noun combat and `talk` use: 'bone picker'." },
 

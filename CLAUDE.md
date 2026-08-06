@@ -213,6 +213,83 @@ OLC regenerates `rooms.lua`/`items.lua`/`mobs.lua` wholesale. That is only safe
 because `custom.lua` — hand-written, never read or written by OLC — holds
 everything that cannot be expressed as data. See `docs/src/lua-api/olc.md`.
 
+## Negotiated Client State Lives on the Session
+
+`TelnetConnection.capabilities` is what negotiation writes; `Session.capabilities`
+is what the mudlib reads through `get_session`. They are two structs on two
+objects, and `driver.rs::publish_capabilities` is the only thing joining them —
+call it after every negotiation and subnegotiation.
+
+Nothing did, for the life of the project. `Session.capabilities` sat at
+`Default::default()`, so `gmcp_supported` was false for every session ever, every
+`gmcp_d` sender returned at its first guard, and **no GMCP reached any client** —
+while `Core.Hello`, which the driver sends directly, made the link look healthy.
+`window_width` was nil at the same time, so output was wrapped to a default
+regardless of the terminal.
+
+The lesson generalises: **a capability discovered by the network layer is not
+state until something copies it to where the game looks.**
+
+## A Prototype Is Resolved Before Anything Sees It
+
+`schema defaults ← prototype chain ← the area's data file ← custom.lua`. Each
+layer is more specific and more hand-written than the last, and `areaload`
+flattens the first two into the third *before* `patch.apply` and before anything
+is registered. A registered template is therefore what it has always been, which
+is why `mob_d`, `item_d`, `combat_d` and every spawn path needed no changes.
+
+- **Prototype-resolve, then custom-patch.** The other order leaves a strike the
+  patch does not mention sitting in the datum as an uninterpreted `"@none"`, and
+  runs the patch merge before `components` is resolved — so a `map` field gets
+  replaced where it should have merged, silently.
+- **The draft OLC holds is the override set**, seeded from the file and never
+  from the live object. Seeded the other way the first `olc save` writes every
+  inherited value out and the record stops tracking its parent, with an enormous
+  diff nobody reads. `olc show` prints effective values; those are different
+  things on purpose.
+- **Never subtract, never infer intent from value equality.** A builder who sets
+  a field equal to the inherited one means "this is mine now". `olc thin` is the
+  only thing that removes it, and a human asks for it.
+- **`verify` asks two questions.** Duplicate ids, `lossy`, `unknown` and the
+  chain are properties of the *file*; validation, exits, references and traits
+  are properties of the *world the next reload builds*. A child missing a field
+  it inherits is not an error, and an inherited function does not belong in
+  `custom.lua` — it is already in a hand-written file.
+- Arrays replace rather than union, and `"@none"` is the one delete sentinel.
+  `custom.lua` still has none: there the generated file is the whole truth, so
+  "take it out in OLC" is always available, and here it is not.
+
+See `docs/src/lua-api/prototypes.md`.
+
+## An Ability Is Five Existing Systems Arranged
+
+`ability_d` owns no state machinery. Costs are gauges through `trait_d`; damage
+and healing go through `Mobile:take_damage`/`heal`, so armour and the effect
+pipeline meet an ability exactly as they meet a sword; gates are `cooldown_d`; a
+channel **is** an `effect_d` instance; a cast in flight is one `ticker_d` timer
+and one memory-tier cache key.
+
+- **Resolve the target before spending anything.** A mistyped name must not cost
+  mana. It is the first thing a growing flow loses.
+- **Cost at the start of a cast, the ability's own cooldown at completion, the
+  global cooldown at the start.** A cast you can begin and abort for free is a
+  free oracle; a cooldown rate-limits the outcome, not the attempt; the GCD is
+  the one gate that rate-limits inputs. Nothing is refunded on an interrupt —
+  that is policy, and `on_interrupt` is three lines away.
+- **A cost may only name a gauge**, refused at define time. The mirror of
+  `effect_d` refusing a modifier aimed at one.
+- **Definitions are code and may hold functions; grants and casts are data.**
+  Anything reaching `DAEMON.cache` is ids, numbers and timestamps — an entity in
+  an effect instance's `caster` fails `lua_to_json` and the apply is refused with
+  no reason, because the refusal comes from the cache write.
+- **No formula strings.** A number is a number, a `{min,max[,scale]}` table, or a
+  function. An expression parser is a second string-to-value converter, and
+  `load()` on author text is a sandbox hole.
+- Rank folds by `math.max` across the trait and every grant, so a sword that
+  grants an ability can raise a floor and never lowers a ceiling.
+
+See `docs/src/lua-api/abilities.md`.
+
 ## Lua Coding Conventions
 
 - Use `\r\n` for player-facing text sent via `send()`
@@ -239,7 +316,14 @@ everything that cannot be expressed as data. See `docs/src/lua-api/olc.md`.
 
 ## Testing
 
-Run `cargo test` before committing. All tests must pass. Current count: 1034, green on both the default `lua55` and `--no-default-features --features luajit` (650 of them independent of `game/`).
+Run `cargo test` before committing. All tests must pass. Current count: 1097 on the default `lua55` and 1094 on `--no-default-features --features luajit`, both green.
+
+Do not pin a number that is really a property of the daemon roster. A logpoint
+test asserted `#ids == 2` on `ticker_d.list()`, which meant adding a heartbeat to
+any daemon failed a test about whether the debugger could see a stack frame. Same
+for `tostring` of a float: 5.5 prints `1.0` and LuaJIT prints `1`, so a printed
+number in an assertion fails one of the two builds for no reason anyone will
+enjoy finding.
 
 `cargo test` does not build `oxigeon-compute` — it is a separate workspace member that links LuaJIT unconditionally, and cargo unifies features across one invocation. The harness builds it on demand into `target/compute-worker/`.
 

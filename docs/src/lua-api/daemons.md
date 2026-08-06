@@ -50,6 +50,7 @@ this table is the directory.
 | `trait_d` | `DAEMON.trait` | Attributes, derived values and regeneration. See [Traits](./traits.md). |
 | `effect_d` | `DAEMON.effect` | Buffs, debuffs and the event pipeline. See [Effects](./effects.md). |
 | `cooldown_d` | `DAEMON.cooldown` | "Not yet" gates, stored as expiry. See [State Cache](./state-cache.md). |
+| `ability_d` | `DAEMON.ability` | What a character can do, as data: cost, cooldown, target, outcomes, cast time. See [Abilities](./abilities.md). |
 | `combat_d` | `DAEMON.combat` | Engagement and rounds. See [Combat](./combat.md). |
 | `death_d` | `DAEMON.death` | Death handling, respawn and what death costs. Where the dead reappear comes from `game.respawn_room`, not from a constant in this layer. |
 

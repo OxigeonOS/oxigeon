@@ -72,6 +72,67 @@ so it is safe to call on an area reset without the world filling up with rats.
 > is the [durability rule](./state-cache.md) applied rather than an oversight,
 > and it is why nothing in `mob_d` touches the database.
 
+### When two creatures are the same creature
+
+The block above is twelve keys, and most of them are not about *this* rat. Four
+creatures across two areas once repeated that skeleton with only the numbers
+changed, so changing what a crawler is meant finding every crawler and getting
+all of them.
+
+A **prototype** is the skeleton, named once:
+
+```lua
+-- game/prototypes/beasts.lua
+return {
+    mobs = {
+        ["beast"]        = { race = "beast", aggressive = true, count = 1,
+                             damage_type = "physical" },
+        ["mine.beast"]   = { prototype = "beast", faction = "mine",
+                             tags = { "beast", "mine" } },
+        ["mine.crawler"] = { prototype = "mine.beast", name = "crawler" },
+    },
+}
+```
+
+```lua
+-- game/areas/collapsed_mine/mobs.lua — only what differs
+{
+    id           = "mine_crawler",
+    prototype    = "mine.crawler",
+    short        = "a pale mine crawler",
+    description  = "...",
+    stats        = { hp = 55, max_hp_flat = 55, strength = 14, dexterity = 12,
+                     constitution = 13, level = 7 },
+    damage       = { min = 5, max = 11 },
+    xp_award     = 90,
+    spawn_room   = "collapsed_mine.first_level",
+    count        = 2,
+    respawn_time = 300,
+    loot_table   = { { item_id = "iron_ore", chance = 0.3 } },
+},
+```
+
+`name`, `aggressive`, `faction` and `tags` are gone from the record, and every
+crawler and lurker in both areas now agrees about them by construction rather
+than by somebody having remembered. Its sibling `shale_lurker` drops `count` too
+and takes the root's `1` — the case where "inherited" and "absent" look the same
+in the file, which is what `olc show`'s origin marks are for.
+
+Resolved at area load, so `mob_d` receives exactly the flat template it always
+did and `spawn`, `populate` and the fight loop needed no changes.
+
+A stat block stays on the creature, because that is what a creature *is* — but
+`stats` is a `map`, so it merges key-by-key if you do want a shared floor for
+one: a prototype naming `strength` and a child naming `level` produces a creature
+with both.
+
+A prototype may also carry a **hook**. `marsh_lurker`'s poisonous bite was a
+local function in its area file with a near-identical copy in the mine; it is now
+`marsh.venomous`'s `on_combat`, written once. That is the half `custom.lua`
+cannot do: `custom.lua` gives one area's behaviour, a prototype gives everyone's.
+
+See [Prototypes](./prototypes.md).
+
 ### Authored health — `max_hp_flat`, not `max_hp`
 
 A creature's maximum health goes in **`max_hp_flat`**. Writing `max_hp` does
@@ -184,14 +245,23 @@ reason.
 | Command | |
 |---|---|
 | `attack <target>` (`kill`, `k`) | engage and swing |
+| `perform <ability> [at <target>]` (`ability`, `perf`) | use an ability — see [Abilities](./abilities.md) |
+| `abilities` (`abils`) | what you can do, with cost and readiness |
 | `flee` (`retreat`) | break off; both sides stop |
 | `score` (`sc`, `stats`) | every trait, base and effective |
 | `effects` (`buffs`, `affects`) | what is on you, and for how long |
-| `affect …` | admin: apply, damage, heal, xp, settle, traits, cache |
+| `affect …` | admin: apply, damage, heal, xp, settle, traits, cache, grant |
 
 `affect` is the diagnostic window onto all of this — and the injection point the
 real-mudlib tests use, since there is no other verb in the game that deals
 damage on demand.
+
+Anything an ability does to a creature arrives through `Mobile:take_damage` and
+`Mobile:heal`, exactly as a sword's blow does. That is deliberate: an ability
+that dealt damage some other way would be the one thing in the game that armour,
+resists and the effect pipeline could not be designed against. A creature can use
+abilities too — the call is the same one, and its cooldowns are memory-only
+because a mob instance id does not survive a restart.
 
 ## Configuration
 

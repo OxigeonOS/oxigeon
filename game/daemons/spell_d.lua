@@ -1,21 +1,17 @@
--- game/daemons/spell_d.lua — Casting.
+-- game/daemons/spell_d.lua — Casting, now a projection of `ability_d`.
 --
--- Game layer, because what magic *is* is content. The mudlib provides gauges,
--- effects, a damage pipeline, cooldowns and a trait graph; a spell is those
--- five things arranged, and arranging them differently is what makes one game's
--- magic different from another's.
+-- This used to be the arrangement itself: 177 lines wiring gauges, effects, the
+-- damage pipeline, cooldowns and the trait graph into "casting", with every
+-- spell inside it a hand-written function. All of that moved to
+-- `mudlib/daemons/ability_d.lua`, because arranging those five things is not
+-- what makes one game's magic different from another's — the *content* is, and
+-- content should not have to carry a scheduler.
 --
--- ─── What each spell exercises ───────────────────────────────────────────────
+-- What survives here is the vocabulary. A spell is an ability with
+-- `category = "spell"`, so `cast`, `spells` and this daemon keep meaning what
+-- they meant, and the four legacy spec fields keep working.
 --
---   emberlance   damage through the `damage_taken` pipeline, so armour and
---                resists apply to a spell exactly as they do to a sword
---   mend         a gauge `adjust`, which settles regeneration first — so the
---                heal lands on the value as it is *now*
---   wardskin     an effect with a `condition`, refused before it lands
---   farsight     a **memory-tier** cooldown, under the durable threshold, and
---                so correctly forgotten on restart
---
--- ─── The cost model ──────────────────────────────────────────────────────────
+-- ─── The cost model, which is why this file still has prose ──────────────────
 --
 -- Mana is a gauge, so it is spent with `adjust` and never with a modifier: a
 -- spell that "modified" your mana would be a buff you have to unapply, which is
@@ -25,13 +21,11 @@
 
 local M = {}
 
-M._spells = {}
-
-local function log_error(message)
-    log("error", message)
-    if DAEMON and DAEMON.journal then pcall(DAEMON.journal.error, message) end
-end
-
+--- Translate the four legacy fields, then hand it to the mudlib.
+---
+--- `cost` was a bare mana number, `level` a bare minimum, `cast` a function of
+--- `(player, target, power)`. All three are still accepted, because a game with
+--- its own spell list should not have to rewrite it to take this upgrade.
 --- @param spec table  { id, name, cost, cooldown, target, level, cast }
 --- @return boolean
 function M.register(spec)
@@ -39,24 +33,27 @@ function M.register(spec)
         log("warn", "SPELL_D.register: a spell needs a string id")
         return false
     end
-    if type(spec.cast) ~= "function" then
-        log("warn", "SPELL_D.register('" .. spec.id .. "'): a spell needs a `cast`")
+    if not (DAEMON and DAEMON.ability) then
+        log("error", "SPELL_D.register: ability_d is not loaded")
         return false
     end
 
-    M._spells[spec.id] = {
-        id       = spec.id,
-        name     = spec.name or spec.id,
-        summary  = spec.summary or "",
-        cost     = tonumber(spec.cost) or 0,
-        cooldown = tonumber(spec.cooldown) or 0,
-        -- "self" | "creature" | "none". Checked here so every spell refuses
-        -- the same way rather than each one inventing a message.
-        target   = spec.target or "none",
-        level    = tonumber(spec.level) or 1,
-        cast     = spec.cast,
-    }
-    return true
+    local translated = {}
+    for k, v in pairs(spec) do translated[k] = v end
+    translated.category = spec.category or "spell"
+    -- Every spell in this game is known to anyone who has the level for it.
+    -- That is a real classless design and it should be one word.
+    if translated.open == nil then translated.open = true end
+
+    if type(spec.cost) == "number" then translated.cost = { mp = spec.cost } end
+
+    if type(spec.cast) == "function" and translated.run == nil then
+        local fn = spec.cast
+        translated.cast = nil
+        translated.run = function(ctx) return fn(ctx.user, ctx.target, ctx.power) end
+    end
+
+    return DAEMON.ability.define(translated)
 end
 
 function M.register_all(list)
@@ -68,107 +65,77 @@ function M.register_all(list)
     return n
 end
 
-function M.get(id) return M._spells[id] end
+--- The legacy shape, projected back out of the ability spec.
+---
+--- A projection rather than a passthrough, and both directions matter: `cost` is
+--- a list of gauge costs on an ability and a bare mana number on a spell,
+--- `cooldown` is a table and a bare number. Everything that has ever read
+--- `spell.cost` — `cast`, and the tests that read what `cast` prints — keeps
+--- reading a number.
+local function project(spec)
+    if not spec then return nil end
+    local mana = 0
+    for _, c in ipairs(spec.cost or {}) do
+        if c.trait == "mp" and type(c.amount) == "number" then mana = c.amount end
+    end
+    return {
+        id       = spec.id,
+        name     = spec.name,
+        summary  = spec.summary,
+        cost     = mana,
+        cooldown = spec.cooldown and spec.cooldown.seconds or 0,
+        target   = spec.target,
+        level    = tonumber(spec.level) or 1,
+        category = spec.category,
+    }
+end
+
+function M.get(id)
+    local spec = DAEMON.ability and DAEMON.ability.get(id)
+    if spec and spec.category == "spell" then return project(spec) end
+    return nil
+end
 
 function M.all()
     local out = {}
-    for id in pairs(M._spells) do out[#out + 1] = id end
-    table.sort(out)
-    return out
-end
-
---- Which spells this character may cast, by level.
---- @return table  array of spells
-function M.known(player)
-    local out = {}
-    for _, id in ipairs(M.all()) do
-        local spell = M._spells[id]
-        if player:trait("level") >= spell.level then out[#out + 1] = spell end
+    for _, id in ipairs(DAEMON.ability and DAEMON.ability.all() or {}) do
+        if DAEMON.ability.get(id).category == "spell" then out[#out + 1] = id end
     end
     return out
 end
 
---- What the spell is worth for this caster.
+--- Which spells this character may cast **now** — the level gate applied.
+---
+--- `ability_d.known` reports what you have *and* whether the gates pass, because
+--- a listing generally wants to say "you have this, but not yet". `cast` has
+--- always shown only what you can actually cast, and a spell appearing in the
+--- list the level before you can use it would read as a bug.
+--- @return table  array of legacy-shaped specs
+function M.known(player)
+    local out = {}
+    for _, entry in ipairs(DAEMON.ability and DAEMON.ability.known(player, "spell") or {}) do
+        if entry.usable then out[#out + 1] = project(entry.spec) end
+    end
+    return out
+end
+
+--- What a spell is worth for this caster.
 ---
 --- `spell_power` is derived from intelligence and willpower, and willpower is
---- itself derived — so this reaches through two levels of the trait graph and
---- a wisdom buff changes a fireball without anything here knowing.
+--- itself derived — so this reaches through two levels of the trait graph and a
+--- wisdom buff changes a fireball without anything here knowing.
 --- @return number
 function M.power(player)
     return 1 + player:trait("spell_power")
 end
 
-local function cooldown_key(id) return "spell." .. id end
-
---- Cast it.
---- @param player table
---- @param id string
---- @param target_name string|nil
+--- Cast it. Unchanged signature, unchanged return, unchanged refusals.
 --- @return boolean ok, string|nil why
 function M.cast(player, id, target_name)
-    local spell = M._spells[id]
-    if not spell then return false, "You do not know any such thing." end
-    if player:trait("level") < spell.level then
-        return false, "That is beyond you for now."
-    end
-
-    -- A **memory-tier** cooldown when it is short. `cooldown_d` chooses the
-    -- tier by duration, which is the same rule as everywhere else: a six-second
-    -- gate is not worth a database write and losing it on a restart is correct.
-    if spell.cooldown > 0 and DAEMON and DAEMON.cooldown then
-        if not DAEMON.cooldown.ready(player.char_id, cooldown_key(id)) then
-            local left = DAEMON.cooldown.remaining(player.char_id, cooldown_key(id))
-            return false, "Not yet. (" .. math.ceil(left) .. "s)"
-        end
-    end
-
-    -- Resolve the target before spending anything, so a mistyped name does not
-    -- cost mana.
-    local target = nil
-    if spell.target == "self" then
-        target = player
-    elseif spell.target == "creature" then
-        if not target_name or target_name == "" then
-            return false, "Cast it at what?"
-        end
-        local room_id = DAEMON.world and DAEMON.world.get_character_room(player.char_id)
-        local ok, found = pcall(DAEMON.mobs.find_in_room, room_id or "", target_name)
-        target = ok and found or nil
-        if not target then return false, "There is no " .. target_name .. " here." end
-        if target.is_alive and not target:is_alive() then
-            return false, "It is already dead."
-        end
-    end
-
-    -- Mana. A gauge, so it is *spent* rather than modified — `adjust` settles
-    -- regeneration first, so the cost comes off the value as it is now rather
-    -- than as it was when the bar was last read.
-    if spell.cost > 0 then
-        if player:trait("mp") < spell.cost then
-            return false, "You have not the mana for that."
-        end
-        DAEMON.trait.adjust(player, "mp", -spell.cost)
-    end
-
-    if spell.cooldown > 0 and DAEMON and DAEMON.cooldown then
-        DAEMON.cooldown.mark(player.char_id, cooldown_key(id), spell.cooldown)
-    end
-
-    local ok, err = pcall(spell.cast, player, target, M.power(player))
-    if not ok then
-        log_error("SPELL_D: casting '" .. id .. "' raised: " .. tostring(err))
-        -- The mana is gone. Refunding on an error would make a spell that
-        -- throws halfway through free, which is worse than one that costs.
-        return false, "The working comes apart in your hands."
-    end
-
-    if DAEMON and DAEMON.event then
-        pcall(DAEMON.event.emit, "spell.cast", {
-            char_id = player.char_id, spell = id,
-            target = target and target.id,
-        })
-    end
-    return true
+    if not (DAEMON and DAEMON.ability) then return false, "Nothing happens." end
+    local spec = M.get(id)
+    if not spec then return false, "You do not know any such thing." end
+    return DAEMON.ability.use(player, id, { target = target_name })
 end
 
 log("info", "spell_d loaded")

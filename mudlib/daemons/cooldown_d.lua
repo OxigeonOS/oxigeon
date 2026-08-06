@@ -24,21 +24,39 @@
 -- gets wrong — a 10-second gate on a rare reward, a 5-minute one nobody minds
 -- losing.
 --
--- Exposes:
---   DAEMON.cooldown.mark(char_id, what, seconds, opts) -> expires_at | false
---   DAEMON.cooldown.remaining(char_id, what)           -> seconds (0 = ready)
---   DAEMON.cooldown.ready(char_id, what)               -> boolean
---   DAEMON.cooldown.expires_at(char_id, what)          -> unix seconds | nil
---   DAEMON.cooldown.clear(char_id, what)               -> boolean
---   DAEMON.cooldown.clear_all(char_id)                 -> count
---   DAEMON.cooldown.list(char_id)                      -> array
+-- ─── Who a gate belongs to ───────────────────────────────────────────────────
 --
--- See docs/src/lua-api/state-cache.md.
+-- `char_id` was a scope with one hardcoded shape, and then mobs wanted abilities
+-- too. Every function here now also takes an *entity* — a player, or a creature.
+-- A creature's gates go to a third namespace and are **memory-only by
+-- construction, not by threshold**:
+--
+--   a mob instance id is `mob:<seq>` from a sequence that restarts with the
+--   process, so a durable mob cooldown would come back after a reboot attached
+--   to a different creature.
+--
+-- Widened here rather than reimplemented in `ability_d`, because a private
+-- cooldown store would mean `cooldown list` shows a player's gates and silently
+-- omits a mob's, and the durable/fast rule would exist in two places and drift.
+--
+-- Exposes:
+--   DAEMON.cooldown.mark(who, what, seconds, opts) -> expires_at | false
+--   DAEMON.cooldown.remaining(who, what)           -> seconds (0 = ready)
+--   DAEMON.cooldown.ready(who, what)               -> boolean
+--   DAEMON.cooldown.expires_at(who, what)          -> unix seconds | nil
+--   DAEMON.cooldown.clear(who, what)               -> boolean
+--   DAEMON.cooldown.clear_all(who)                 -> count
+--   DAEMON.cooldown.list(who)                      -> array
+--   DAEMON.cooldown.scope(who)                     -> scope, is_object
+--
+-- `who` is a char_id (number or string), or an entity table. See
+-- docs/src/lua-api/state-cache.md.
 
 local M = {}
 
 local DURABLE = "cooldowns"
 local FAST    = "cooldowns_fast"
+local OBJECT  = "cooldowns_obj"
 
 local function log_warn(message)
     log("warn", message)
@@ -69,6 +87,16 @@ do
             owner        = "char",
             expiry_of    = expiry_of,
         })
+        -- `owner = "none"`, not `"char"`: `cache.evict_owner` runs on disconnect
+        -- and a creature never disconnects, so a mob scope in a char-owned
+        -- namespace is one nothing ever evicts. `mob_d.despawn` drops it
+        -- explicitly instead, beside the effect and trait detaches.
+        DAEMON.cache.define(OBJECT, {
+            tier         = "memory",
+            scope_prefix = "obj:",
+            owner        = "none",
+            expiry_of    = expiry_of,
+        })
     else
         log("error", "COOLDOWN_D: cache_d is not loaded — cooldowns will not work")
     end
@@ -80,9 +108,30 @@ local function threshold()
     return 60
 end
 
-local function valid(char_id, what, who)
-    if type(char_id) ~= "number" and type(char_id) ~= "string" then
-        log_warn("COOLDOWN_D." .. who .. ": char_id must be a number or string, got " .. type(char_id))
+--- Whose gates these are.
+---
+--- A character id, or an entity. A player carries `char_id`; a creature carries
+--- only `id`, and gets an object scope with its own memory-only namespace.
+--- @param who number|string|table
+--- @return string|number|nil scope, boolean is_object
+function M.scope(who)
+    if type(who) == "number" or type(who) == "string" then return who, false end
+    if type(who) ~= "table" then return nil, false end
+
+    if who.char_id ~= nil then return who.char_id, false end
+    if type(who.id) == "string" and #who.id > 0 then return who.id, true end
+    return nil, false
+end
+
+--- Which namespaces hold this scope's gates, most durable first.
+local function spaces(is_object)
+    if is_object then return { OBJECT } end
+    return { DURABLE, FAST }
+end
+
+local function valid(scope, what, who)
+    if type(scope) ~= "number" and type(scope) ~= "string" then
+        log_warn("COOLDOWN_D." .. who .. ": expected a char_id or an entity, got " .. type(scope))
         return false
     end
     if type(what) ~= "string" or #what == 0 then
@@ -95,22 +144,23 @@ end
 --- Which tier is this gate in? Answered by looking, not by recomputing the
 --- threshold — so changing the config, or an explicit `durable` override, can
 --- never strand a gate in a namespace nobody reads any more.
-local function read_both(char_id, what)
+local function read_both(scope, what, is_object)
     if not (DAEMON and DAEMON.cache) then return nil end
-    local durable = DAEMON.cache.get(DURABLE, char_id, what)
-    local fast    = DAEMON.cache.get(FAST, char_id, what)
-    if type(durable) ~= "number" then durable = nil end
-    if type(fast) ~= "number" then fast = nil end
-    if durable and fast then return math.max(durable, fast) end
-    return durable or fast
+    local best = nil
+    for _, ns in ipairs(spaces(is_object)) do
+        local v = DAEMON.cache.get(ns, scope, what)
+        if type(v) == "number" then best = best and math.max(best, v) or v end
+    end
+    return best
 end
 
 --- Start (or extend) a cooldown.
 --- @param seconds number  how long from now
 --- @param opts table|nil  { durable = true|false } to override the threshold
 --- @return number|false   the expiry timestamp
-function M.mark(char_id, what, seconds, opts)
-    if not valid(char_id, what, "mark") then return false end
+function M.mark(who, what, seconds, opts)
+    local scope, is_object = M.scope(who)
+    if not valid(scope, what, "mark") then return false end
     if type(seconds) ~= "number" or seconds <= 0 then
         log_warn("COOLDOWN_D.mark('" .. what .. "'): seconds must be a positive number, got "
             .. tostring(seconds))
@@ -118,82 +168,100 @@ function M.mark(char_id, what, seconds, opts)
     end
     if not (DAEMON and DAEMON.cache) then return false end
 
+    local expires = os_time() + seconds
+
+    -- A creature's gates are memory-only whatever the duration says, because a
+    -- durable one would outlive the creature and land on whichever mob got the
+    -- same sequence number after a restart.
+    if is_object then
+        if not DAEMON.cache.set(OBJECT, scope, what, expires, { expires_at = expires }) then
+            return false
+        end
+        return expires
+    end
+
     local durable = opts and opts.durable
     if durable == nil then durable = seconds >= threshold() end
 
-    local expires = os_time() + seconds
     local ns = durable and DURABLE or FAST
 
     -- Moving between tiers (an explicit override, or a duration that crossed
     -- the threshold) must not leave the old copy behind to be found by
     -- `remaining`.
     local other = durable and FAST or DURABLE
-    if DAEMON.cache.get(other, char_id, what) ~= nil then
-        DAEMON.cache.delete(other, char_id, what)
+    if DAEMON.cache.get(other, scope, what) ~= nil then
+        DAEMON.cache.delete(other, scope, what)
     end
 
-    if not DAEMON.cache.set(ns, char_id, what, expires, { expires_at = expires }) then
+    if not DAEMON.cache.set(ns, scope, what, expires, { expires_at = expires }) then
         return false
     end
     return expires
 end
 
 --- Seconds until this is available again. 0 means ready now.
-function M.remaining(char_id, what)
-    if not valid(char_id, what, "remaining") then return 0 end
-    local expires = read_both(char_id, what)
+function M.remaining(who, what)
+    local scope, is_object = M.scope(who)
+    if not valid(scope, what, "remaining") then return 0 end
+    local expires = read_both(scope, what, is_object)
     if not expires then return 0 end
     local left = expires - os_time()
     if left <= 0 then return 0 end
     return left
 end
 
-function M.ready(char_id, what)
-    return M.remaining(char_id, what) <= 0
+function M.ready(who, what)
+    return M.remaining(who, what) <= 0
 end
 
 --- The raw expiry timestamp, for a caller that wants to format a date rather
 --- than a countdown.
-function M.expires_at(char_id, what)
-    if not valid(char_id, what, "expires_at") then return nil end
-    return read_both(char_id, what)
+function M.expires_at(who, what)
+    local scope, is_object = M.scope(who)
+    if not valid(scope, what, "expires_at") then return nil end
+    return read_both(scope, what, is_object)
 end
 
-function M.clear(char_id, what)
-    if not valid(char_id, what, "clear") then return false end
+function M.clear(who, what)
+    local scope, is_object = M.scope(who)
+    if not valid(scope, what, "clear") then return false end
     if not (DAEMON and DAEMON.cache) then return false end
-    local a = DAEMON.cache.delete(DURABLE, char_id, what)
-    local b = DAEMON.cache.delete(FAST, char_id, what)
-    return a or b
+    local gone = false
+    for _, ns in ipairs(spaces(is_object)) do
+        if DAEMON.cache.delete(ns, scope, what) then gone = true end
+    end
+    return gone
 end
 
-function M.clear_all(char_id)
-    if not (DAEMON and DAEMON.cache) then return 0 end
+function M.clear_all(who)
+    local scope, is_object = M.scope(who)
+    if scope == nil or not (DAEMON and DAEMON.cache) then return 0 end
     local n = 0
-    for _, ns in ipairs({ DURABLE, FAST }) do
-        for _, key in ipairs(DAEMON.cache.keys(ns, char_id)) do
-            if DAEMON.cache.delete(ns, char_id, key) then n = n + 1 end
+    for _, ns in ipairs(spaces(is_object)) do
+        for _, key in ipairs(DAEMON.cache.keys(ns, scope)) do
+            if DAEMON.cache.delete(ns, scope, key) then n = n + 1 end
         end
     end
     return n
 end
 
---- Everything currently gating this character, ready ones already dropped.
+--- Everything currently gating this character or creature, ready ones dropped.
 --- @return table  array of { what, remaining, expires_at, durable }
-function M.list(char_id)
+function M.list(who)
     local out = {}
-    if not (DAEMON and DAEMON.cache) then return out end
+    local scope, is_object = M.scope(who)
+    if scope == nil or not (DAEMON and DAEMON.cache) then return out end
+
     local now = os_time()
-    for _, entry in ipairs({ { DURABLE, true }, { FAST, false } }) do
-        local ns, durable = entry[1], entry[2]
-        for _, key in ipairs(DAEMON.cache.keys(ns, char_id)) do
-            local expires = DAEMON.cache.get(ns, char_id, key)
+    for _, ns in ipairs(spaces(is_object)) do
+        for _, key in ipairs(DAEMON.cache.keys(ns, scope)) do
+            local expires = DAEMON.cache.get(ns, scope, key)
             if type(expires) == "number" and expires > now then
                 out[#out + 1] = {
                     what = key,
                     remaining = expires - now,
                     expires_at = expires,
-                    durable = durable,
+                    durable = ns == DURABLE,
                 }
             end
         end

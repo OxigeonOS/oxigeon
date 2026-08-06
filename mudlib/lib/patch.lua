@@ -48,26 +48,61 @@ end
 --- The schema decides, not a guess about shape. "Does it look like an array"
 --- gets it wrong the first time somebody patches an *empty* `exits`, and gets it
 --- wrong silently.
-local function map_fields(kind)
+---
+--- `seed` is the datum the question is asked *about*, and it has to be, because
+--- `fields_for` is data-dependent: an item's component fields appear only when
+--- the datum names the component. Asking with `{}` — which this did — means
+--- `armour.resist` and `armour.stat_bonus` are not in the list, so a patch of
+--- `resist = { fire = 2 }` **replaced** the whole resist table instead of merging
+--- one key into it. Silently, and only for component fields, which is why it
+--- survived: the room and mob cases it was written against have no components.
+local function map_fields(kind, seed)
     local out = {}
-    for _, f in ipairs(schema.fields_for(kind, {})) do
+    for _, f in ipairs(schema.fields_for(kind, seed or {})) do
         if f.type == "map" then out[f.name] = true end
     end
     return out
 end
 
 --- One patch over one datum. The patch side wins on every key it names.
+---
+--- Shared with `lib/prototype.lua`, which folds a chain of these. One merge
+--- algorithm rather than two that will disagree about `exits` in six months.
 --- @param kind string
 --- @param data table
 --- @param patch table
+--- @param opts table|nil  { seed = <datum for field lookup>, none = <sentinel> }
 --- @return table  the same `data`, mutated
-function M.merge_one(kind, data, patch)
+function M.merge_one(kind, data, patch, opts)
     if type(patch) ~= "table" then return data end
-    local maps = map_fields(kind)
+    opts = opts or {}
+    local maps = map_fields(kind, opts.seed or data)
+
+    -- The delete sentinel is **off unless a caller asks for it**. `custom.lua`
+    -- has no way to delete a generated key and deliberately keeps none: there
+    -- the generated file is the whole truth, so "take it out in OLC" is always
+    -- available, and a deletion visible only in the patch file would not be.
+    -- A prototyped record is incomplete by construction — the value to remove
+    -- lives in the parent's file — so that argument does not carry across, and
+    -- only the prototype resolver passes `none`.
+    local none = opts.none
 
     for key, value in pairs(patch) do
-        if maps[key] and type(value) == "table" and type(data[key]) == "table" then
-            for k, v in pairs(value) do data[key][k] = v end
+        if none ~= nil and value == none then
+            data[key] = nil
+        elseif maps[key] and type(value) == "table" then
+            -- A fresh table rather than mutating `data[key]` in place: the
+            -- patch side may be a prototype's own table, shared by every
+            -- template that inherits it, and one of them growing a stat would
+            -- give it to all of them.
+            local merged = {}
+            if type(data[key]) == "table" then
+                for k, v in pairs(data[key]) do merged[k] = v end
+            end
+            for k, v in pairs(value) do
+                if none ~= nil and v == none then merged[k] = nil else merged[k] = v end
+            end
+            data[key] = merged
         else
             data[key] = value
         end

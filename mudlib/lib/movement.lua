@@ -65,6 +65,13 @@ function M.move(session_id, direction)
     if not session or not session.character_id then return end
 
     local char_id = session.character_id
+
+    -- Walking out of a working ends it, and never refuses the move: a channel
+    -- that pinned you in place until it finished would be a trap, not a cost.
+    if DAEMON and DAEMON.ability then
+        pcall(DAEMON.ability.on_moved, char_id)
+    end
+
     local current_room_id = DAEMON.world.get_character_room(char_id)
     local current_room = DAEMON.world.get_room(current_room_id)
 

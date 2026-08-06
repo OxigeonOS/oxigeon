@@ -35,7 +35,58 @@ local function log_error(msg)
     end
 end
 
-function M.send_vitals(session_id)
+-- ─── Pushing ─────────────────────────────────────────────────────────────────
+
+--- The last payload sent per session and package, as a fingerprint.
+---
+--- What makes `refresh` affordable: it runs after every dispatch and sends only
+--- what changed, so a client gets its health bar updated the moment it moves and
+--- nothing at all on a command that changed nothing.
+M._last = {}
+
+--- A stable fingerprint of a payload. Sorted, so `pairs` order cannot make an
+--- unchanged value look changed and push a message every command.
+local function fingerprint(v)
+    local t = type(v)
+    if t ~= "table" then return tostring(v) end
+
+    local n = #v
+    local parts = {}
+    for i = 1, n do parts[#parts + 1] = fingerprint(v[i]) end
+
+    local keys = {}
+    for k in pairs(v) do
+        if not (type(k) == "number" and k >= 1 and k <= n) then keys[#keys + 1] = k end
+    end
+    table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+    for _, k in ipairs(keys) do
+        parts[#parts + 1] = tostring(k) .. "=" .. fingerprint(v[k])
+    end
+    return "{" .. table.concat(parts, ",") .. "}"
+end
+
+--- Send one package, unless it is identical to the last one sent.
+--- @param force boolean|nil  send even if unchanged, for a client that has just
+---   connected and has nothing to compare against
+--- @return boolean  whether anything was sent
+local function push(session_id, package, data, force)
+    local seen = M._last[session_id]
+    if not seen then seen = {} ; M._last[session_id] = seen end
+
+    local print_ = fingerprint(data)
+    if not force and seen[package] == print_ then return false end
+    seen[package] = print_
+
+    local ok, err = pcall(function() send_gmcp(session_id, package, data) end)
+    if not ok then
+        log_error("gmcp_d " .. package .. " error: " .. tostring(err))
+        seen[package] = nil
+        return false
+    end
+    return true
+end
+
+function M.send_vitals(session_id, force)
     local ok, sess = pcall(function() return get_session(session_id) end)
     if not ok or not sess or not sess.gmcp_supported then return false end
     -- A client that never asked for this module should not be sent it. Before
@@ -54,12 +105,10 @@ function M.send_vitals(session_id)
         maxmp = player:trait("max_mp")
     }
     
-    local send_ok, err = pcall(function() send_gmcp(session_id, "Char.Vitals", data) end)
-    if not send_ok then log_error("gmcp_d send_vitals error: " .. tostring(err)) end
-    return true
+    return push(session_id, "Char.Vitals", data, force)
 end
 
-function M.send_room(session_id)
+function M.send_room(session_id, force)
     local ok, sess = pcall(function() return get_session(session_id) end)
     if not ok or not sess or not sess.gmcp_supported then return false end
     -- A client that never asked for this module should not be sent it. Before
@@ -92,12 +141,10 @@ function M.send_room(session_id)
         exits = exits
     }
     
-    local send_ok, err2 = pcall(function() send_gmcp(session_id, "Room.Info", data) end)
-    if not send_ok then log_error("gmcp_d send_room error: " .. tostring(err2)) end
-    return true
+    return push(session_id, "Room.Info", data, force)
 end
 
-function M.send_status(session_id)
+function M.send_status(session_id, force)
     local ok, sess = pcall(function() return get_session(session_id) end)
     if not ok or not sess or not sess.gmcp_supported then return false end
     -- A client that never asked for this module should not be sent it. Before
@@ -115,14 +162,12 @@ function M.send_status(session_id)
         gold = player.gold or 0
     }
     
-    local send_ok, err = pcall(function() send_gmcp(session_id, "Char.Status", data) end)
-    if not send_ok then log_error("gmcp_d send_status error: " .. tostring(err)) end
-    return true
+    return push(session_id, "Char.Status", data, force)
 end
 
 --- Everything currently affecting the character, for a client that wants to
 --- draw buff icons.
-function M.send_effects(session_id)
+function M.send_effects(session_id, force)
     local ok, sess = pcall(function() return get_session(session_id) end)
     if not ok or not sess or not sess.gmcp_supported then return false end
     -- A client that never asked for this module should not be sent it. Before
@@ -146,16 +191,46 @@ function M.send_effects(session_id)
         }
     end
 
-    local send_ok, err = pcall(function() send_gmcp(session_id, "Char.Effects", list) end)
-    if not send_ok then log_error("gmcp_d send_effects error: " .. tostring(err)) end
-    return true
+    return push(session_id, "Char.Effects", list, force)
 end
 
+--- Push everything, whether or not it changed.
+---
+--- For the two moments a client has nothing to compare against: it has just
+--- announced what it supports, and it has just logged in.
 function M.send_all(session_id)
-    M.send_vitals(session_id)
-    M.send_status(session_id)
-    M.send_effects(session_id)
-    M.send_room(session_id)
+    M.send_vitals(session_id, true)
+    M.send_status(session_id, true)
+    M.send_effects(session_id, true)
+    M.send_room(session_id, true)
+end
+
+--- Push whatever has changed since the last time.
+---
+--- Called once per dispatch, from `prompt_d.render` — the one place in the game
+--- that already runs after every command and already settles regenerating
+--- gauges. That is not a coincidence: the prompt exists to show a player what
+--- changed, and this shows their client the same thing.
+---
+--- Diffed rather than emitted from each subsystem, and the reason is coverage
+--- rather than tidiness. An event per change would need one in `take_damage`,
+--- `heal`, `award_xp`, the effect apply and expire paths, the regeneration
+--- settle and the equipment aura — and would still miss whatever the next
+--- subsystem does. Comparing the payload catches all of it, including the two
+--- that have no event at all: regeneration between commands, and an effect that
+--- expired on a tick.
+---
+--- The cost is four small payloads built per command, on the same order as the
+--- prompt's own trait reads, and nothing on the wire unless something moved.
+--- @param session_id string
+--- @return number  how many packages were sent
+function M.refresh(session_id)
+    local sent = 0
+    if M.send_vitals(session_id)  then sent = sent + 1 end
+    if M.send_status(session_id)  then sent = sent + 1 end
+    if M.send_effects(session_id) then sent = sent + 1 end
+    if M.send_room(session_id)    then sent = sent + 1 end
+    return sent
 end
 
 -- ─── Inbound ─────────────────────────────────────────────────────────────────
@@ -226,6 +301,9 @@ end
 --- a table keyed on them grows forever.
 function M.forget(session_id)
     M._supports[session_id] = nil
+    -- The fingerprints too, or a reconnecting session inherits the last one's
+    -- and is told nothing until something happens to change.
+    M._last[session_id] = nil
 end
 
 -- ─── The standard packages ───────────────────────────────────────────────────
@@ -283,6 +361,35 @@ M.on("Core.Supports.Remove", function(session_id, data)
         end
     end
 end)
+
+-- ─── When it fires ───────────────────────────────────────────────────────────
+--
+-- `send_all` used to have exactly one caller: the `Core.Supports.Set` handler
+-- below. A client sends that during telnet negotiation, which is *before* login
+-- — so `get_player` returned nil, all four senders bailed, and nothing ever
+-- pushed again. Every GMCP pane in every client stayed empty for the whole
+-- session.
+
+if DAEMON and DAEMON.event then
+    -- The first moment there is a character to describe.
+    pcall(DAEMON.event.on, "player.login", "gmcp_d.opening_state", function(data)
+        if data and data.session_id then M.send_all(data.session_id) end
+    end)
+
+    -- Movement already calls `send_room` directly, but only from `movement.lua`
+    -- — so `goto`, `teleport` and a respawn all moved a player without telling
+    -- their client. This covers every way a room changes, because `world_d`
+    -- announces it however it happened.
+    pcall(DAEMON.event.on, "room.entered", "gmcp_d.room", function(data)
+        if not (data and data.char_id) then return end
+        local sid = data.session_id
+        if not sid and get_session_for_character then
+            local ok, s = pcall(get_session_for_character, data.char_id)
+            if ok then sid = s end
+        end
+        if sid then M.send_room(sid) end
+    end)
+end
 
 --- `Core.Hello` — the client naming itself. Worth keeping for the same reason
 --- `terminal_type` is: when somebody reports a rendering bug, the first

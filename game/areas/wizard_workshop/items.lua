@@ -40,20 +40,35 @@ drinkable.apply(purple_potion, {
 items[#items + 1] = purple_potion
 
 -- ─── Reagent potions (not drinkable — meant for mixing) ─────────────────────
-local reagent_colors = {
-    { color = "red",   desc = "A small vial of swirling red liquid. It gives off a faint warmth." },
-    { color = "blue",  desc = "A small vial of shimmering blue liquid. It's cold to the touch." },
-    { color = "green", desc = "A small vial of bubbling green liquid. Tiny sparks dance within." },
+--
+-- These were a `for` loop over a colour table, which is the right instinct for
+-- three things that differ by two strings and had one cost nobody had priced: a
+-- loop is not data. `olc list items` could not see them, `verify` could not
+-- check them and `olc set` could not reach them — they existed only when this
+-- file ran. Three declared records naming `reagent_vial` say the same thing and
+-- are visible to all four.
+--
+-- Flat data in an array of built `Item`s is fine: `item_d.build_all` tells them
+-- apart by whether they have a metatable, and the prototype resolver walks the
+-- array before it ever gets there.
+items[#items + 1] = {
+    id          = "potion_red",
+    prototype   = "reagent_vial",
+    short       = "a vial of red liquid",
+    description = "A small vial of swirling red liquid. It gives off a faint warmth.",
 }
-for _, r in ipairs(reagent_colors) do
-    items[#items + 1] = Item:new({
-        id          = "potion_" .. r.color,
-        short       = "a vial of " .. r.color .. " liquid",
-        description = r.desc,
-        weight      = 1,
-        tags        = {"reagent"},
-    })
-end
+items[#items + 1] = {
+    id          = "potion_blue",
+    prototype   = "reagent_vial",
+    short       = "a vial of blue liquid",
+    description = "A small vial of shimmering blue liquid. It's cold to the touch.",
+}
+items[#items + 1] = {
+    id          = "potion_green",
+    prototype   = "reagent_vial",
+    short       = "a vial of green liquid",
+    description = "A small vial of bubbling green liquid. Tiny sparks dance within.",
+}
 
 -- ─── Empty vial ──────────────────────────────────────────────────────────────
 items[#items + 1] = Item:new({

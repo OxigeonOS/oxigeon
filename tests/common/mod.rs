@@ -145,6 +145,12 @@ pub struct RealVm {
     /// Probe replies that arrived while an auth result was being waited for.
     pending_probe: std::collections::VecDeque<Probe>,
     pending_compute: std::collections::VecDeque<ComputeReply>,
+    /// GMCP pushed to this session, kept rather than discarded. See
+    /// `discard_pending`.
+    gmcp_seen: Vec<(String, serde_json::Value)>,
+    /// The same handler the engine holds, so a test can set a capability the
+    /// driver's telnet loop would have set.
+    session_handler: Arc<RwLock<SessionHandler>>,
     /// The same database the VM writes to, for a test that needs to ask what
     /// actually reached disk.
     pool: AnyPool,
@@ -214,8 +220,59 @@ DAEMON.trait.define_all({
     { id = "mp", label = "Mana", kind = "gauge", group = "vitals",
       max = "max_mp", min = 0, round = "floor",
       regen = { rate = 1, per = 5, target = "max", offline = false } },
+
+    -- In no seed set, so nobody has it until something teaches them. That is
+    -- what a skill is, and it is how an ability's `rank_trait` decides presence
+    -- by storage rather than by a declaration.
+    { id = "fixture_skill", label = "Fixture Skill", kind = "counter",
+      category = "skill", group = "skills", sets = false, min = 0 },
 })
 DAEMON.trait.seal()
+
+DAEMON.effect.define_all({
+    -- A flat reduction, so a test can assert that an ability's damage went
+    -- through the pipeline rather than around it.
+    { id = "fixture_ward", label = "Fixture Ward", duration = 600, persist = false,
+      hooks = { damage_taken = { phase = "reduce", fn = function(ev)
+          ev.amount = math.max(0, ev.amount - 3)
+      end } } },
+    { id = "fixture_mark", label = "Fixture Mark", duration = 600, persist = false },
+})
+
+DAEMON.ability.define_all({
+    -- Instant: cost, a short cooldown, declarative damage, one requirement.
+    { id = "fixture_strike", name = "Fixture Strike", category = "technique",
+      open = true, cost = { mp = 5 }, cooldown = 4, target = "creature",
+      requires = { { kind = "trait", id = "level", min = 1 } },
+      damage = { min = 7, max = 7, type = "physical" },
+      messages = { self = "You strike $target.", result = "It takes $dealt." } },
+
+    -- Over the durable threshold, to prove the tier is chosen by duration.
+    { id = "fixture_slow", name = "Fixture Slow", category = "technique",
+      open = true, cooldown = 90, target = "none",
+      messages = { self = "Slowly." } },
+
+    -- A cast you can be knocked out of, and then a channel that ticks.
+    { id = "fixture_chant", name = "Fixture Chant", category = "technique",
+      open = true, cost = { mp = 7 }, target = "none", cast_time = 3,
+      interrupt = { on_damage = true, on_move = true },
+      apply = { { effect = "fixture_mark", to = "self" } },
+      messages = { begin = "You begin to chant.", self = "The chant finishes." } },
+
+    { id = "fixture_channel", name = "Fixture Channel", category = "technique",
+      open = true, target = "none", channel = { duration = 6, tick = 3 },
+      heal = { min = 1, max = 1, to = "self" },
+      messages = { begin = "You start channelling." } },
+
+    -- Not `open`, and rank-backed: known only once something teaches it.
+    { id = "fixture_taught", name = "Fixture Taught", category = "technique",
+      rank_trait = "fixture_skill", min_rank = 2, target = "none",
+      messages = { self = "You remember how." } },
+
+    -- Grantable but tied to nothing, for the equipment/source path.
+    { id = "fixture_granted", name = "Fixture Granted", category = "technique",
+      target = "none", messages = { self = "Borrowed." } },
+})
 
 DAEMON.items.register_all({
     require('lib.item'):new{
@@ -509,6 +566,57 @@ impl RealVm {
     /// Unlike [`RealVm::eval`] this never waits on the Lua thread, so it can
     /// read what `on_shutdown` reported after the thread has stopped. Messages
     /// buffered before the sender dropped are still delivered.
+    /// Mark this session as having negotiated GMCP, as the driver does.
+    ///
+    /// Production sets this in `publish_capabilities`, from the telnet
+    /// negotiation loop — which the harness has no equivalent of, because it
+    /// speaks to the engine directly rather than over a socket. Without it every
+    /// `gmcp_d` sender returns at its first guard and a test asking what a client
+    /// received would answer "nothing" for the wrong reason.
+    pub fn negotiate_gmcp(&mut self) {
+        let sid: oxigeon::core::SessionId = self.session_id.parse().expect("a session id");
+        let mut handler = self.session_handler.write().unwrap();
+        if let Some(session) = handler.get_mut(&sid) {
+            session.capabilities.gmcp_supported = true;
+        }
+    }
+
+    /// Deliver an inbound GMCP package, as a client would.
+    ///
+    /// Goes through the engine's `on_gmcp` dispatch rather than calling
+    /// `DAEMON.gmcp.receive` directly, so the whole path a real client takes is
+    /// exercised — including whatever the mudlib does in response.
+    pub fn gmcp_in(&mut self, session_id: &str, package: &str, json: &str) {
+        // A client that is sending GMCP has necessarily negotiated it.
+        self.negotiate_gmcp();
+        let data: serde_json::Value = serde_json::from_str(json).expect("valid GMCP JSON");
+        self.engine().send(LuaCommand::OnGmcp {
+            session_id: session_id.to_string(),
+            package: package.to_string(),
+            data,
+        });
+
+        // Wait for the reply itself rather than pumping an input line.
+        //
+        // Sending a probe line to make the Lua thread catch up is what this used
+        // to do, and it raced two ways: on a real-dispatcher VM the line is an
+        // unknown command, and the dispatch it triggers runs `prompt_d`, which
+        // pushes GMCP of its own. Which messages had arrived by the time the
+        // caller looked depended on scheduling, so the same test passed and
+        // failed on alternate runs.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let before = self.gmcp_seen.len();
+        while Instant::now() < deadline {
+            while let Ok(msg) = self.output.try_recv() {
+                self.keep_if_gmcp(msg);
+            }
+            if self.gmcp_seen.len() > before {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
     pub fn next_buffered_reply(&mut self) -> Option<Probe> {
         while let Ok(msg) = self.output.try_recv() {
             if let SessionOutput::Text(t) = msg {
@@ -796,7 +904,7 @@ impl RealVm {
 
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<LuaCommand>();
         opts.cmd_tx = Some(cmd_tx.clone());
-        let ctx = efun_context(session_handler, mudlib_path.clone(), pool.clone(), opts);
+        let ctx = efun_context(session_handler.clone(), mudlib_path.clone(), pool.clone(), opts);
         let engine = ScriptEngine::start(mudlib_path, ctx, cmd_tx, cmd_rx).unwrap();
 
         Self {
@@ -806,6 +914,8 @@ impl RealVm {
             pending_auth: Default::default(),
             pending_probe: Default::default(),
             pending_compute: Default::default(),
+            gmcp_seen: Vec::new(),
+            session_handler,
             pool,
             _mudlib: owned_mudlib,
             _game: None,
@@ -914,9 +1024,31 @@ impl RealVm {
         self.collect_to_prompt(Duration::from_secs(10), line)
     }
 
-    /// Throw away anything already in the channel.
+    /// Throw away anything already in the channel — except GMCP, which is kept.
+    ///
+    /// GMCP used to be discarded here and at `Ok(_) => continue` below, which is
+    /// why no test ever noticed that a playing session is never sent
+    /// `Char.Vitals`, `Char.Status` or `Char.Effects`: the harness threw away
+    /// the only evidence. `tests/gmcp_outbound.rs` asks what a client receives,
+    /// and it can only ask if the answer is kept.
     fn discard_pending(&mut self) {
-        while self.output.try_recv().is_ok() {}
+        while let Ok(msg) = self.output.try_recv() {
+            self.keep_if_gmcp(msg);
+        }
+    }
+
+    fn keep_if_gmcp(&mut self, msg: SessionOutput) {
+        if let SessionOutput::Gmcp { package, data } = msg {
+            self.gmcp_seen.push((package, data));
+        }
+    }
+
+    /// Every GMCP package this session has been sent, oldest first, and clear.
+    pub fn take_gmcp(&mut self) -> Vec<(String, serde_json::Value)> {
+        while let Ok(msg) = self.output.try_recv() {
+            self.keep_if_gmcp(msg);
+        }
+        std::mem::take(&mut self.gmcp_seen)
     }
 
     /// Read output until a prompt arrives or the deadline passes.
@@ -929,7 +1061,10 @@ impl RealVm {
                 Ok(SessionOutput::Text(t)) => text.push_str(&t),
                 // The prompt. End of dispatch.
                 Ok(SessionOutput::Raw(_)) => return text,
-                Ok(_) => continue,
+                Ok(other) => {
+                    self.keep_if_gmcp(other);
+                    continue;
+                }
                 Err(mpsc::error::TryRecvError::Empty) => {
                     if Instant::now() >= deadline {
                         panic!("no prompt within {timeout:?} after {what:?}; got: {text:?}");

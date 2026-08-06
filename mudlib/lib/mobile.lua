@@ -180,6 +180,14 @@ function Mobile:take_damage(amount, opts)
         self._last_attacker = { char_id = a.char_id, id = a.id }
     end
 
+    -- A working in flight is broken by being hit. A direct call rather than an
+    -- event: `event.emit` on every hit of every fight is a table and a dispatch
+    -- on the hottest loop in the game, and this is one cache read that returns
+    -- immediately for the overwhelmingly common case of nobody casting.
+    if dealt > 0 and DAEMON and DAEMON.ability then
+        pcall(DAEMON.ability.on_damaged, self, dealt, opts)
+    end
+
     -- Fire death hook when transitioning from alive to dead
     if was_alive and self:trait("hp") <= 0 then
         self._killed_by = self._last_attacker

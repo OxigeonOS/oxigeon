@@ -70,7 +70,7 @@ end
 return {
     {
         id          = "mine_crawler",
-        name        = "crawler",
+        prototype   = "mine.crawler",
         short       = "a pale mine crawler",
         description = "The same shape as the reed crawlers in the marsh and half "
                    .. "again the size, and this one has no colour at all.",
@@ -78,12 +78,9 @@ return {
                         constitution = 13, level = 7 },
         damage      = { min = 5, max = 11 },
         xp_award    = 90,
-        aggressive  = true,
-        faction     = "mine",
         spawn_room  = "collapsed_mine.first_level",
         count       = 2,
         respawn_time = 300,
-        tags        = { "beast", "mine" },
 
         loot_table = {
             { item_id = "iron_ore", chance = 0.3 },
@@ -92,7 +89,7 @@ return {
 
     {
         id          = "shale_lurker",
-        name        = "lurker",
+        prototype   = "mine.lurker",
         short       = "something under the shale",
         description = "You can see where it is by where the floor is not level. "
                    .. "That is all you can see of it.",
@@ -100,15 +97,14 @@ return {
                         constitution = 14, level = 9 },
         damage      = { min = 7, max = 13 },
         xp_award    = 130,
-        aggressive  = true,
-        faction     = "mine",
         spawn_room  = "collapsed_mine.deep_workings",
-        count       = 1,
         respawn_time = 420,
-        tags        = { "beast", "mine" },
     },
 
     {
+        -- The boss keeps its own everything. It is one creature, it is not like
+        -- any other, and a prototype with one user is a level of indirection
+        -- that pays for nothing.
         id          = "the_delver",
         name        = "delver",
         short       = "the Delver",

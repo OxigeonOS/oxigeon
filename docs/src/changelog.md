@@ -15,6 +15,40 @@
   step has a `Ctrl`+arrow alias because `F11` is full-screen in most terminals
   and never reaches the application.
 
+### GMCP was never sent to anybody
+
+- **The negotiated capabilities never reached the Session.** Telnet negotiation
+  wrote `TelnetConnection.capabilities`; the mudlib reads
+  `Session.capabilities`, through `get_session`. Two structs on two objects, and
+  nothing joined them — so `Session.capabilities` sat at `Default::default()`
+  for the life of every session that has ever connected. Every one of `gmcp_d`'s
+  four senders guards on `sess.gmcp_supported`, so **no GMCP was ever pushed to
+  any client**: the TUI's Room.Info, Char.Vitals and Effects panes could not
+  populate. The `Core.Hello` a client does receive comes straight from the
+  driver and never touches Lua, which is what made the link look healthy. The
+  same gap left `window_width` nil, so output was wrapped to a default
+  regardless of the terminal's real size, and `terminal_type` was never known.
+- **Nothing pushed after login either.** `send_vitals`, `send_status` and
+  `send_effects` had no callers at all; `send_room` had one, in `movement.lua`,
+  so `goto`, `teleport` and a respawn all moved a player without telling their
+  client. The only `send_all` ran from the `Core.Supports.Set` handler — which a
+  client sends during telnet negotiation, *before* login, when there is no
+  character to describe. `gmcp_d`'s own header claimed all four were "pushed on
+  the events that change them".
+- **`gmcp_d.refresh` pushes what changed**, once per dispatch, from
+  `prompt_d.render` — the one place that already runs after every command and has
+  already settled the regenerating gauges. Diffed against the last payload, so a
+  command that changed nothing sends nothing. Diffing rather than emitting from
+  each subsystem is a coverage decision: an event per change would need one in
+  `take_damage`, `heal`, `award_xp`, the effect apply and expire paths and the
+  regeneration settle, and would still miss regeneration between commands and an
+  effect that expired on a tick.
+- Plus `player.login` for the opening state and `room.entered` for every way a
+  room can change.
+- **The test harness discarded outbound GMCP** — `Ok(_) => continue` — which is
+  why nothing ever caught this. It keeps it now (`RealVm::take_gmcp`), and
+  `tests/gmcp_outbound.rs` asks what a client actually receives.
+
 ### OLC builds things now
 
 - **A declarative schema is the single source of truth.** `mudlib/schema/{room,

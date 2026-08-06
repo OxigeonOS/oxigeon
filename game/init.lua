@@ -76,10 +76,21 @@ if not ok then log("error", "Failed to load quest_d: " .. tostring(err)) end
 ok, err = pcall(function() DAEMON.reach = require('daemons.reach_d') end)
 if not ok then log("error", "Failed to load reach_d: " .. tostring(err)) end
 
+-- Abilities after traits and effects, because a spec names both: a `rank_trait`
+-- has to exist to be present on anybody, and an `apply` names a definition.
+-- Listed rather than discovered, matching `traits/` and `effects/` beside them —
+-- the discovery argument in this file is about OLC-created *areas* being
+-- invisible, and an ability file is code with functions in it, written by
+-- whoever is already editing this one.
 ok, err = pcall(function()
-    DAEMON.spell = require('daemons.spell_d')
-    DAEMON.spell.register_all(require('spells.core'))
+    DAEMON.ability.define_all(require('abilities.spells'))
+    DAEMON.ability.define_all(require('abilities.techniques'))
 end)
+if not ok then log("error", "Failed to load abilities: " .. tostring(err)) end
+
+-- After the abilities it projects. `spell_d` is now a vocabulary over
+-- `ability_d`; `DAEMON.spell.cast` still works and still refuses the same way.
+ok, err = pcall(function() DAEMON.spell = require('daemons.spell_d') end)
 if not ok then log("error", "Failed to load spell_d: " .. tostring(err)) end
 
 -- This game's own GMCP packages. **After `quest_d`**, which it reads, and after

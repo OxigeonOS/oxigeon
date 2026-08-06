@@ -207,6 +207,38 @@ A twenty-second haste is fully live in memory and never touches the database. An
 hour-long blessing is written on the next flush and survives a restart. Both
 fall out of the same rule.
 
+## A channel is an effect
+
+Worth knowing because it is not obvious from either side: when an ability
+declares `channel = { duration = 6, tick = 2 }`, `ability_d` generates one
+effect definition for it — `channel_<ability id>`, made lazily, `persist =
+false` — and applies it to the caster. There is no separate channel mechanism.
+
+Every single thing a channel needs, this daemon already had:
+
+| a channel needs | here |
+|---|---|
+| a timed thing attached to an entity | the instance model |
+| something every N seconds | `tick`, and the heartbeat's carry-the-remainder rule |
+| to end, and to know *why* | `on_expire(reason)` — `"timeout"` is completion, anything else is an interrupt, which is exactly the distinction |
+| to end for a player typing nothing | the sweep, which exists for precisely this |
+| to end on death and on logout | `death_d`'s `clear`, `character_d.unload`'s `detach` |
+| to be visible | the `effects` command, with no special case |
+| re-entrancy safety | the per-scope guard and the depth cap |
+
+So a channel shows up in `effects` like anything else, and the cost of the choice
+is one line of arithmetic: tick granularity is the shared
+`effect_heartbeat_seconds`, so `channel.tick` rounds up to a multiple of it.
+
+A **cast time** is not an effect. It is one deadline with no intermediate
+behaviour, and `ticker_d` does that in a line.
+
+This is the same trick `lib/equipment.lua` uses for `equip_trait_<id>`: an
+effect's hooks are fixed at define time, so one generated definition per subject
+is the established answer here.
+
+See [Abilities](./abilities.md).
+
 ## Worked example: the four requirements
 
 ```lua

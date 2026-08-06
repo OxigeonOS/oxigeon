@@ -46,6 +46,47 @@ enough. An item instance is `"item:" .. uuid()`, because a container in
 somebody's inventory **is** saved — and a counter restarting at zero on every
 boot would hand out an id that already means something else in a save file.
 
+## Prototype, template, instance — three things, three times
+
+Three overlays sound alike and are not, and conflating them is how a change lands
+in the wrong one:
+
+| | what it answers | when it is applied | shared by |
+|---|---|---|---|
+| **prototype** | "what is a reagent vial?" | area load, on the flat authoring data | every template that names it, in any area |
+| **template** | "what is a purple potion?" | registration | every instance of that item |
+| **instance** | "which purple potion, and where?" | runtime, by `item_d.resolve` | nothing — it *is* the difference |
+
+```lua
+-- game/prototypes/alchemy.lua
+return { items = { ["reagent_vial"] = { weight = 1, value = 12,
+                                        tags = { "reagent" } } } }
+```
+```lua
+-- game/areas/wizard_workshop/items.lua — only what differs
+{ id = "potion_red", prototype = "reagent_vial",
+  short = "a vial of red liquid",
+  description = "A small vial of swirling red liquid. It gives off a faint warmth." },
+```
+
+The prototype merge happens on the **flat authoring data, before
+`components.build`** — it has to, because `Item:new` plus `from_data` is one-way,
+so an inherited `damage` must reach `weapon.from_data` rather than a Weapon
+component already built without it. By the time `item_d` sees anything it is a
+fully flattened template and cannot tell how it got that way.
+
+> [!NOTE]
+> **A prototype is not a component, and they are not alternatives.** A component
+> says what an item *is* — a weapon, a container — and several apply at once. A
+> prototype says what a record *starts from*, and there is exactly one. A
+> prototype may name components, and then their fields are real on every child:
+> `olc set damage 4-9` works on a child whose parent declared `weapon`.
+>
+> `olc new item x from weapon` still means the component. `from proto:blade` is
+> the prototype, and `from comp:weapon` is the component said explicitly.
+
+See [Prototypes](./prototypes.md).
+
 ## The verbs
 
 All of them go through `lib/carry.lua`, which is the one place that knows how to

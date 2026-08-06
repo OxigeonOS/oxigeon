@@ -17,6 +17,13 @@ M.fields = {
     { name = "id", type = "id", target = "item", required = true, editable = false,
       help = "Template id. Loot tables, shops and inventories all name this." },
 
+    -- Second, because `schema.orderer` emits in schema order and this belongs on
+    -- line two of every generated record: it is the first thing a reader of the
+    -- file needs, since the rest of the record is only what *differs* from it.
+    { name = "prototype", type = "id", target = "prototype", editable = true,
+      help = "A prototype this inherits from, resolved at area load. This record "
+          .. "holds only what differs from it. See docs/src/lua-api/prototypes.md." },
+
     -- Resolved through `Object.resolve`, so a string or a function.
     { name = "short", type = "string", default = "Something", editable = true,
       lfun = true, help = "How it reads in a list: 'a corroded bone saw'." },
@@ -50,6 +57,12 @@ M.fields = {
 
     { name = "tags", type = "string_array", default = {}, editable = true,
       help = "weapon, tool, quest, reagent. Shops match on these." },
+
+    -- Reconciled from the slot rather than granted once: what is worn is saved,
+    -- and the grant is derived from it, so taking the thing off takes the
+    -- ability with it. See `lib/equipment.lua:refresh_slot`.
+    { name = "grants_abilities", type = "id_array", target = "ability", editable = true,
+      help = "Ability ids this grants while it is equipped." },
 
     -- Explicit, never inferred. `speed = 1.1` on a lantern must not silently
     -- make it a weapon, and clearing `damage` must not silently un-weapon a

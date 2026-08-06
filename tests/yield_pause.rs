@@ -668,8 +668,17 @@ fn a_logpoint_sees_the_locals_of_the_line_it_is_on() {
         joined.contains("type=\"table\""),
         "`ids` was not in scope for the logpoint: {joined}"
     );
+    // That `#ids` evaluated at all, not what it came to. The count is however
+    // many tickers the mudlib happens to register, so pinning it made this
+    // logpoint test fail whenever a daemon grew a heartbeat — which says
+    // nothing about whether the evaluator could see the frame.
+    let count = joined
+        .split("count=")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|n| n.parse::<usize>().ok());
     assert!(
-        joined.contains("count=2"),
+        count.is_some_and(|n| n >= 2),
         "the length of the local list should have been evaluated: {joined}"
     );
     assert!(

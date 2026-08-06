@@ -227,6 +227,53 @@ Discovery handles it: an `init.lua` in the area directory *is* the entry file, s
 a multi-file area needs no registration and no configuration. `thornhollow` is
 built this way.
 
+## Sharing a Skeleton Between Areas
+
+Splitting one area across files is the easy half. The harder one is two areas
+that keep saying the same thing — four creatures in two areas differing by four
+numbers and repeating the other twelve keys each, or three rooms with the same
+tags, light level and ambient sound.
+
+A **prototype** is that skeleton, named once, in `game/prototypes/*.lua`:
+
+```lua
+-- game/prototypes/caves.lua
+return {
+    rooms = {
+        ["cave"] = { light = 0, tags = { "indoor", "dark", "underground" },
+                     sound = "Water, somewhere behind the rock." },
+    },
+}
+```
+
+```lua
+-- game/areas/collapsed_mine/rooms.lua — only what differs
+{
+    id          = "collapsed_mine.first_level",
+    prototype   = "cave",
+    short       = "The First Level",
+    description = "Props every eight feet, and none of them straight.",
+    exits       = { up = "collapsed_mine.adit" },
+},
+```
+
+Resolved at area load, before `custom.lua` and before anything is registered — so
+a room built this way is a perfectly ordinary room and nothing downstream can
+tell. The layering, in full:
+
+```
+schema defaults  ←  prototype chain  ←  the area's data file  ←  custom.lua
+```
+
+They do not compete with `custom.lua`. `custom.lua` is *this area's* last word; a
+prototype is *everyone's* first word, and unlike `custom.lua` it can be
+inherited by an area that does not exist yet.
+
+`map` fields — `exits`, `items`, `stats` — merge key-by-key, so a room adds one
+exit without restating the rest. Everything else replaces.
+
+See [Prototypes](./prototypes.md).
+
 ## Virtual Rooms
 
 Virtual rooms are generated on-the-fly from a **virtual provider** — a function registered by prefix on `DAEMON.world`. When `get_room()` can't find a room in the static registry, it checks providers by matching the first segment of the room ID (everything before the first dot).

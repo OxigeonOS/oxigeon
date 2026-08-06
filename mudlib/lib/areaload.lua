@@ -32,6 +32,7 @@
 -- special case, and why `_drafts/` is skipped without a rule.
 
 local patch = require('lib.patch')
+local proto = require('lib.prototype')
 
 local M = {}
 
@@ -107,6 +108,20 @@ end
 
 -- ─── Loading ─────────────────────────────────────────────────────────────────
 
+--- Re-read the prototype library before every load.
+---
+--- This is what makes "editing a prototype takes effect on area reload" a
+--- property of the system rather than something each reload path has to
+--- remember — and it is why `world_d.reset_area`, which calls `M.load`, needed
+--- no change at all to pick prototype edits up.
+local function flush_prototypes()
+    local ok, protos = pcall(require, 'prototypes')
+    if ok and protos and protos.flush_cache then
+        local fok, err = pcall(protos.flush_cache)
+        if not fok then log_error("AREALOAD: prototype flush failed: " .. tostring(err)) end
+    end
+end
+
 local function fresh_require(module_path)
     package.loaded[module_path] = nil
     local ok, value = pcall(require, module_path)
@@ -139,8 +154,13 @@ local function load_items(area_name, spec, custom)
     if err then return log_error("AREALOAD: " .. area_name .. "/items.lua: " .. err) end
     if type(list) ~= "table" then return end
 
-    -- Patched before construction, so a patched `damage` reaches
-    -- `weapon.from_data` rather than an already-built component.
+    -- Prototype first, `custom.lua` second, both before construction. Before
+    -- construction so a patched `damage` reaches `weapon.from_data` rather than
+    -- an already-built component; prototype first because `components` has to be
+    -- resolved before the patch merge can know that `resist` is a map, and
+    -- because a strike the patch does not mention has to be *consumed* rather
+    -- than left sitting in the datum as an uninterpreted "@none".
+    proto.resolve_list("item", list)
     patch.apply("item", list, patch.for_kind(custom, "item"))
     DAEMON.items.register_all(list)
 end
@@ -153,6 +173,8 @@ local function load_rooms(area_name, spec, custom)
     if err then return log_error("AREALOAD: " .. area_name .. "/" .. spec.entry .. ".lua: " .. err) end
     if type(data) ~= "table" then return end
 
+    -- `_meta` is a string key, so `resolve_list`'s ipairs walk steps over it.
+    proto.resolve_list("room", data)
     patch.apply("room", data, patch.for_kind(custom, "room"))
 
     -- A generated `rooms.lua` never carries an inline `_meta`; a hand-authored
@@ -174,6 +196,7 @@ local function load_mobs(area_name, spec, custom)
     if err then return log_error("AREALOAD: " .. area_name .. "/mobs.lua: " .. err) end
     if type(list) ~= "table" then return end
 
+    proto.resolve_list("mob", list)
     patch.apply("mob", list, patch.for_kind(custom, "mob"))
     DAEMON.mobs.register_all(list)
 end
@@ -206,6 +229,8 @@ end
 --- @param area_name string
 --- @return boolean ok, string|nil err
 function M.load(area_name)
+    flush_prototypes()
+
     local spec = M.inspect(area_name)
     if not spec then return false, "no such area directory" end
     if not spec.entry then
@@ -249,6 +274,8 @@ end
 --- end, when every room in every area exists to stand in.
 --- @return number loaded, table failures  failures = { { area, err }, ... }
 function M.load_all()
+    flush_prototypes()
+
     local names = M.discover()
     local specs, customs, failures = {}, {}, {}
 

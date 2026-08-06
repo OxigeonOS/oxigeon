@@ -123,6 +123,13 @@ function M.render(session_id)
     -- a settle that earned nothing returns without writing anything.
     if DAEMON.trait then pcall(DAEMON.trait.touch, player) end
 
+    -- Tell the client the same thing the prompt is about to tell the player.
+    -- Diffed, so a command that changed nothing sends nothing; see
+    -- `gmcp_d.refresh`. Here because this is the one place that already runs
+    -- after every command and has already settled the regenerating gauges — a
+    -- push from anywhere else would report the value from before the settle.
+    if DAEMON.gmcp then pcall(DAEMON.gmcp.refresh, session_id) end
+
     local template = M.get_template(char_id)
 
     -- Resolve variables

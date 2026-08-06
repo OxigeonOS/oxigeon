@@ -28,6 +28,9 @@ local USAGE = {
     "  affect defs                 registered effect definitions",
     "  affect cache                state cache statistics",
     "  affect cooldown <what> <s>  set a cooldown on yourself",
+    "  affect grant <id> [rank]    grant yourself an ability",
+    "  affect ungrant <id>         take it back",
+    "  affect abilities            everything you can do, and why",
 }
 
 local function require_daemons(player)
@@ -222,6 +225,47 @@ function M.execute(session_id, args_str, args)
         if not what or not seconds then player:send("affect cooldown <what> <seconds>") return end
         DAEMON.cooldown.mark(player.char_id, what, seconds)
         player:send("Set " .. what .. " for " .. seconds .. "s.")
+        return
+    end
+
+    -- Granting is the one ability state a test cannot reach by playing: a
+    -- trait-backed ability is `affect learn`, and an `open` one needs nothing,
+    -- but a *granted* one has no in-game route that does not involve wearing
+    -- something specific. `affect` is documented as the injection point for
+    -- exactly this reason.
+    if verb == "grant" or verb == "ungrant" then
+        if not DAEMON.ability then player:send("{red}No ability daemon.{/}") return end
+        local id = args[2]
+        if not id then player:send("affect " .. verb .. " <ability> [rank]") return end
+
+        if verb == "ungrant" then
+            local n = DAEMON.ability.revoke(player, id)
+            player:send(n > 0 and ("Revoked " .. id .. ".") or ("You had no grant of " .. id .. "."))
+            return
+        end
+
+        local rank = tonumber(args[3]) or 1
+        if not DAEMON.ability.grant(player, id, { rank = rank, source = "affect" }) then
+            player:send("{red}Could not grant '" .. id .. "'.{/}")
+            return
+        end
+        player:send("Granted " .. id .. " at rank " .. rank .. ".")
+        return
+    end
+
+    if verb == "abilities" then
+        if not DAEMON.ability then player:send("{red}No ability daemon.{/}") return end
+        local known = DAEMON.ability.known(player)
+        if #known == 0 then player:send("You can do nothing.") return end
+
+        local lines = {}
+        for _, e in ipairs(known) do
+            lines[#lines + 1] = string.format("  %-16s %-10s rank %-3s %s %s",
+                e.id, e.spec.category, tostring(e.rank),
+                e.usable and "{green}ok{/}" or ("{red}" .. tostring(e.why) .. "{/}"),
+                "{dim}" .. table.concat(e.sources, ", ") .. "{/}")
+        end
+        player:send_lines(lines)
         return
     end
 

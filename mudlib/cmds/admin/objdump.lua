@@ -568,6 +568,14 @@ local function dump_template(kind, t)
     table.insert(lines, string.format("─── {cyan}%s template{/}: %s ─────────────",
         kind, tostring(t.id)))
     table.insert(lines, "  Short: " .. tostring(t.short or "(none)"))
+    -- Otherwise the obvious question is why a dump shows twelve fields the file
+    -- does not: resolution happens at area load, so a registered template is
+    -- always the flattened form.
+    if type(t.prototype) == "string" then
+        table.insert(lines, "  Prototype: " .. t.prototype
+            .. "  {dim}(already flattened into this template; the file holds only "
+            .. "what differs){/}")
+    end
     table.insert(lines, "  {yellow}Not spawned — this is the shared template, not an instance.{/}")
     dump_raw(lines, t, kind == "Item" and "item" or "mob")
     return lines

@@ -16,6 +16,13 @@ M.fields = {
     { name = "id", type = "id", target = "room", required = true, editable = false,
       help = "Dotted room id: <area>.<room>. Renaming one breaks every exit into it." },
 
+    -- Second, because `schema.orderer` emits in schema order and this belongs on
+    -- line two of every generated record: it is the first thing a reader of the
+    -- file needs, since the rest of the record is only what *differs* from it.
+    { name = "prototype", type = "id", target = "prototype", editable = true,
+      help = "A prototype this inherits from, resolved at area load. This record "
+          .. "holds only what differs from it. See docs/src/lua-api/prototypes.md." },
+
     -- `lfun = true` on the four the class resolves through `Object.resolve`:
     -- each is a string OR a function returning one, and both are ordinary
     -- content. OLC authors the string; a function is `lossy` and moves to

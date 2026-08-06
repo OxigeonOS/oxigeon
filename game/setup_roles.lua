@@ -56,6 +56,11 @@ M.ROLES = {
             -- and the builder role was a label rather than a boundary.
             "dir.write.game.areas",
 
+            -- Not `dir.write.game.prototypes`. A prototype holds functions and
+            -- one edit reaches every area that names it, so it is a code change
+            -- wearing content's clothes — deliberately outside what the builder
+            -- role carries, the same way `/game/lib` is.
+
             -- Calling the efun at all. Distinct from where it may write:
             -- `[directories]` answers that, and both have to pass.
             "efun.write_file",

@@ -56,6 +56,15 @@ effect_sweep_seconds = 5
 effect_heartbeat_seconds = 3
 # Seconds per combat round. Default: 3.
 combat_round_seconds = 3
+# The backstop that completes or cancels a cast whose timer never fired —
+# `ticker_d` holds its callbacks in memory, so one does not survive a hot reload
+# of ticker_d itself and a cast in flight across one would hang. Default: 2.
+ability_sweep_seconds = 2
+# A global cooldown between abilities, in seconds. 0 disables it, which is the
+# default: a GCD is a design decision about pacing, not a property of having
+# abilities at all. Unlike an ability's own cooldown this is marked when a cast
+# *begins*, because it exists to rate-limit inputs rather than outcomes.
+ability_gcd_seconds = 0
 
 [sessions]
 # How multiple client connections per account are handled:

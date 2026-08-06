@@ -81,9 +81,26 @@ local function component_blocks(kind, data)
     local mod = schemas.get(kind)
     if not mod or not mod.components then return {} end
 
+    -- Which components apply is a question about the *resolved* datum. A
+    -- prototype that names `weapon` makes `damage` a real field on every child,
+    -- and a child that cannot see its own fields cannot be set, linted, ordered
+    -- or serialized — four wrong answers from one place. `discovery_seed`
+    -- returns `data` unchanged when there is no prototype, which is every
+    -- existing record, so this costs a nil check in the common case.
+    --
+    -- Required inside the function: `lib.prototype` is reached from `schema.mob`
+    -- through this module, and a top-level require closes that loop.
+    local seed = data
+    if type(data) == "table" and data.prototype ~= nil then
+        local ok, proto = pcall(require, 'lib.prototype')
+        if ok and proto and proto.discovery_seed then
+            seed = proto.discovery_seed(kind, data)
+        end
+    end
+
     local defs = components.schemas()
     local out = {}
-    for _, c in ipairs(components.claimed(data or {})) do
+    for _, c in ipairs(components.claimed(seed or {})) do
         local def = defs[c.component]
         if def then
             out[#out + 1] = { component = c.component, fields = def.fields }
@@ -365,11 +382,23 @@ function M.valid_map_key(key)
     return true
 end
 
+--- The prototype delete sentinel, as a literal.
+---
+--- Spelled out rather than required, for the same cycle reason `component_blocks`
+--- requires lazily. `tests/schema.rs` asserts it still matches `proto.NONE`.
+local PROTOTYPE_NONE = "@none"
+
 local function validate_one(descriptor, value, data)
     if value == nil then
         if descriptor.required then return false, "is required" end
         return true
     end
+
+    -- A struck field: "this child has one field fewer than its prototype". It is
+    -- legal wherever a value is, and it is gone by the time anything is
+    -- registered — the resolver consumes it. Without this clause
+    -- `tags = "@none"` lints as "is not a list", which is true and useless.
+    if value == PROTOTYPE_NONE then return true end
 
     -- `lfun = true` is the property `Object.resolve` implements: this field is a
     -- string **or** a function returning one. It is a flag rather than a type

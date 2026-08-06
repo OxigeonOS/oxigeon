@@ -368,3 +368,38 @@ fn a_creatures_on_combat_hook_fires() {
         "on_combat was declared on Mobile and never called until now"
     );
 }
+
+/// The prototype rewrite changed nothing here either — including the *hook*.
+///
+/// `marsh_lurker`'s poisonous bite was a local function in the area file, and a
+/// near-identical copy of it lived in the mine. It is now the `on_combat` of the
+/// `marsh.venomous` prototype, so this asserts the thing that is easiest to lose
+/// silently: a function reaching a registered template through inheritance.
+#[test]
+fn the_marsh_creatures_resolve_to_what_they_used_to_be() {
+    let mut vm = RealVm::boot_real_mudlib_with_probe();
+
+    let lurker = vm.eval(
+        "local m = DAEMON.mobs.get('marsh_lurker') return table.concat({ m.name, \
+         tostring(m.faction), tostring(m.aggressive), tostring(m.race), \
+         tostring(m.xp_award), tostring(m.count), tostring(m.stats.dexterity), \
+         table.concat(m.tags, '+'), type(m.on_combat) }, '|')",
+    ).unwrap();
+    assert_eq!(
+        lurker,
+        "lurker|marsh|true|beast|60|2|14|beast+marsh|function",
+        "an inherited hook must reach the template, or the bite silently stops"
+    );
+
+    let crawler = vm.eval(
+        "local m = DAEMON.mobs.get('reed_crawler') return table.concat({ m.name, \
+         tostring(m.faction), tostring(m.aggressive), tostring(m.count), \
+         tostring(m.xp_award), table.concat(m.tags, '+'), \
+         tostring(m.on_combat) }, '|')",
+    ).unwrap();
+    assert_eq!(
+        crawler,
+        "crawler|marsh|true|3|30|beast+marsh|nil",
+        "and a sibling that does NOT inherit the venomous branch must not get the bite"
+    );
+}

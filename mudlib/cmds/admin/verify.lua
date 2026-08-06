@@ -19,6 +19,7 @@ M.usage      = {
     "verify area <name>     lint an area, read from disk",
     "verify                 lint the area you are building",
     "verify all             every discovered area",
+    "verify prototypes      lint the prototype library itself",
 }
 M.permission = "cmd.verify"
 
@@ -67,6 +68,17 @@ function M.execute(session_id, args_str, args)
     if head:lower() == "area" then
         if rest == "" then return player:send_lines(M.usage) end
         return lint(player, rest:match("^(%S+)"))
+    end
+
+    -- Worth its own form rather than folding into `all`: a broken prototype
+    -- breaks every area that names it, and the area reports would tell you which
+    -- children noticed rather than what is actually wrong.
+    if head:lower() == "prototypes" or head:lower() == "proto" then
+        if not DAEMON.verify then
+            return player:send("{red}The linter is unavailable (verify_d is not loaded).{/}")
+        end
+        local report = DAEMON.verify.prototypes()
+        return player:send_paged(table.concat(DAEMON.verify.render(report), "\r\n"))
     end
 
     if head:lower() == "all" then

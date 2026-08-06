@@ -349,3 +349,40 @@ fn the_delvers_regard_survives_death() {
         "a curse you can remove by dying is not a curse"
     );
 }
+
+/// The prototype rewrite changed nothing.
+///
+/// `mine_crawler` and `shale_lurker` stopped restating `race`, `aggressive`,
+/// `damage_type`, `count`, `faction`, `tags` and `name`, and now name
+/// `mine.crawler` / `mine.lurker` instead. If any of those came back wrong, the
+/// creature is subtly different in a way no test elsewhere would notice — a
+/// crawler that is no longer `aggressive` simply stops attacking, quietly.
+#[test]
+fn the_mine_creatures_resolve_to_what_they_used_to_be() {
+    let mut vm = RealVm::boot_real_mudlib_with_probe();
+
+    let crawler = vm.eval(
+        "local m = DAEMON.mobs.get('mine_crawler') return table.concat({ m.name, \
+         tostring(m.faction), tostring(m.aggressive), tostring(m.race), \
+         tostring(m.damage_type), tostring(m.xp_award), tostring(m.count), \
+         tostring(m.respawn_time), tostring(m.stats.dexterity), \
+         tostring(m.stats.constitution), tostring(m.stats.hp), \
+         tostring(m.damage.min) .. '-' .. tostring(m.damage.max), \
+         table.concat(m.tags, '+'), tostring(m.loot_table[1].item_id) }, '|')",
+    ).unwrap();
+    assert_eq!(
+        crawler,
+        "crawler|mine|true|beast|physical|90|2|300|12|13|55|5-11|beast+mine|iron_ore",
+        "the inherited half and the overridden half must both land"
+    );
+
+    // The lurker takes `count = 1` from the root rather than restating it, which
+    // is the one field where "inherited" and "absent" would look the same.
+    let lurker = vm.eval(
+        "local m = DAEMON.mobs.get('shale_lurker') return table.concat({ m.name, \
+         tostring(m.faction), tostring(m.count), tostring(m.aggressive), \
+         tostring(m.xp_award), tostring(m.stats.dexterity), \
+         table.concat(m.tags, '+') }, '|')",
+    ).unwrap();
+    assert_eq!(lurker, "lurker|mine|1|true|130|15|beast+mine");
+}

@@ -24,6 +24,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+mod abilities;
 mod authored_mob_health;
 mod authoring;
 mod board;

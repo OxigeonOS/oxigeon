@@ -200,6 +200,12 @@ function M.despawn(mob, opts)
     if DAEMON and DAEMON.effect then pcall(DAEMON.effect.detach, mob) end
     if DAEMON and DAEMON.trait then pcall(DAEMON.trait.detach, mob) end
     if DAEMON and DAEMON.combat then pcall(DAEMON.combat.disengage, mob) end
+    -- Instance ids are `mob:<seq>` and never reused, so a scope left behind is
+    -- retained for the life of the process. Nothing else evicts it: the
+    -- ability namespaces are `owner = "none"` precisely because a creature does
+    -- not disconnect.
+    if DAEMON and DAEMON.ability then pcall(DAEMON.ability.detach, mob) end
+    if DAEMON and DAEMON.cooldown then pcall(DAEMON.cooldown.clear_all, mob) end
 
     -- Object state is keyed by object id in a plain table in `_G`, and mob
     -- instance ids are `"mob:" .. seq` — monotonic and never reused. Everything

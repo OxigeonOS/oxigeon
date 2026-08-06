@@ -28,6 +28,9 @@ function M.execute(session_id, args_str, args)
             player:send("{yellow}You know nothing worth saying out loud.{/}")
             return
         end
+        -- Unchanged. `spell_d` projects the ability spec back to the shape this
+        -- has always read — `cost` a bare mana number, `cooldown` bare seconds —
+        -- so casting moved onto `ability_d` without this file learning anything.
         local lines = { "{cyan}You know:{/}", "" }
         for _, spell in ipairs(known) do
             local ready = ""

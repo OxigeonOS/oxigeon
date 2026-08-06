@@ -147,3 +147,27 @@ fn every_shipped_exit_leads_somewhere() {
 
     assert_eq!(dangling, "", "exits leading nowhere: {dangling}");
 }
+
+/// The three reagent vials survived becoming data.
+///
+/// They were a `for` loop over a colour table, so they existed only when the
+/// file ran: `olc list items` could not see them and `verify` could not check
+/// them. As declared records naming a prototype they are the same three items
+/// and are now visible to both.
+#[test]
+fn the_reagent_vials_are_data_now_and_are_unchanged() {
+    let mut vm = RealVm::boot_real_mudlib_with_probe();
+
+    for colour in ["red", "blue", "green"] {
+        let out = vm.eval(&format!(
+            "local i = DAEMON.items.get('potion_{colour}') \
+             return tostring(i.short) .. '|' .. tostring(i.weight) .. '|' \
+                 .. tostring(i.value) .. '|' .. table.concat(i.tags or {{}}, '+')"
+        )).unwrap();
+        assert_eq!(
+            out,
+            format!("a vial of {colour} liquid|1|12|reagent"),
+            "weight and tags are inherited, the description is the record's own"
+        );
+    }
+}

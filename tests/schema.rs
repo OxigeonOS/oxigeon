@@ -83,6 +83,52 @@ fn every_component_declares_its_fields_and_its_inverse() {
     assert_eq!(missing, "");
 }
 
+/// Every authorable kind declares `prototype`, second, with the same shape.
+///
+/// The anti-drift device, and it has to be a test rather than a shared constant:
+/// a `schema/mob.lua` that required `lib.prototype` for the descriptor would
+/// close a require loop through `lib.schema` back to itself, and
+/// `package.loaded["schema.mob"]` is not set when that cycle closes.
+///
+/// Second rather than anywhere, because `schema.orderer` emits in schema order
+/// and a prototyped record is *only what differs* — which is unreadable if you
+/// cannot see what it differs from on line two.
+#[test]
+fn every_kind_declares_a_prototype_field() {
+    let mut vm = Vm::new();
+
+    let bad = vm.run(
+        r#"
+        local bad = {}
+        for _, kind in ipairs(SC.kinds()) do
+            local fields = SC.of(kind).fields
+            local f = fields[2]
+            if not f or f.name ~= 'prototype' then
+                bad[#bad+1] = kind .. ' does not declare prototype second'
+            elseif f.type ~= 'id' or f.target ~= 'prototype' or f.editable ~= true then
+                bad[#bad+1] = kind .. ' declares prototype with the wrong shape'
+            end
+        end
+        table.sort(bad) return table.concat(bad, '; ')
+    "#,
+    );
+    assert_eq!(bad, "");
+
+    // The sentinel `lib/schema.lua` spells out by hand, because it cannot
+    // require the module that owns it. If one moves, this is what notices.
+    let matches = vm.run(
+        "local ok, P = pcall(require, 'lib.prototype') \
+         local d = { name = 'tags', type = 'string_array' } \
+         local valid = select(1, SC.validate('mob', { id = 'x', tags = P.NONE })) \
+         return tostring(ok and P.NONE == '@none') .. '|' .. tostring(valid)",
+    );
+    assert_eq!(
+        matches, "true|true",
+        "a struck field must not lint as 'is not a list' — it is gone before \
+         anything is registered"
+    );
+}
+
 /// Component fields flatten into the item schema, in component order.
 #[test]
 fn a_components_fields_join_the_item_schema() {
@@ -428,9 +474,12 @@ fn defaults_produce_a_usable_starting_point() {
         "2|A Room"
     );
 
+    // `speed` through `string.format`, not `tostring`: 5.5 renders a float `1.0`
+    // and LuaJIT renders `1`, so asserting the printed form made this fail on
+    // one of the two builds for a reason that is nothing to do with defaults.
     let out = vm.run(
         "local d = SC.defaults('item', 'weapon') \
-         return table.concat(d.components, ',') .. '|' .. tostring(d.speed) \
+         return table.concat(d.components, ',') .. '|' .. string.format('%.1f', d.speed) \
                 .. '|' .. tostring(d.damage_type)",
     );
     assert_eq!(out, "weapon|1.0|physical");

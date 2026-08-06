@@ -216,7 +216,19 @@ function M.refresh_slot(entity, slot, item)
         log_error("EQUIPMENT: clearing '" .. source .. "' failed: " .. tostring(err))
         return
     end
+
+    -- The same clear-then-set for abilities a wielded thing grants. Same source
+    -- key, so taking it off revokes them by the same reconciliation, and
+    -- `refresh_all` on login rebuilds them with no extra call anywhere.
+    if DAEMON.ability then
+        pcall(DAEMON.ability.set_source_abilities, entity, source, {})
+    end
+
     if not item then return end
+
+    if DAEMON.ability and type(item.grants_abilities) == "table" then
+        pcall(DAEMON.ability.set_source_abilities, entity, source, item.grants_abilities)
+    end
 
     local specs = specs_for(item)
     if #specs == 0 then return end

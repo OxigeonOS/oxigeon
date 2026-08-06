@@ -43,6 +43,13 @@ if not ok then log("warn", "Failed to load mob_d daemon: " .. tostring(err)) end
 ok, err = pcall(function() DAEMON.combat  = require("daemons.combat_d") end)
 if not ok then log("warn", "Failed to load combat_d daemon: " .. tostring(err)) end
 
+-- Last of the mechanics group, because it composes all of them: it spends
+-- gauges through trait_d, applies effects, gates on cooldown_d, holds a cast in
+-- ticker_d and cache_d, resolves a target through mob_d and world_d, and starts
+-- a fight through combat_d. Nothing reaches back the other way.
+ok, err = pcall(function() DAEMON.ability = require("daemons.ability_d") end)
+if not ok then log("warn", "Failed to load ability_d daemon: " .. tostring(err)) end
+
 ok, err = pcall(function() DAEMON.prompt  = require("daemons.prompt_d") end)
 if not ok then log("warn", "Failed to load prompt_d daemon: " .. tostring(err)) end
 
@@ -239,6 +246,17 @@ function on_disconnect(session_id)
             local ok, err = pcall(DAEMON.combat.disengage_all, char_id)
             if not ok then
                 log("error", "Failed to leave combat for "
+                    .. tostring(char_id) .. ": " .. tostring(err))
+            end
+        end
+
+        -- Drop anything they were in the middle of. Before `evict_owner`,
+        -- because cancelling a cast may adjust a gauge and that wants flushing
+        -- with the rest.
+        if DAEMON and DAEMON.ability then
+            local ok, err = pcall(DAEMON.ability.cleanup, char_id)
+            if not ok then
+                log("error", "Failed to clear abilities for "
                     .. tostring(char_id) .. ": " .. tostring(err))
             end
         end
@@ -511,6 +529,7 @@ function on_load(module_name)
         ["daemons.effect_d"]     = "effect",
         ["daemons.mob_d"]        = "mobs",
         ["daemons.combat_d"]     = "combat",
+        ["daemons.ability_d"]    = "ability",
     }
 
     -- Convert slash-separated path to dot-separated require path
@@ -549,5 +568,13 @@ function on_load(module_name)
     local schemas = package.loaded["schema"]
     if schemas and schemas.flush_cache then
         schemas.flush_cache()
+    end
+
+    -- And the prototype index. `areaload` flushes this too, so an `areas reset`
+    -- re-reads prototypes without help; this is for `reload` on the prototype
+    -- file itself, where nothing else would notice.
+    local prototypes = package.loaded["prototypes"]
+    if prototypes and prototypes.flush_cache then
+        prototypes.flush_cache()
     end
 end

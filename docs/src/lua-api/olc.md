@@ -322,6 +322,36 @@ anyone assuming one descriptor covers both will be wrong.
 
 ---
 
+## A record with a `prototype` holds only what differs
+
+```lua
+{
+    id         = "shale_lurker",
+    prototype  = "mine.lurker",       -- everything below is what differs from it
+    short      = "something under the shale",
+    xp_award   = 130,
+}
+```
+
+`olc save` **cannot flatten this**, and that is a property worth stating rather
+than assuming. The draft a session holds *is* the override set — seeded from the
+file rather than from the live object, because the live object is the resolved
+form and flattening cannot be run backwards. So `serialize`, `codegen` and
+`olc.merged` needed to learn nothing at all.
+
+What follows from that:
+
+- `olc show` prints **effective** values, each marked with where it came from.
+  The draft stores overrides; that distinction is the feature.
+- `olc unset` on an inherited field means "revert to inherited", not "clear".
+  `olc strike` is the one that removes it, and writes `"@none"`.
+- Nothing subtracts on your behalf. `olc thin` does it when you ask, and shows
+  you what went.
+
+See [Prototypes](./prototypes.md).
+
+---
+
 ## The file shell
 
 ```
