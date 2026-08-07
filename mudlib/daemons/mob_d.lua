@@ -139,6 +139,8 @@ function M.spawn(template_id, room_id)
     -- holding something.
     mob.damage_type = template.damage_type
     mob.xp_award    = template.xp_award
+    -- What it is made of, for hit locations. Nil is the ordinary case.
+    mob.body        = template.body
 
     -- The character set fills in whatever the template did not say, then the
     -- gauges are clamped. A mob carries the same stat block a player does.
@@ -205,6 +207,7 @@ function M.despawn(mob, opts)
     -- ability namespaces are `owner = "none"` precisely because a creature does
     -- not disconnect.
     if DAEMON and DAEMON.ability then pcall(DAEMON.ability.detach, mob) end
+    if DAEMON and DAEMON.queue then pcall(DAEMON.queue.detach, mob) end
     if DAEMON and DAEMON.cooldown then pcall(DAEMON.cooldown.clear_all, mob) end
 
     -- Object state is keyed by object id in a plain table in `_G`, and mob

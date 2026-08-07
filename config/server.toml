@@ -54,8 +54,64 @@ cooldown_durable_seconds = 60
 effect_sweep_seconds = 5
 # Drives effects that tick — regeneration, damage over time. Default: 3.
 effect_heartbeat_seconds = 3
-# Seconds per combat round. Default: 3.
+# The fallback length of one combat round, in seconds.
+#
+# It used to be the scheduler interval; it is now the *round length* a game
+# falls back to when it defines no `round_length` derived trait. Define one in
+# the game layer and agility, encumbrance and the wielded weapon all reach
+# roundtime through the trait graph. 0 still means combat is off. Default: 3.
 combat_round_seconds = 3
+
+# The hit contest: clamp(base + (accuracy - defence) * step, floor, ceiling).
+#
+# These four reproduce the one-line formula combat used before there was a
+# pipeline to configure, so a game that changes nothing gets what it had. The
+# prettier ratio form was rejected for exactly that reason — it would silently
+# rebalance a shipped game to buy what these give.
+combat_base_hit_chance = 60
+combat_hit_step = 3
+combat_hit_floor = 5
+combat_hit_ceiling = 95
+# The most one piece of armour may absorb proportionally, 0..1. Flat reduction
+# is uncapped; a fraction is not, or heavy enough plate becomes immunity.
+combat_absorb_cap = 0.75
+# How far past their own height somebody reaches before the weapon is counted,
+# as a multiple. Only consulted when both fighters have a `height` trait.
+combat_reach_ratio = 1.15
+# A body layout for anything that names none. Unset by default, and unset means
+# no hit locations at all — which is the backwards-compatible path.
+# combat_default_body = "humanoid"
+
+# How often the action queue is looked at, in seconds. 0 disables it.
+#
+# Separate from the round length because they answer different questions: the
+# round is how long an action costs you, this is how promptly the queue notices
+# you are free again. Default: 1.
+queue_tick_seconds = 1
+# How many actions one track will hold. When it is full the *newest* is refused
+# rather than the oldest dropped — silently discarding something already
+# committed to is the worse failure. Default: 3.
+queue_max = 3
+# Completed actions remembered per track, for a future combo system. Default: 5.
+queue_history = 5
+# An entry older than this is dropped rather than replayed, so a queue stuffed
+# during a lag spike does not act a minute later. Default: 30.
+queue_stale_seconds = 30
+
+# Which field names a creature in a *message*: "name" or "short".
+#
+# A creature carries both, and they answer different questions — the wisp is
+# `name = "wisp"` (what you type to attack it) and `short = "a pale wisp"` (what
+# it reads as in prose). Which one belongs in a sentence is a decision about
+# what kind of game this is, not about how messages work:
+#
+#   "short"  You hit a pale wisp for 9 damage.      roleplay
+#   "name"   You hit wisp for 9 damage.             hack-and-slash
+#
+# Neither is more correct. Defaults to "name", which is what combat did before
+# this key existed; a game that reads as prose wants "short".
+# Falls back to the other field when the preferred one is absent.
+display_name_prefers = "name"
 # The backstop that completes or cancels a cast whose timer never fired —
 # `ticker_d` holds its callbacks in memory, so one does not survive a hot reload
 # of ticker_d itself and a cast in flight across one would hang. Default: 2.

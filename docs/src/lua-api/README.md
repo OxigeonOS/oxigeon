@@ -21,6 +21,9 @@ Efuns are Rust functions exposed to Lua — they form the bridge between your mu
 - **[Traits](./traits.md)** — any numeric datum on any entity; presence decided by storage
 - **[Effects](./effects.md)** — buffs, debuffs, and the event pipeline
 - **[Abilities](./abilities.md)** — cost, cooldown, target, damage and effects as a data bag; a pared-down GAS for a MUD
+- **[Action Queues](./queues.md)** — tracks, roundtime and the `rounds` unit; roundtime never gates a command
+- **[Messages](./messages.md)** — one authored line, rendered per reader, with pronouns and verb agreement
+- **[Body Layouts](./bodies.md)** — hit locations, reach, and armour that protects the place it covers
 - **[Creatures & Combat](./combat.md)** — mobs, spawning, rounds
 - **[Debugging & Tracing](./debugging.md)** — the debug adapter and execution tracing
 - **[Interface](./interface.md)** — prompt templates, colour, the pager, channels, snooping, NAWS

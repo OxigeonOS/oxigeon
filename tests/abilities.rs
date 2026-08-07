@@ -196,6 +196,92 @@ fn a_cost_must_name_a_gauge() {
     assert_eq!(out, "false|nil");
 }
 
+/// A signed gauge delta, applied after the outcome.
+///
+/// Not a cost, and the difference is the sign. `cost` is what you must have to
+/// begin and can only subtract; `adjust` is what doing the thing did to you, and
+/// a footing resource needs it to go both ways — a heavy swing spends balance
+/// and a recovery step restores it.
+#[test]
+fn an_adjust_moves_a_gauge_in_either_direction() {
+    let mut vm = Vm::new();
+
+    // A footing pool rests at its neutral point rather than at zero.
+    let out = vm.run(
+        r#"DAEMON.trait.set_cur(_p, "balance", 10)
+           A.use(_p, "fixture_heavy")
+           return tostring(_p:trait("balance"))"#,
+    );
+    assert_eq!(out, "5", "a heavy action spends footing");
+
+    let out = vm.run(
+        r#"local mp = _p:trait("mp")
+           A.use(_p, "fixture_recover")
+           return tostring(_p:trait("balance")) .. "|" .. tostring(mp - _p:trait("mp"))"#,
+    );
+    assert_eq!(out, "8|1", "and a recovery restores it, while another gauge falls");
+}
+
+/// It clamps to the gauge's bounds rather than running past them.
+#[test]
+fn an_adjust_clamps_to_the_gauge() {
+    let mut vm = Vm::new();
+
+    let out = vm.run(
+        r#"DAEMON.trait.set_cur(_p, "balance", 2)
+           A.use(_p, "fixture_heavy")
+           return tostring(_p:trait("balance"))"#,
+    );
+    assert_eq!(out, "0", "spending more than you have floors at the minimum");
+
+    let out = vm.run(
+        r#"DAEMON.trait.set_cur(_p, "balance", 20)
+           A.use(_p, "fixture_recover")
+           return tostring(_p:trait("balance"))"#,
+    );
+    assert_eq!(out, "20", "and restoring past the ceiling stops there");
+}
+
+/// An adjust may only name a gauge — the mirror of the rule for `cost`.
+///
+/// `trait.adjust` moves a *current* value and only a gauge has one. Moving an
+/// attribute from here would be a permanent change wearing an action's clothes;
+/// that is what an effect is for.
+#[test]
+fn an_adjust_must_name_a_gauge() {
+    let mut vm = Vm::new();
+
+    let out = vm.run(
+        r#"local ok = A.define({ id = "probe_bad_adjust", target = "none",
+                                 adjust = { strength = 2 } })
+           return tostring(ok) .. "|" .. tostring(A.get("probe_bad_adjust"))"#,
+    );
+    assert_eq!(out, "false|nil");
+}
+
+/// It sits with the other declarative outcomes, so `run` sees the result of it.
+///
+/// The fixed order is roll → announce → remove → damage → heal → apply →
+/// **adjust** → result → run → engage. `run` is the escape hatch and it runs
+/// last on purpose: an ability that wants to react to what it just did should
+/// be looking at final state, not at a half-applied one.
+#[test]
+fn an_adjust_lands_with_the_outcomes_and_before_run() {
+    let mut vm = Vm::new();
+
+    let out = vm.run(
+        r#"
+        A.define({ id = "probe_order", category = "technique", open = true,
+                   target = "none", adjust = { balance = -4 },
+                   run = function(ctx) ctx.user._seen = ctx.user:trait("balance") end })
+        DAEMON.trait.set_cur(_p, "balance", 10)
+        A.use(_p, "probe_order")
+        return tostring(_p._seen) .. "|" .. tostring(_p:trait("balance"))
+        "#,
+    );
+    assert_eq!(out, "6|6", "`run` sees the adjust already applied");
+}
+
 // ─── Ownership ───────────────────────────────────────────────────────────────
 
 /// Grants reconcile by source, idempotently — `set_source_effects`' contract,
@@ -503,6 +589,44 @@ fn an_amount_resolves_in_every_shape_it_may_be_written() {
     );
 }
 
+/// **A bug we shipped.** `$target` printed a table address.
+///
+/// `ctx.target` is the target *entity*, and `target` was in a whitelist that ran
+/// `tostring` over whatever it found — so `game/abilities/spells.lua`'s
+/// `"You draw a line of fire at $target."` rendered `at table: 0x7f…` in a
+/// player's face. Nothing asserted a successful cast's message body, which is
+/// exactly how it survived being written, reviewed and tested.
+#[test]
+fn a_target_token_renders_a_name_and_never_an_address() {
+    let mut vm = Vm::new();
+
+    let out = vm.run(
+        r#"
+        local m = DAEMON.mobs.spawn("fixture_mouse", "fixture.hall")
+        return AB.render("You strike $target.", { target = m })
+        "#,
+    );
+    assert_eq!(out, "You strike mouse.");
+    assert!(!out.contains("table: 0x"), "an entity must never print as an address: {out}");
+
+    // The whole authored line from the shipped spell, end to end.
+    let out = vm.run(
+        r#"
+        local m = DAEMON.mobs.spawn("fixture_mouse", "fixture.store")
+        return AB.render("{red}You draw a line of fire at $target.{/}", { target = m })
+        "#,
+    );
+    assert_eq!(out, "{red}You draw a line of fire at mouse.{/}");
+
+    // And the general form: a table nothing can name survives as its token
+    // rather than leaking an address. `$ability` is an ordinary key in the ctx
+    // every outcome is rendered against.
+    let out = vm.run(
+        r#"return AB.render("$ability costs $dealt.", { ability = { cost = {} }, dealt = 3 })"#,
+    );
+    assert_eq!(out, "$ability costs 3.");
+}
+
 /// An unknown token in a message is left alone rather than erased.
 ///
 /// "You strike $victim" is a typo somebody can see and fix. "You strike " is a
@@ -545,4 +669,92 @@ fn a_shared_cooldown_is_just_a_shared_key() {
         "#,
     );
     assert_eq!(out, "false|Not yet", "using one gates the other");
+}
+
+// ─── Attacks ─────────────────────────────────────────────────────────────────
+
+/// `attack` routes through the resolution pipeline, so it can miss — and when it
+/// lands it meets armour exactly as a sword's blow does.
+#[test]
+fn an_attack_goes_through_the_resolution_pipeline() {
+    let mut vm = Vm::new();
+
+    // Pinned to always land.
+    let hit = vm.run(
+        r#"
+        DAEMON.combat._roll = function(n) return 1 end
+        local m = DAEMON.mobs.spawn("fixture_mouse", "fixture.hall")
+        local before = m:trait("hp")
+        A.use(_p, "fixture_lance", { target = m })
+        return tostring(before - m:trait("hp"))
+        "#,
+    );
+    assert_eq!(hit, "9");
+
+    // The ward's flat reduction applies, which is the proof it went *through*
+    // `take_damage` rather than around it.
+    let warded = vm.run(
+        r#"
+        local m = DAEMON.mobs.spawn("fixture_mouse", "fixture.cellar")
+        DAEMON.effect.apply(m, "fixture_ward", { source = "probe" })
+        local before = m:trait("hp")
+        A.use(_p, "fixture_lance", { target = m })
+        return tostring(before - m:trait("hp"))
+        "#,
+    );
+    assert_eq!(warded, "6", "the ward's three came off an ability's damage too");
+}
+
+/// An attack can miss, and says so in the ability's own words.
+#[test]
+fn an_attack_can_miss() {
+    let mut vm = Vm::new();
+
+    let out = vm.run(
+        r#"
+        DAEMON.combat._roll = function(n) return 100 end
+        local m = DAEMON.mobs.spawn("fixture_mouse", "fixture.hall")
+        local before = m:trait("hp")
+        _p._sent = {}
+        A.use(_p, "fixture_lance", { target = m })
+        local said = table.concat(_p._sent, " ")
+        return tostring(before == m:trait("hp")) .. "|" .. tostring(said:find("avoids", 1, true) ~= nil)
+        "#,
+    );
+    assert_eq!(out, "true|true", "no damage, and the authored miss line");
+}
+
+/// `attack` and `damage` together is refused at define time.
+///
+/// The mirror of the gauge rule for `cost`: an ability ambiguous about whether
+/// it can miss is worse discovered in a fight than at registration.
+#[test]
+fn an_ability_may_not_declare_both_attack_and_damage() {
+    let mut vm = Vm::new();
+
+    let out = vm.run(
+        r#"local ok = A.define({ id = "probe_both", category = "technique", open = true,
+                                 target = "creature",
+                                 damage = { min = 1, max = 1 },
+                                 attack = { damage = { min = 1, max = 1 } } })
+           return tostring(ok) .. "|" .. tostring(A.get("probe_both"))"#,
+    );
+    assert_eq!(out, "false|nil");
+}
+
+/// The plain `damage` path is untouched and still always lands.
+#[test]
+fn plain_damage_is_unchanged_and_never_misses() {
+    let mut vm = Vm::new();
+
+    let out = vm.run(
+        r#"
+        DAEMON.combat._roll = function(n) return 100 end
+        local m = DAEMON.mobs.spawn("fixture_mouse", "fixture.hall")
+        local before = m:trait("hp")
+        A.use(_p, "fixture_strike", { target = m })
+        return tostring(before - m:trait("hp"))
+        "#,
+    );
+    assert_eq!(out, "7", "a rolled 100 would miss an attack; plain damage does not roll");
 }

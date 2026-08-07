@@ -489,6 +489,15 @@ function M.prototypes()
         out[#out + 1] = finding(p.level, "prototypes", p.id, p.message)
     end
 
+    -- Body layouts ride along: they are library data with the same shape of
+    -- failure, and a builder running one lint should hear about both.
+    local bok, bodies = pcall(require, 'body')
+    if bok and bodies and bodies.problems then
+        for _, message in ipairs(bodies.problems()) do
+            out[#out + 1] = finding("error", "body", "?", message)
+        end
+    end
+
     local total = 0
     for _, kind in ipairs(schema.kinds()) do
         for _, id in ipairs(protos.ids(kind)) do

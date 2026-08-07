@@ -25,14 +25,43 @@
 -- See docs/src/lua-api/combat.md.
 
 local weaponlib = require('components.weapon')
+local Combat    = require('lib.combat')
+local persist   = require('lib.persist')
+local Body      = require('lib.body')
 
 local M = {}
 
 local NS = "combat"
 
+local function conf(key, default)
+    local ok, v = pcall(config, key)
+    if ok and type(v) == "number" then return v end
+    return default
+end
+
+--- The defence channels and degree bands a game has registered.
+---
+--- Held in `persist.root` so a game's registrations survive a hot reload of this
+--- file — the same reason `mob_d` keeps its templates there, and the same
+--- upvalue-caching idiom because `get_persistent` crosses into Rust.
+local CS = nil
+
+local function registry()
+    if CS then return CS end
+    CS = persist.root("combat_d", 1, function()
+        return { channels = {}, degrees = nil }
+    end)
+    return CS
+end
+
 local function log_error(message)
     log("error", message)
     if DAEMON and DAEMON.journal then pcall(DAEMON.journal.error, message) end
+end
+
+local function log_warn(message)
+    log("warn", message)
+    if DAEMON and DAEMON.journal then pcall(DAEMON.journal.warn, message) end
 end
 
 do
@@ -86,10 +115,94 @@ local function tell_room(entity, text, exclude)
     end
 end
 
+--- What something is called in a message.
+---
+--- Was a private copy of this rule; it is now `lib/render.lua`'s, so combat and
+--- every ability agree, and so `game.display_name_prefers` reaches combat too —
+--- a roleplay game reads "You hit a pale wisp", a hack-and-slash reads "You hit
+--- wisp", and neither has to patch this daemon.
 local function display_name(entity)
-    if entity.name then return entity.name end
-    local Object = require('lib.object')
-    return Object.resolve(entity.short, entity) or "something"
+    return require('lib.render').display_name(entity)
+end
+
+-- ─── Channels and degrees ────────────────────────────────────────────────────
+
+--- Register a way of not being hit.
+---
+--- A seeded registry the game extends, never a central list — the same
+--- construct as `Abilities.checks()`. What stops it rotting is that which
+--- channels an entity *has* is decided by which traits it stores, so there is no
+--- second list saying who can parry.
+--- @param spec table { trait, available = f(defender, attack), why }
+--- @return boolean
+function M.define_channel(id, spec)
+    local normalised, err = Combat.normalise_channel(id, spec)
+    if not normalised then
+        log_warn("COMBAT_D.define_channel: " .. tostring(err))
+        return false
+    end
+    registry().channels[id] = normalised
+    return true
+end
+
+function M.channels() return registry().channels end
+
+--- Register what a degree of success is worth.
+---
+--- The mudlib ships one band at power 1.0, so damage is unchanged until a game
+--- says otherwise. What a graze or a decisive blow *does* is content.
+--- @return boolean
+function M.define_degrees(list)
+    local normalised, err = Combat.normalise_degrees(list)
+    if not normalised then
+        log_warn("COMBAT_D.define_degrees: " .. tostring(err))
+        return false
+    end
+    registry().degrees = normalised
+    return true
+end
+
+function M.degrees() return registry().degrees or Combat.DEFAULT_DEGREES end
+
+do
+    -- Seeded, not listed anywhere else. A game adds `deflect` or `ward` with one
+    -- call and this file never learns about it.
+    M.define_channel("dodge", { trait = "defense_dodge", why = "you cannot move" })
+
+    M.define_channel("parry", {
+        trait = "defense_parry",
+        why   = "you have nothing to parry with",
+        available = function(defender)
+            local worn = type(defender) == "table" and defender.equipment
+            local entry = type(worn) == "table" and worn.weapon
+            if not entry then return false end
+            local item = entry
+            if DAEMON and DAEMON.items and DAEMON.items.resolve then
+                local ok, resolved = pcall(DAEMON.items.resolve, entry)
+                if ok and resolved then item = resolved end
+            end
+            -- A crossbow is not a parrying implement.
+            if weaponlib.is(item) and item.weapon.parry == false then return false end
+            return true
+        end,
+    })
+
+    M.define_channel("block", {
+        trait = "defense_block",
+        why   = "you have no shield",
+        available = function(defender)
+            local worn = type(defender) == "table" and defender.equipment
+            local entry = type(worn) == "table" and worn.offhand
+            if not entry then return false end
+            local item = entry
+            if DAEMON and DAEMON.items and DAEMON.items.resolve then
+                local ok, resolved = pcall(DAEMON.items.resolve, entry)
+                if ok and resolved then item = resolved end
+            end
+            return type(item) == "table" and item.armour ~= nil
+                and item.armour.shield == true
+        end,
+    })
 end
 
 -- ─── Engagement ──────────────────────────────────────────────────────────────
@@ -201,26 +314,100 @@ local function weapon_damage(attacker)
     return math.max(1, M._roll(math.max(1, math.floor(str / 2)))), nil
 end
 
+-- ─── Resolution ──────────────────────────────────────────────────────────────
+
+--- What a fighter brings to the contest.
+---
+--- Falls back to `dexterity` when a game has defined no combat traits, which is
+--- what makes the default configuration arithmetically the one-line formula this
+--- replaced. A bare table with no `trait` method — a synthetic killer in a test,
+--- a room hazard — reads 5, exactly as it did before.
+local function rating(entity, trait_id)
+    if type(entity) ~= "table" or type(entity.trait) ~= "function" then return 5 end
+    if DAEMON and DAEMON.trait and DAEMON.trait.has and DAEMON.trait.has(entity, trait_id) then
+        local v = entity:trait(trait_id)
+        if type(v) == "number" then return v end
+    end
+    local dex = entity:trait("dexterity")
+    return type(dex) == "number" and dex or 5
+end
+
+--- Which defence channels this defender can actually use, and how they divide.
+---
+--- **Presence is decided by storage**: an entity holds a channel iff it holds
+--- that channel's trait. If it holds none, there is one implicit dodge worth the
+--- whole pool — which is the no-configuration path, and it is what makes the
+--- contest reduce to `60 + (a_dex - d_dex) * 3`.
+local function defences(defender, attack)
+    local registered = M.channels()
+    local alloc, available = {}, {}
+    local held = false
+
+    for id, spec in pairs(registered) do
+        if DAEMON and DAEMON.trait and DAEMON.trait.has
+            and DAEMON.trait.has(defender, spec.trait) then
+            held = true
+            alloc[id] = defender:trait(spec.trait)
+            local ok = true
+            if type(spec.available) == "function" then
+                local pok, answer = pcall(spec.available, defender, attack)
+                ok = pok and answer and true or false
+            end
+            if ok then available[id] = true end
+        end
+    end
+
+    if not held then
+        return { { id = "dodge", value = rating(defender, "defense_dodge") } }
+    end
+
+    return Combat.channels(alloc, rating(defender, "defense"), available, {
+        multipliers = attack and attack.defense_multipliers,
+        damage_type = attack and attack.damage_type,
+    })
+end
+
 --- One swing. Returns what happened so the caller can describe it.
---- @return table { hit, damage, dealt, killed, message }
-function M.attack_once(attacker, target)
+--- @return table { hit, damage, dealt, killed, threshold, roll, margin, degree, channel }
+function M.attack_once(attacker, target, opts)
     local result = { hit = false, damage = 0, dealt = 0, killed = false }
     if not attacker or not target then return result end
     if not target:is_alive() then result.already_dead = true; return result end
+    opts = opts or {}
 
-    -- To hit: even-ish, nudged by the difference in dexterity, and never a
-    -- certainty in either direction.
-    local a_dex = attacker.trait and attacker:trait("dexterity") or 5
-    local d_dex = target.trait and target:trait("dexterity") or 5
-    local chance = math.max(5, math.min(95, 60 + (a_dex - d_dex) * 3))
-    if M._roll(100) > chance then
-        return result
-    end
+    local contest = Combat.resolve({
+        accuracy            = rating(attacker, "accuracy"),
+        accuracy_multiplier = opts.accuracy_multiplier,
+        channels            = defences(target, opts),
+        bands               = M.degrees(),
+        base    = conf("game.combat_base_hit_chance", Combat.DEFAULTS.base),
+        step    = conf("game.combat_hit_step",        Combat.DEFAULTS.step),
+        floor   = conf("game.combat_hit_floor",       Combat.DEFAULTS.floor),
+        ceiling = conf("game.combat_hit_ceiling",     Combat.DEFAULTS.ceiling),
+    }, M._roll)
+
+    result.threshold = contest.threshold
+    result.roll      = contest.roll
+    result.margin    = contest.margin
+    result.channel   = contest.channel
+    result.degree    = contest.degree
+    result.power     = contest.power
+
+    if not contest.hit then return result end
 
     result.hit = true
     local raw, weapon = weapon_damage(attacker)
-    result.damage = raw
-    result.weapon = weapon
+
+    -- Where it landed, when the defender is made of anything. **No layout
+    -- consumes no roll**, so a test with pinned dice sees the identical
+    -- sequence it saw before locations existed.
+    local part = Body.locate(attacker, target, weapon, {
+        force = opts.location,
+        rng   = M._roll,
+    })
+    result.location = part
+    result.hit_part = part and part.id
+    result.hit_slot = part and part.slot
 
     -- The damage type comes from the weapon, so a silver dagger's `magic`
     -- reaches the defender's resist table and a warded cloak can blunt it.
@@ -232,9 +419,18 @@ function M.attack_once(attacker, target)
         or "physical"
     result.damage_type = damage_type
 
+    raw = math.max(0, math.floor(Combat.damage(raw, contest, part, damage_type) + 0.5))
+    result.damage = raw
+    result.weapon = weapon
+
     local _, dealt = target:take_damage(raw, {
         damage_type = damage_type,
-        attacker = attacker,
+        attacker    = attacker,
+        -- Which piece of armour is even in the way. Nil for a layout-less
+        -- defender, and the guard downstream is skipped when it is nil — which
+        -- is every call the game makes today.
+        hit_part = result.hit_part,
+        hit_slot = result.hit_slot,
     })
     result.dealt = dealt or raw
     result.killed = not target:is_alive()
@@ -253,6 +449,64 @@ function M.attack_once(attacker, target)
         end
     end
 
+    return result
+end
+
+--- One attack that is not a weapon swing — an ability's, with its own amount.
+---
+--- The seam, and the only thing `ability_d` knows about any of this. Everything
+--- below the roll is the same code a swing takes, so an ability's damage meets
+--- armour, resists, hit locations and the effect pipeline exactly as a sword's
+--- does. An ability that reached around this would be the one thing in the game
+--- nothing could be designed against.
+--- @param opts table { amount, damage_type, accuracy_multiplier,
+---                     defense_multipliers, location, source }
+--- @return table  the same shape `attack_once` returns
+function M.resolve_attack(attacker, defender, opts)
+    local result = { hit = false, damage = 0, dealt = 0, killed = false }
+    if not (attacker and defender) then return result end
+    if not defender:is_alive() then result.already_dead = true; return result end
+    opts = opts or {}
+
+    local contest = Combat.resolve({
+        accuracy            = rating(attacker, "accuracy"),
+        accuracy_multiplier = opts.accuracy_multiplier,
+        channels            = defences(defender, opts),
+        bands               = M.degrees(),
+        base    = conf("game.combat_base_hit_chance", Combat.DEFAULTS.base),
+        step    = conf("game.combat_hit_step",        Combat.DEFAULTS.step),
+        floor   = conf("game.combat_hit_floor",       Combat.DEFAULTS.floor),
+        ceiling = conf("game.combat_hit_ceiling",     Combat.DEFAULTS.ceiling),
+    }, M._roll)
+
+    result.threshold, result.roll, result.margin = contest.threshold, contest.roll, contest.margin
+    result.channel, result.degree, result.power = contest.channel, contest.degree, contest.power
+    if not contest.hit then return result end
+
+    result.hit = true
+    local part = Body.locate(attacker, defender, nil, {
+        force = opts.location, rng = M._roll,
+    })
+    result.location = part
+    result.hit_part = part and part.id
+    result.hit_slot = part and part.slot
+
+    local damage_type = opts.damage_type or "physical"
+    result.damage_type = damage_type
+
+    local raw = math.max(0, math.floor(
+        Combat.damage(tonumber(opts.amount) or 0, contest, part, damage_type) + 0.5))
+    result.damage = raw
+
+    local _, dealt = defender:take_damage(raw, {
+        damage_type = damage_type,
+        attacker    = attacker,
+        hit_part    = result.hit_part,
+        hit_slot    = result.hit_slot,
+        source      = opts.source,
+    })
+    result.dealt = dealt or raw
+    result.killed = not defender:is_alive()
     return result
 end
 
@@ -326,7 +580,41 @@ end
 
 -- ─── The round ───────────────────────────────────────────────────────────────
 
+--- One exchange between two fighters: resolve, say what happened, handle a death.
+---
+--- Factored out so `round`, `auto_round` and a queued attack all go through the
+--- same body. Nothing here consults roundtime — that is the caller's decision,
+--- and it is the difference between the two rounds below.
+--- @return boolean  whether an attack was resolved
+function M.swing(attacker, target)
+    if not (attacker and target) then return false end
+    if not (attacker:is_alive() and target:is_alive()) then return false end
+
+    local ok, result = pcall(M.attack_once, attacker, target)
+    if not ok then
+        log_error("COMBAT_D: attack failed: " .. tostring(result))
+        return false
+    end
+
+    local a_name, t_name = display_name(attacker), display_name(target)
+    if result.hit then
+        tell(attacker, "You hit " .. t_name .. " for {red}" .. result.dealt .. "{/} damage.")
+        tell(target, a_name .. " hits you for {red}" .. result.dealt .. "{/} damage.")
+        tell_room(attacker, a_name .. " hits " .. t_name .. ".", { attacker, target })
+    else
+        tell(attacker, "You miss " .. t_name .. ".")
+        tell(target, a_name .. " misses you.")
+    end
+    if result.killed then handle_death(attacker, target) end
+    return true
+end
+
 --- Resolve one round for everyone currently fighting.
+---
+--- > **This deliberately ignores roundtime.** It is the manual door — a test
+--- > driving twenty exchanges inside one clock second, an admin forcing a round
+--- > — and it has always meant "one exchange per fighter, now". `auto_round` is
+--- > the one that respects the queue's pacing.
 --- @return number  attacks resolved
 function M.round()
     if not (DAEMON and DAEMON.cache) then return 0 end
@@ -348,22 +636,52 @@ function M.round()
         local attacker, target = fight.attacker, fight.target
         -- Either may have died earlier in this same round.
         if attacker:is_alive() and target:is_alive() and M.target_of(attacker) == target then
-            local ok, result = pcall(M.attack_once, attacker, target)
-            if not ok then
-                log_error("COMBAT_D: attack failed: " .. tostring(result))
-            else
+            if M.swing(attacker, target) then resolved = resolved + 1 end
+        elseif not target:is_alive() or not attacker:is_alive() then
+            M.disengage(attacker)
+        end
+    end
+
+    return resolved
+end
+
+--- The same, but only for fighters whose combat track is free.
+---
+--- What the ticker calls. A fighter with something queued has already acted
+--- through `queue.tick` and owes roundtime, so this skips them; a fighter with
+--- an empty queue and the `auto` policy swings, which is the shipped behaviour
+--- unchanged.
+--- @return number  attacks resolved
+function M.auto_round()
+    if not (DAEMON and DAEMON.cache) then return 0 end
+    local resolved = 0
+
+    local fights = {}
+    for _, scope in ipairs(DAEMON.cache.scopes(NS)) do
+        local attacker = DAEMON.cache.get(NS, scope, "self")
+        local target   = DAEMON.cache.get(NS, scope, "target")
+        if attacker and target then
+            fights[#fights + 1] = { attacker = attacker, target = target }
+        end
+    end
+
+    for _, fight in ipairs(fights) do
+        local attacker, target = fight.attacker, fight.target
+        if attacker:is_alive() and target:is_alive() and M.target_of(attacker) == target then
+            local free = true
+            if DAEMON.queue then
+                free = not DAEMON.queue.in_roundtime(attacker, "combat")
+                    and DAEMON.queue.policy(attacker, "combat") == "auto"
+                    and #DAEMON.queue.list(attacker, "combat") == 0
+            end
+            if DAEMON.ability and DAEMON.ability.casting
+                and DAEMON.ability.casting(attacker) then
+                free = false
+            end
+            if free and M.swing(attacker, target) then
                 resolved = resolved + 1
-                local a_name, t_name = display_name(attacker), display_name(target)
-                if result.hit then
-                    tell(attacker, "You hit " .. t_name .. " for {red}" .. result.dealt .. "{/} damage.")
-                    tell(target, a_name .. " hits you for {red}" .. result.dealt .. "{/} damage.")
-                    tell_room(attacker, a_name .. " hits " .. t_name .. ".", { attacker, target })
-                else
-                    tell(attacker, "You miss " .. t_name .. ".")
-                    tell(target, a_name .. " misses you.")
-                end
-                if result.killed then
-                    handle_death(attacker, target)
+                if DAEMON.queue then
+                    DAEMON.queue.mark(attacker, "combat", { rounds = 1 })
                 end
             end
         elseif not target:is_alive() or not attacker:is_alive() then
@@ -374,15 +692,67 @@ function M.round()
     return resolved
 end
 
+-- ─── The combat track ────────────────────────────────────────────────────────
+
+do
+    if DAEMON and DAEMON.queue then
+        -- Registered here rather than in `queue_d`, because this is the only
+        -- thing that knows what a swing is. A game registers `"crafting"` the
+        -- same way and touches neither file.
+        DAEMON.queue.define_track("combat", {
+            round_trait   = "round_length",
+            round_seconds = (function()
+                local ok, v = pcall(config, "game.combat_round_seconds")
+                return (ok and type(v) == "number" and v > 0) and v or 3
+            end)(),
+            -- An engaged fighter with nothing queued keeps swinging, which is
+            -- what combat did before a queue existed. A game that wants "you
+            -- stand there unless you say otherwise" sets `idle`.
+            empty   = "auto",
+            resolve = function(entity, entry)
+                if entry.kind == "attack" then
+                    local target = entry.target or M.target_of(entity)
+                    if not target or not target:is_alive() then return false end
+                    if not M.swing(entity, target) then return false end
+                    DAEMON.queue.mark(entity, "combat", entry.roundtime or { rounds = 1 })
+                    return true
+                end
+                if entry.kind == "ability" and DAEMON.ability then
+                    local ok = DAEMON.ability.use(entity, entry.id,
+                        { target = entry.target, from_queue = true })
+                    return ok and true or false
+                end
+                return false
+            end,
+        })
+    end
+end
+
 -- ─── Ticker ──────────────────────────────────────────────────────────────────
 
 do
     local ok, v = pcall(config, "game.combat_round_seconds")
-    local interval = (ok and type(v) == "number") and v or 3
-    if interval > 0 and DAEMON and DAEMON.ticker then
+    local round = (ok and type(v) == "number") and v or 3
+
+    local tok, tv = pcall(config, "game.queue_tick_seconds")
+    local interval = (tok and type(tv) == "number") and tv or 1
+
+    -- One repeating timer rather than one per fighter. `ticker_d` holds its
+    -- callbacks in a module table that does not survive a hot reload of itself,
+    -- so a per-actor timer would strand every fight in the game where this
+    -- strands one — and this one is re-registered by the line below on load.
+    --
+    -- The id is unchanged, because it is what an admin and a test both reach for.
+    if round > 0 and interval > 0 and DAEMON and DAEMON.ticker then
         DAEMON.ticker.every(interval, "combat.round", function()
+            -- Queued intent first, so it marks roundtime before the default
+            -- swing looks to see whether the track is free.
+            if DAEMON and DAEMON.queue then
+                local qok, qerr = pcall(DAEMON.queue.tick)
+                if not qok then log("error", "COMBAT_D: queue tick failed: " .. tostring(qerr)) end
+            end
             if DAEMON and DAEMON.combat then
-                local rok, err = pcall(DAEMON.combat.round)
+                local rok, err = pcall(DAEMON.combat.auto_round)
                 if not rok then
                     log("error", "COMBAT_D: round failed: " .. tostring(err))
                 end

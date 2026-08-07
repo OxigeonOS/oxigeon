@@ -154,6 +154,28 @@ local function tell_room(entity, text)
     end
 end
 
+--- Say what an ability is doing, in whichever of the two shapes it declares.
+---
+--- `messages.line` is one authored sentence rendered per reader — the actor sees
+--- "You draw a line of fire at a pale wisp", the target sees "Wren draws a line
+--- of fire at you", the room sees names throughout. `self`/`room`/`target` stay
+--- for the case that genuinely is three different statements, where the actor is
+--- told something the room must not hear.
+local function announce(spec, ctx)
+    local messaging = require('lib.messaging')
+
+    if spec.messages.line ~= nil then
+        pcall(messaging.announce, spec.messages.line, ctx)
+        return
+    end
+
+    tell(ctx.user, Abilities.render(spec.messages.self, ctx, ctx.user))
+    tell_room(ctx.user, Abilities.render(spec.messages.room, ctx, nil))
+    if ctx.target and ctx.target ~= ctx.user then
+        tell(ctx.target, Abilities.render(spec.messages.target, ctx, ctx.target))
+    end
+end
+
 -- ─── Definitions ─────────────────────────────────────────────────────────────
 
 --- Register one ability.
@@ -176,6 +198,19 @@ function M.define(spec)
                 log_warn("ABILITY_D.define('" .. normalised.id .. "'): cost names '"
                     .. tostring(c.trait) .. "', which is a " .. tostring(def.kind)
                     .. " and not a gauge. A cost has to be something you can spend.")
+                return false
+            end
+        end
+        -- The same rule for `adjust`, and for the same reason: `trait.adjust`
+        -- moves a *current* value, and only a gauge has one. Moving an attribute
+        -- is what an effect is for, and doing it from here would be a permanent
+        -- change wearing an action's clothes.
+        for _, a in ipairs(normalised.adjust) do
+            local def = DAEMON.trait.get_def(a.trait)
+            if def and def.kind ~= "gauge" then
+                log_warn("ABILITY_D.define('" .. normalised.id .. "'): adjust names '"
+                    .. tostring(a.trait) .. "', which is a " .. tostring(def.kind)
+                    .. " and not a gauge. To change an attribute, apply an effect.")
                 return false
             end
         end
@@ -511,16 +546,50 @@ end
 local function resolve_outcomes(spec, ctx)
     local rng = M._roll
 
-    tell(ctx.user, Abilities.render(spec.messages.self, ctx))
-    tell_room(ctx.user, Abilities.render(spec.messages.room, ctx))
-    if ctx.target and ctx.target ~= ctx.user then
-        tell(ctx.target, Abilities.render(spec.messages.target, ctx))
-    end
+    announce(spec, ctx)
 
     for _, r in ipairs(spec.remove) do
         local who = side(ctx, r.to or "self")
         if who and DAEMON and DAEMON.effect then
             pcall(DAEMON.effect.remove, who, r.effect, { count = r.count })
+        end
+    end
+
+    -- An attack can miss, be parried, land somewhere and be blunted by whatever
+    -- covers that place. `damage` below always lands. Both together is refused
+    -- at define time, so exactly one of these branches runs.
+    if spec.attack then
+        local who = side(ctx, spec.attack.to or "target")
+        local amount = Abilities.roll(spec.attack.damage, ctx, rng)
+        if who then
+            if DAEMON and DAEMON.combat and DAEMON.combat.resolve_attack then
+                local res = DAEMON.combat.resolve_attack(ctx.user, who, {
+                    amount              = amount,
+                    damage_type         = spec.attack.damage and spec.attack.damage.type,
+                    accuracy_multiplier = spec.attack.accuracy,
+                    defense_multipliers = spec.attack.defenses,
+                    location            = spec.attack.location,
+                    source              = "ability:" .. spec.id,
+                })
+                ctx.amount = amount
+                ctx.dealt  = res.dealt
+                ctx.hit    = res.hit
+                ctx.location    = res.hit_part
+                ctx.degree      = res.degree
+                ctx.defended_by = res.channel
+                if not res.hit then
+                    tell(ctx.user, Abilities.render(spec.messages.miss, ctx, ctx.user))
+                end
+            elseif type(who.take_damage) == "function" then
+                -- Degrade rather than no-op. An ability that silently did
+                -- nothing because a daemon was missing is the worst failure
+                -- mode available.
+                local _, dealt = who:take_damage(math.max(0, math.floor(amount + 0.5)), {
+                    damage_type = spec.attack.damage and spec.attack.damage.type or "physical",
+                    attacker    = ctx.user,
+                })
+                ctx.amount, ctx.dealt, ctx.hit = amount, dealt, true
+            end
         end
     end
 
@@ -568,13 +637,26 @@ local function resolve_outcomes(spec, ctx)
                 })
                 if not inst then
                     ctx.why = why or "something is in the way"
-                    tell(ctx.user, Abilities.render(spec.messages.fail, ctx))
+                    tell(ctx.user, Abilities.render(spec.messages.fail, ctx, ctx.user))
                 end
             end
         end
     end
 
-    tell(ctx.user, Abilities.render(spec.messages.result, ctx))
+    -- After the outcome, because it is what doing the thing did to you. A
+    -- footing cost belongs here and not in `cost`: `cost` is what you must have
+    -- to begin, and it cannot be positive.
+    for _, a in ipairs(spec.adjust) do
+        local who = side(ctx, a.to)
+        local amount = Abilities.roll(a.amount, ctx, rng)
+        if who and amount ~= 0 and DAEMON and DAEMON.trait then
+            -- `adjust`, so it clamps to the gauge's bounds and settles
+            -- regeneration first — the delta lands on the value as it is now.
+            DAEMON.trait.adjust(who, a.trait, amount)
+        end
+    end
+
+    tell(ctx.user, Abilities.render(spec.messages.result, ctx, ctx.user))
 
     if type(spec.run) == "function" then
         local ok, err = pcall(spec.run, ctx)
@@ -636,6 +718,16 @@ local function mark_cooldown(user, spec)
     end
 end
 
+--- Owe this ability's track some recovery, after the outcome.
+---
+--- Recovery rather than a price: `cost` is what you must have to begin, and this
+--- is what having acted leaves you owing. Which is why it is marked here and not
+--- at step 11.
+local function mark_roundtime(user, spec, ctx)
+    if not (spec.track and spec.roundtime and DAEMON and DAEMON.queue) then return end
+    DAEMON.queue.mark(user, spec.track, spec.roundtime, ctx)
+end
+
 local function mark_gcd(user, spec)
     local gcd = conf("game.ability_gcd_seconds", 0)
     if gcd > 0 and spec.gcd and DAEMON and DAEMON.cooldown then
@@ -676,7 +768,7 @@ function M.cancel(entity, reason)
 
     if spec then
         local ctx = {
-            user = entity, target = record.target, ability = spec,
+            user = entity, actor = entity, target = record.target, ability = spec,
             rank = record.rank, power = record.power,
             spent = record.spent, reason = reason or "interrupted",
             name = entity.name,
@@ -708,7 +800,7 @@ local function complete(entity, record)
     end
 
     local ctx = {
-        user = entity, target = record.target, ability = spec,
+        user = entity, actor = entity, target = record.target, ability = spec,
         rank = record.rank, power = record.power, spent = record.spent,
         name = entity.name,
         target_name = record.target and (record.target.short or record.target.name),
@@ -731,6 +823,9 @@ local function complete(entity, record)
     clear_cast(entity, record)
     mark_cooldown(entity, spec)
     resolve_outcomes(spec, ctx)
+    -- Owed for having acted. An interrupted cast owes none — same shape, and the
+    -- same justification, as the cooldown it also does not mark.
+    mark_roundtime(entity, spec, ctx)
 
     if type(spec.on_complete) == "function" then pcall(spec.on_complete, ctx) end
 
@@ -776,7 +871,7 @@ local function channel_def(spec)
                 for _ = 1, (ev.ticks or 1) do
                     record.ticks_done = (record.ticks_done or 0) + 1
                     local c = {
-                        user = entity, target = record.target, ability = spec,
+                        user = entity, actor = entity, target = record.target, ability = spec,
                         rank = record.rank, power = record.power,
                         tick = record.ticks_done, name = entity.name,
                     }
@@ -825,7 +920,7 @@ function M.use(user, id, opts)
     if M.casting(user) then return false, "You are already busy." end
 
     local ctx = {
-        user = user, ability = spec, rank = rank, name = user.name,
+        user = user, actor = user, ability = spec, rank = rank, name = user.name,
         power = 1 + (user.trait and user:trait("spell_power") or 0),
     }
 
@@ -856,6 +951,26 @@ function M.use(user, id, opts)
 
     -- ── nothing has been spent above this line ──────────────────────────────
 
+    -- **Only roundtime enqueues.** Cooldown, GCD, cost, requirements, an unknown
+    -- ability and a mistyped target all still refuse, which keeps two different
+    -- pieces of information distinct: a cooldown says "not this, for a while";
+    -- roundtime says "not yet, but soon and certainly".
+    --
+    -- Below target resolution on purpose — a typo refuses immediately rather
+    -- than queueing something doomed.
+    if spec.track and not (opts.from_queue) and DAEMON and DAEMON.queue then
+        if DAEMON.queue.in_roundtime(user, spec.track) then
+            local queued, why = DAEMON.queue.enqueue(user, spec.track, {
+                kind = "ability", id = spec.id, target = target,
+            })
+            if not queued then return false, why end
+            local left = math.ceil(DAEMON.queue.roundtime(user, spec.track))
+            tell(user, "You will " .. tostring(spec.name):lower()
+                .. " next. (" .. left .. "s)")
+            return true, nil, "queued"
+        end
+    end
+
     if spec.cast_time > 0 or spec.channel then
         local spent = spend(user, spec, ctx)
         mark_gcd(user, spec)
@@ -872,7 +987,7 @@ function M.use(user, id, opts)
         DAEMON.cache.set(CASTS, scope_of(user), "cast", record)
 
         if type(spec.on_begin) == "function" then pcall(spec.on_begin, ctx) end
-        tell(user, Abilities.render(spec.messages.begin, ctx))
+        tell(user, Abilities.render(spec.messages.begin, ctx, user))
 
         if spec.channel then
             local def = channel_def(spec)
@@ -890,7 +1005,7 @@ function M.use(user, id, opts)
                     if still and still.ability == spec.id then complete(user, still) end
                 end)
         end
-        return true
+        return true, nil, "casting"
     end
 
     local spent = spend(user, spec, ctx)
@@ -903,12 +1018,14 @@ function M.use(user, id, opts)
 
     if type(spec.on_complete) == "function" then pcall(spec.on_complete, ctx) end
 
+    mark_roundtime(user, spec, ctx)
+
     if DAEMON and DAEMON.event then
         pcall(DAEMON.event.emit, "ability.used", {
             char_id = user.char_id, id = spec.id, target = target and target.id,
         })
     end
-    return true
+    return true, nil, "done"
 end
 
 -- ─── Interrupts ──────────────────────────────────────────────────────────────

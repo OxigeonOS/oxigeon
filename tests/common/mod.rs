@@ -226,6 +226,14 @@ DAEMON.trait.define_all({
     -- by storage rather than by a declaration.
     { id = "fixture_skill", label = "Fixture Skill", kind = "counter",
       category = "skill", group = "skills", sets = false, min = 0 },
+
+    -- A footing resource: a 0-20 pool resting at 10, spent by heavy actions and
+    -- restored by recovering. **No `regen` block**, so it never ticks on its
+    -- own — which is the whole shape, and `trait_d` already permits it.
+    { id = "max_balance", label = "Max Balance", kind = "attribute",
+      group = "vitals", default = 20, min = 1, hidden = true },
+    { id = "balance", label = "Balance", kind = "gauge", group = "vitals",
+      max = "max_balance", min = 0, round = "floor" },
 })
 DAEMON.trait.seal()
 
@@ -268,6 +276,24 @@ DAEMON.ability.define_all({
     { id = "fixture_taught", name = "Fixture Taught", category = "technique",
       rank_trait = "fixture_skill", min_rank = 2, target = "none",
       messages = { self = "You remember how." } },
+
+    -- A heavy blow that costs footing, and a step that recovers it. Between
+    -- them they are the reason `adjust` exists: `cost` cannot be positive.
+    { id = "fixture_heavy", name = "Fixture Heavy", category = "technique",
+      open = true, target = "none", adjust = { balance = -5 },
+      messages = { self = "You commit." } },
+    { id = "fixture_recover", name = "Fixture Recover", category = "technique",
+      open = true, target = "none", adjust = { balance = 3, mp = -1 },
+      messages = { self = "You set your feet." } },
+
+    -- Routed through the resolution pipeline, so it can miss and be blunted by
+    -- whatever covers where it lands.
+    { id = "fixture_lance", name = "Fixture Lance", category = "technique",
+      open = true, target = "creature",
+      attack = { accuracy = 1.0, defenses = { dodge = 1.0 },
+                 damage = { min = 9, max = 9, type = "physical" } },
+      messages = { self = "You lance $target.", result = "It takes $dealt.",
+                   miss = "$target avoids it." } },
 
     -- Grantable but tied to nothing, for the equipment/source path.
     { id = "fixture_granted", name = "Fixture Granted", category = "technique",

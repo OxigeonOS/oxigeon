@@ -149,7 +149,17 @@ fn a_second_save_is_byte_identical() {
     vm.command("olc set short something under the shale");
     vm.command("olc save");
 
-    assert_eq!(file(&vm, "crypt", "mobs"), first, "a re-save must not churn the file");
+    // Compared without the generated header, which carries a timestamp — two
+    // saves either side of a second boundary differ there and nowhere else, and
+    // that is not what "byte-identical" is claiming.
+    let body = |s: &str| {
+        s.split_once("return {").map(|(_, rest)| rest.to_string()).unwrap_or_default()
+    };
+    assert_eq!(
+        body(&file(&vm, "crypt", "mobs")),
+        body(&first),
+        "a re-save must not churn the records"
+    );
 }
 
 /// `olc show` prints effective values, marked by where they came from.

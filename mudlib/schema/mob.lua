@@ -29,7 +29,11 @@ M.fields = {
     { name = "description", type = "text", editable = true, lfun = true,
       help = "What `examine` shows." },
 
-    { name = "race", type = "string", editable = true },
+    { name = "race", type = "string", editable = true,
+      help = "Also names a body layout, if one matches. `body` overrides it." },
+    { name = "body", type = "id", target = "body", editable = true,
+      help = "Body layout id — what this is made of, and where a blow can land. "
+          .. "Absent means no hit locations, which is the default." },
     { name = "faction", type = "string", editable = true },
     { name = "gender", type = "enum", values = { "male", "female", "neutral" }, editable = true },
     { name = "title", type = "string", editable = true },

@@ -51,6 +51,7 @@ this table is the directory.
 | `effect_d` | `DAEMON.effect` | Buffs, debuffs and the event pipeline. See [Effects](./effects.md). |
 | `cooldown_d` | `DAEMON.cooldown` | "Not yet" gates, stored as expiry. See [State Cache](./state-cache.md). |
 | `ability_d` | `DAEMON.ability` | What a character can do, as data: cost, cooldown, target, outcomes, cast time. See [Abilities](./abilities.md). |
+| `queue_d` | `DAEMON.queue` | Per-character action queues and roundtime, by named track. See [Queues](./queues.md). |
 | `combat_d` | `DAEMON.combat` | Engagement and rounds. See [Combat](./combat.md). |
 | `death_d` | `DAEMON.death` | Death handling, respawn and what death costs. Where the dead reappear comes from `game.respawn_room`, not from a constant in this layer. |
 

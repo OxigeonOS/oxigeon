@@ -85,6 +85,30 @@ function M.roll(amount, ctx, rng)
     if type(amount) == "number" then return amount end
     if type(amount) ~= "table" then return 0 end
 
+    -- `{ rounds = 0.75 }` — three quarters of this character's round.
+    --
+    -- A real branch and **not** a desugar into `scale`, which was the obvious
+    -- move and is wrong: `scale` is additive (`per` gives `base + trait*n`)
+    -- where a round is multiplicative (`0.75 x round_length`). Solving for an
+    -- equivalent `pct` gives a value that depends on the trait, so no fixed
+    -- authored spec expresses it — a desugar written on that assumption would
+    -- produce silently wrong numbers for every character whose round differed
+    -- from whichever one it was eyeballed against.
+    --
+    -- The rounds component is itself rollable, so `{ rounds = { min = 1, max = 2 } }`
+    -- is a variable number of rounds, and any `scale` on the outer table then
+    -- adds flat seconds on top.
+    if amount.rounds ~= nil then
+        local rounds = M.roll(amount.rounds, ctx, rng)
+        local length = tonumber(ctx and ctx.round_length) or 0
+        local base = rounds * length
+        local extra = nil
+        if amount.scale ~= nil then
+            extra = M.roll({ min = 0, max = 0, scale = amount.scale }, ctx, rng)
+        end
+        return base + (extra or 0)
+    end
+
     local lo = tonumber(amount.min) or 0
     local hi = tonumber(amount.max)
     if hi == nil then hi = lo end
@@ -168,6 +192,15 @@ CHECKS.effect_absent = function(user, _, spec)
         return false, "Something prevents you."
     end
     return true
+end
+
+--- What this creature is made of. The payoff for layout features: an ability
+--- that needs hands says so, and a snake cannot use it.
+CHECKS.body_feature = function(user, _, spec)
+    local ok, Body = pcall(require, 'lib.body')
+    if not ok then return true end
+    if Body.has_feature(user, spec.feature) then return true end
+    return false, "You are not built for that."
 end
 
 CHECKS.equipped = function(user, _, spec)
@@ -329,6 +362,32 @@ function M.normalise(spec)
     spec.cooldown = cd
     if spec.gcd == nil then spec.gcd = true end
 
+    -- Which lane of intent this belongs to. Defaults to `"combat"`, which costs
+    -- nothing today because a track only gates once something puts roundtime on
+    -- it, and no shipped ability declares any.
+    --
+    -- `track = "none"` (or false) opts out for ever — a stance toggle, a shout,
+    -- anything that should stay available while you are recovering. It has to
+    -- exist because the gate belongs to the *track*: once a track is in
+    -- roundtime every ability on it waits, whatever its own roundtime is.
+    if spec.track == false or spec.track == "none" then
+        spec.track = nil
+    else
+        spec.track = spec.track or "combat"
+    end
+
+    -- What using this costs the track in recovery. A number is seconds;
+    -- `{ rounds = n }` is rounds. Marked *after* the action resolves, because it
+    -- is recovery from having acted rather than a price for acting.
+    if spec.roundtime ~= nil then
+        local rt = spec.roundtime
+        if type(rt) == "number" then rt = { min = rt, max = rt } end
+        if type(rt) ~= "table" and type(rt) ~= "function" then
+            return nil, "`roundtime` must be a number, a table or a function"
+        end
+        spec.roundtime = rt
+    end
+
     -- `level = 3` is sugar for the requirement everybody writes first.
     local requires = {}
     if spec.level ~= nil then
@@ -355,6 +414,51 @@ function M.normalise(spec)
     spec.apply  = as_list(spec.apply)
     spec.remove = as_list(spec.remove)
 
+    -- `attack` routes damage through the resolution pipeline, so it can miss, be
+    -- parried, land somewhere and be blunted by the armour covering that place.
+    -- `damage` goes straight to `take_damage` and always lands.
+    --
+    -- **Both together is refused here**, the mirror of the gauge rule for cost.
+    -- An ability that is ambiguous about whether it can miss is worse discovered
+    -- at runtime than at define time.
+    if spec.attack ~= nil then
+        if type(spec.attack) ~= "table" then
+            return nil, "`attack` must be a table"
+        end
+        if spec.damage ~= nil then
+            return nil, "'" .. spec.id .. "' declares both `attack` and `damage`. "
+                .. "`attack` can miss and `damage` cannot; pick one."
+        end
+        if spec.engage == nil then spec.engage = true end
+    end
+
+    -- `adjust = { balance = -5, stamina = 2 }` — a signed gauge delta, applied
+    -- **after** the outcome rather than paid before it.
+    --
+    -- Not the same thing as `cost`, and the difference is the sign. A cost is
+    -- what you must have to begin; an adjust is what doing it did to you, and it
+    -- may be positive. A footing resource needs both: a heavy swing spends
+    -- balance and a recovery step restores it, and there is no way to say the
+    -- second with a cost.
+    local adjust = {}
+    if type(spec.adjust) == "table" then
+        if spec.adjust[1] ~= nil then
+            for _, a in ipairs(spec.adjust) do
+                adjust[#adjust + 1] = { trait = a.trait, amount = a.amount or 0,
+                                        to = a.to or "self" }
+            end
+        else
+            local names = {}
+            for trait in pairs(spec.adjust) do names[#names + 1] = trait end
+            table.sort(names)   -- deterministic order, as `cost` is
+            for _, trait in ipairs(names) do
+                adjust[#adjust + 1] = { trait = trait, amount = spec.adjust[trait],
+                                        to = "self" }
+            end
+        end
+    end
+    spec.adjust = adjust
+
     -- Damage implies a fight, because the alternative is an ability that hurts
     -- something and leaves it standing there.
     if spec.engage == nil then spec.engage = spec.damage ~= nil end
@@ -375,6 +479,25 @@ function M.normalise(spec)
 
     spec.messages = type(spec.messages) == "table" and spec.messages or {}
 
+    -- `line` is one authored sentence for everybody, rendered per reader. It is
+    -- the whole point of the render layer, and it makes the three-string form
+    -- unnecessary for anything that does not deliberately tell the actor
+    -- something the room must not hear.
+    --
+    -- Both together is an author saying two things at once, so `line` wins and
+    -- says so at define time rather than at the first cast.
+    if spec.messages.line ~= nil then
+        local also = {}
+        for _, k in ipairs({ "self", "room", "target" }) do
+            if spec.messages[k] ~= nil then also[#also + 1] = k end
+        end
+        if #also > 0 then
+            return nil, "'" .. spec.id .. "' declares messages.line and also "
+                .. table.concat(also, "/") .. ". `line` is one sentence for "
+                .. "everybody; drop the others or drop `line`."
+        end
+    end
+
     return spec
 end
 
@@ -392,31 +515,39 @@ end
 
 -- ─── Messages ────────────────────────────────────────────────────────────────
 
-local TOKENS = { "name", "target", "amount", "dealt", "healed", "rank", "why" }
-
---- Substitute `$name`, `$target`, `$dealt` and the rest.
+--- Substitute `$name`, `$target`, `$actor.their` and the rest.
 ---
---- An unknown token is **left alone** rather than erased. A message reading
---- "You strike $victim" is a typo somebody can see and fix; one reading "You
---- strike " is a bug they will stare at.
+--- Delegates to `lib/render.lua`. There is no second syntax and nothing is
+--- deprecated: the sigil there was chosen as `$` precisely so it *subsumes*
+--- what this used to do, which means every message already authored is already
+--- valid input and simply gains meaning.
+---
+--- Three things this fixes by delegating:
+---
+--- * **`$target` printed a table address.** `ctx.target` is the entity, and
+---   `target` was in a whitelist that ran `tostring` over whatever it found. So
+---   `"You draw a line of fire at $target."` — shipped, in `game/abilities/` —
+---   rendered `at table: 0x7f…`. Nothing asserted a successful cast's message
+---   body, which is how it survived.
+--- * **`$names` matched `$name` and left a stray `s`.** A token is now the
+---   whole identifier.
+--- * **The whitelist is gone.** It existed only because the old renderer looped
+---   a fixed list; looking `ctx` up directly is strictly more useful and needs
+---   no central list to rot.
+---
+--- An unknown token is still **left alone** rather than erased. A message
+--- reading "You strike $victim" is a typo somebody can see and fix; one reading
+--- "You strike " is a bug they will stare at.
 --- @param template string|function
 --- @param ctx table
+--- @param viewer table|nil  who is reading; nil means nobody renders as "you"
 --- @return string
-function M.render(template, ctx)
+function M.render(template, ctx, viewer)
     if type(template) == "function" then
         local ok, v = pcall(template, ctx)
         return ok and tostring(v or "") or ""
     end
-    if type(template) ~= "string" then return "" end
-
-    local out = template
-    for _, token in ipairs(TOKENS) do
-        local value = ctx and ctx[token]
-        if value ~= nil then
-            out = out:gsub("%$" .. token, (tostring(value):gsub("%%", "%%%%")))
-        end
-    end
-    return out
+    return require('lib.render').render(template, ctx, viewer)
 end
 
 return M

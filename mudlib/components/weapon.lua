@@ -65,6 +65,11 @@ function M.from_data(data)
         damage_type  = data.damage_type or "physical",
         two_handed   = data.two_handed or false,
         range        = data.range or "melee",
+        -- Physical reach: a spear gets at a giant's chest where a dagger gets
+        -- at its shins. 0 adds none.
+        length       = tonumber(data.length) or 0,
+        -- A crossbow is not a parrying implement.
+        parry        = data.parry ~= false,
 
         -- These three are lfuns — a string or a function returning one. They
         -- are the one part of this component that may hold a function, and it
@@ -90,6 +95,14 @@ M.fields = {
       help = "Swings per unit time; higher is faster. Multiplies into dps." },
     { name = "weapon_type", type = "string", editable = true,
       help = "dagger, sword, axe. Free text; skills and examine read it." },
+    -- Physical reach, beside the rest of what this thing *is*. Feeds the window
+    -- of body parts a swing can get at: a spear reaches a giant's chest where a
+    -- dagger reaches its shins.
+    { name = "length", type = "number", default = 0, min = 0, editable = true,
+      help = "Reach in centimetres. 0 means it adds none." },
+    -- A crossbow is not a parrying implement.
+    { name = "parry", type = "boolean", default = true, editable = true,
+      help = "Whether this can be parried with. Feeds combat's parry channel." },
     { name = "damage_type", type = "string", default = "physical", editable = true,
       help = "What an armour resist table is matched against." },
     { name = "two_handed", type = "boolean", default = false, editable = true,
@@ -123,6 +136,8 @@ function M.to_data(item)
         damage_type  = w.damage_type,
         two_handed   = w.two_handed,
         range        = w.range,
+        length       = w.length,
+        parry        = w.parry,
         hit_message  = w.hit_message,
         miss_message = w.miss_message,
         crit_message = w.crit_message,

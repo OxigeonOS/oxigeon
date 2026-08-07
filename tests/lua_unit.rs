@@ -2849,3 +2849,817 @@ fn repeatedly_overwriting_one_key_does_not_inflate_the_scope() {
     assert!(eval_bool(&lua, r#"return DAEMON.cache.inspect("t", 1).bytes < 200"#),
         "one small key should not be estimated at hundreds of bytes");
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Grammar — pronoun sets and verb agreement
+// ═══════════════════════════════════════════════════════════════════════════════
+
+fn grammar_lua() -> Lua {
+    let lua = make_test_lua();
+    lua.load("G = require('lib.grammar')").exec().unwrap();
+    lua
+}
+
+/// A regular verb takes -s for a third-person singular subject.
+#[test]
+fn a_regular_verb_takes_s_for_a_singular_subject() {
+    let lua = grammar_lua();
+    for (verb, want) in [("swing", "swings"), ("hit", "hits"), ("draw", "draws")] {
+        assert_eq!(eval_str(&lua, &format!("return G.conjugate('{verb}', false)")), want);
+        assert_eq!(eval_str(&lua, &format!("return G.conjugate('{verb}', true)")), verb);
+    }
+}
+
+/// A sibilant takes -es, and so does a bare -o.
+#[test]
+fn a_sibilant_verb_takes_es() {
+    let lua = grammar_lua();
+    for (verb, want) in [
+        ("kiss", "kisses"), ("push", "pushes"), ("catch", "catches"),
+        ("mix", "mixes"), ("buzz", "buzzes"), ("echo", "echoes"),
+    ] {
+        assert_eq!(eval_str(&lua, &format!("return G.conjugate('{verb}', false)")), want);
+    }
+}
+
+/// Consonant + y becomes -ies; vowel + y does not.
+#[test]
+fn a_consonant_y_becomes_ies_and_a_vowel_y_does_not() {
+    let lua = grammar_lua();
+    for (verb, want) in [
+        ("parry", "parries"), ("fly", "flies"), ("try", "tries"),
+        ("say", "says"), ("buy", "buys"), ("play", "plays"),
+    ] {
+        assert_eq!(eval_str(&lua, &format!("return G.conjugate('{verb}', false)")), want);
+    }
+}
+
+/// The irregulars are a table, not a rule — and a modal never inflects at all.
+#[test]
+fn the_irregulars_are_a_table_and_modals_do_not_inflect() {
+    let lua = grammar_lua();
+    for (verb, want) in [("be", "is"), ("have", "has"), ("do", "does"), ("go", "goes")] {
+        assert_eq!(eval_str(&lua, &format!("return G.conjugate('{verb}', false)")), want);
+    }
+    for verb in ["can", "will", "must", "may", "shall"] {
+        assert_eq!(eval_str(&lua, &format!("return G.conjugate('{verb}', false)")), verb);
+        assert_eq!(eval_str(&lua, &format!("return G.conjugate('{verb}', true)")), verb);
+    }
+}
+
+/// **The load-bearing one.** Singular they takes the same verb form as "you",
+/// because `plural` is not a count — it is which form the subject takes. If this
+/// ever fails, the game says "they swings".
+#[test]
+fn singular_they_takes_the_same_verb_form_as_you() {
+    let lua = grammar_lua();
+
+    assert!(eval_bool(&lua, "return G.SETS.neutral.plural == G.VIEWER.plural"));
+
+    for verb in ["swing", "be", "have", "parry", "go"] {
+        let they = eval_str(&lua, &format!("return G.conjugate('{verb}', G.SETS.neutral.plural)"));
+        let you = eval_str(&lua, &format!("return G.conjugate('{verb}', G.VIEWER.plural)"));
+        assert_eq!(they, you, "'{verb}' must agree the same way for they and for you");
+    }
+
+    // Spelled out, because these are the two that read as a bug instantly.
+    assert_eq!(eval_str(&lua, "return G.conjugate('swing', G.SETS.neutral.plural)"), "swing");
+    assert_eq!(eval_str(&lua, "return G.conjugate('be', G.SETS.neutral.plural)"), "are");
+    // …and the singular sets still inflect.
+    assert_eq!(eval_str(&lua, "return G.conjugate('be', G.SETS.female.plural)"), "is");
+    assert_eq!(eval_str(&lua, "return G.conjugate('be', G.SETS.thing.plural)"), "is");
+}
+
+/// One person is `themself`; a swarm is `themselves`. One row apart, and it is
+/// the difference people notice.
+#[test]
+fn neutral_is_themself_and_plural_is_themselves() {
+    let lua = grammar_lua();
+    assert_eq!(eval_str(&lua, "return G.SETS.neutral.themself"), "themself");
+    assert_eq!(eval_str(&lua, "return G.SETS.plural.themself"), "themselves");
+
+    // …and they are otherwise identical, which is the claim being made.
+    assert!(eval_bool(
+        &lua,
+        "for _, f in ipairs(G.FORMS) do if f ~= 'themself' and G.SETS.neutral[f] ~= G.SETS.plural[f] then return false end end return true"
+    ));
+}
+
+/// Every set is complete, including one the game layer adds later.
+#[test]
+fn every_pronoun_set_is_complete() {
+    let lua = grammar_lua();
+    lua.load("G.define_set('partial', { they = 'ze', them = 'hir' })").exec().unwrap();
+
+    let missing = eval_str(
+        &lua,
+        "local bad = {} for name, set in pairs(G.SETS) do for _, f in ipairs(G.FORMS) do if type(set[f]) ~= 'string' or set[f] == '' then bad[#bad+1] = name..'.'..f end end if type(set.plural) ~= 'boolean' then bad[#bad+1] = name..'.plural' end end table.sort(bad) return table.concat(bad, ',')",
+    );
+    assert_eq!(missing, "");
+
+    // A partial definition is filled from neutral rather than leaving nils.
+    assert_eq!(eval_str(&lua, "return G.SETS.partial.they"), "ze");
+    assert_eq!(eval_str(&lua, "return G.SETS.partial.themself"), "themself");
+}
+
+/// An entity with no gender is `it` — unless it is a player, and every player
+/// alive is in that bucket because nothing sets `gender` at character creation.
+#[test]
+fn an_entity_with_no_gender_is_it_unless_it_is_a_player() {
+    let lua = grammar_lua();
+
+    assert_eq!(eval_str(&lua, "return G.set_for({ id = 'wisp' }).they"), "it");
+    assert_eq!(eval_str(&lua, "return G.set_for({ id = 'wisp' }).themself"), "itself");
+
+    assert_eq!(eval_str(&lua, "return G.set_for({ char_id = 1 }).they"), "they");
+    assert_eq!(eval_str(&lua, "return G.set_for({ char_id = 1 }).their"), "their");
+
+    // A declared gender wins over both.
+    assert_eq!(eval_str(&lua, "return G.set_for({ char_id = 1, gender = 'female' }).they"), "she");
+    assert_eq!(eval_str(&lua, "return G.set_for({ id = 'x', gender = 'male' }).them"), "him");
+}
+
+/// An entity may carry its own pronoun table, so neopronouns need nothing from
+/// the mudlib. Missing forms fill from neutral rather than becoming nil.
+#[test]
+fn an_entity_may_carry_its_own_pronoun_table() {
+    let lua = grammar_lua();
+    let out = eval_str(
+        &lua,
+        "local s = G.set_for({ char_id = 2, pronouns = { they = 'ze', them = 'hir', their = 'hir', theirs = 'hirs', themself = 'hirself' } }) return s.they .. '|' .. s.them .. '|' .. s.theirs .. '|' .. s.themself",
+    );
+    assert_eq!(out, "ze|hir|hirs|hirself");
+
+    let partial = eval_str(
+        &lua,
+        "local s = G.set_for({ char_id = 2, pronouns = { they = 'ze' } }) return s.they .. '|' .. s.their",
+    );
+    assert_eq!(partial, "ze|their", "an unspecified form falls back rather than vanishing");
+}
+
+/// Capitalising steps over a colour tag rather than putting a capital on a brace.
+#[test]
+fn capitalising_skips_a_leading_colour_tag() {
+    let lua = grammar_lua();
+    assert_eq!(eval_str(&lua, "return G.capitalise('a wisp')"), "A wisp");
+    assert_eq!(eval_str(&lua, "return G.capitalise('{cyan}a wisp')"), "{cyan}A wisp");
+    assert_eq!(eval_str(&lua, "return G.capitalise('{red}{bold}a wisp')"), "{red}{bold}A wisp");
+    assert_eq!(eval_str(&lua, "return G.capitalise('')"), "");
+    assert_eq!(eval_str(&lua, "return G.capitalise('{red}')"), "{red}");
+}
+
+/// An article is dropped so a possessive can take its place.
+#[test]
+fn an_article_is_stripped_for_a_possessive() {
+    let lua = grammar_lua();
+    assert_eq!(eval_str(&lua, "return G.strip_article('a longsword')"), "longsword");
+    assert_eq!(eval_str(&lua, "return G.strip_article('an iron key')"), "iron key");
+    assert_eq!(eval_str(&lua, "return G.strip_article('the Delver')"), "Delver");
+    assert_eq!(eval_str(&lua, "return G.strip_article('anvil')"), "anvil");
+    assert_eq!(eval_str(&lua, "return G.strip_article('right fist')"), "right fist");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Render — one authored line, read per viewer
+// ═══════════════════════════════════════════════════════════════════════════════
+
+fn render_lua() -> Lua {
+    let lua = make_test_lua();
+    lua.load(
+        "R = require('lib.render') \
+         wren = { char_id = 1, name = 'Wren', gender = 'female' } \
+         wisp = { id = 'mob:1', short = 'a pale wisp' } \
+         sword = { id = 'item:1', short = 'a longsword' } \
+         onlooker = { char_id = 2, name = 'Bram', gender = 'male' } \
+         ctx = { actor = wren, target = wisp, weapon = sword, dealt = 7 }",
+    )
+    .exec()
+    .unwrap();
+    lua
+}
+
+/// **The headline.** One template, three readers, three correct sentences.
+#[test]
+fn three_viewers_of_one_line_see_three_sentences() {
+    let lua = render_lua();
+    let t = "$Actor $actor.v(swing) $weapon.of(actor) at $target.";
+
+    assert_eq!(
+        eval_str(&lua, &format!("return R.render([[{t}]], ctx, wren)")),
+        "You swing your longsword at a pale wisp."
+    );
+    assert_eq!(
+        eval_str(&lua, &format!("return R.render([[{t}]], ctx, wisp)")),
+        "Wren swings her longsword at you."
+    );
+    assert_eq!(
+        eval_str(&lua, &format!("return R.render([[{t}]], ctx, onlooker)")),
+        "Wren swings her longsword at a pale wisp."
+    );
+}
+
+/// A viewer of nil makes nobody "you" — the mode a log line and the old
+/// `Abilities.render` both want.
+#[test]
+fn a_viewer_of_nil_makes_nobody_you() {
+    let lua = render_lua();
+    let out = eval_str(&lua, "return R.render('$Actor $actor.v(hit) $target.', ctx, nil)");
+    assert_eq!(out, "Wren hits a pale wisp.");
+    assert!(!out.contains("you"), "{out}");
+}
+
+/// An unknown token survives verbatim — role, form and argument alike.
+#[test]
+fn an_unknown_token_survives_verbatim() {
+    let lua = render_lua();
+    for t in [
+        "You strike $victim.",
+        "You strike $actor.blah.",
+        "You strike $dealt.v(swing).",
+        "You strike $target.nosuchform.",
+    ] {
+        assert_eq!(eval_str(&lua, &format!("return R.render([[{t}]], ctx, wren)")), t);
+    }
+}
+
+/// A table nothing can name is not renderable, so `$ability` survives rather
+/// than printing an address. This is the general form of the `$target` bug.
+#[test]
+fn an_unnameable_table_survives_rather_than_printing_an_address() {
+    let lua = render_lua();
+    let out = eval_str(
+        &lua,
+        "return R.render('$spec and $dealt', { spec = { cost = {}, cooldown = {} }, dealt = 3 }, nil)",
+    );
+    assert_eq!(out, "$spec and 3");
+    assert!(!out.contains("table: 0x"), "{out}");
+}
+
+/// A token boundary is the whole identifier, not a prefix.
+#[test]
+fn a_token_boundary_is_the_whole_identifier() {
+    let lua = render_lua();
+
+    // `$target_name` is one token and resolves on its own.
+    assert_eq!(
+        eval_str(&lua, "return R.render('$target_name', { target_name = 'the wisp' }, nil)"),
+        "the wisp"
+    );
+    // `$names` is not `$name` followed by an s.
+    assert_eq!(
+        eval_str(&lua, "return R.render('$names', { name = 'Wren' }, nil)"),
+        "$names"
+    );
+}
+
+/// A capital initial capitalises the rendered value, and only that.
+#[test]
+fn a_capital_initial_capitalises_the_rendered_value() {
+    let lua = render_lua();
+    assert_eq!(eval_str(&lua, "return R.render('$Target', ctx, nil)"), "A pale wisp");
+    assert_eq!(eval_str(&lua, "return R.render('$target', ctx, nil)"), "a pale wisp");
+    assert_eq!(eval_str(&lua, "return R.render('$Target', ctx, wisp)"), "You");
+    assert_eq!(eval_str(&lua, "return R.render('$Actor.their', ctx, nil)"), "Her");
+}
+
+/// A colour tag is not a token, and capitalising steps over one.
+#[test]
+fn a_colour_tag_is_left_alone() {
+    let lua = render_lua();
+    assert_eq!(
+        eval_str(&lua, "return R.render('{red}$Actor $actor.v(hit) $target.{/}', ctx, nil)"),
+        "{red}Wren hits a pale wisp.{/}"
+    );
+    assert_eq!(
+        eval_str(&lua, "return R.render('{cyan}$Target', ctx, nil)"),
+        "{cyan}A pale wisp"
+    );
+}
+
+/// `$$` is a literal dollar.
+#[test]
+fn a_double_dollar_is_a_literal_dollar() {
+    let lua = render_lua();
+    assert_eq!(eval_str(&lua, "return R.render('$$5 for $target', ctx, nil)"), "$5 for a pale wisp");
+}
+
+/// An item takes its owner's possessive, with the article stripped; without an
+/// owner it keeps its own article.
+#[test]
+fn an_item_renders_with_its_owners_possessive() {
+    let lua = render_lua();
+    assert_eq!(eval_str(&lua, "return R.render('$weapon.of(actor)', ctx, wren)"), "your longsword");
+    assert_eq!(eval_str(&lua, "return R.render('$weapon.of(actor)', ctx, nil)"), "her longsword");
+    assert_eq!(eval_str(&lua, "return R.render('$weapon', ctx, nil)"), "a longsword");
+    // An owner role that is not in ctx degrades to the plain name.
+    assert_eq!(eval_str(&lua, "return R.render('$weapon.of(nobody)', ctx, nil)"), "a longsword");
+}
+
+/// Verb agreement follows the subject, which is why the verb names it.
+#[test]
+fn a_verb_agrees_with_the_subject_it_names() {
+    let lua = render_lua();
+    let t = "$Actor $actor.v(be) here and $target $target.v(be) too.";
+    assert_eq!(
+        eval_str(&lua, &format!("return R.render([[{t}]], ctx, wren)")),
+        "You are here and a pale wisp is too."
+    );
+    assert_eq!(
+        eval_str(&lua, &format!("return R.render([[{t}]], ctx, wisp)")),
+        "Wren is here and you are too."
+    );
+}
+
+/// The same template parses once.
+#[test]
+fn the_same_template_parses_once() {
+    let lua = render_lua();
+    assert!(eval_bool(
+        &lua,
+        "local a = R.parse('$actor hits $target') local b = R.parse('$actor hits $target') return a == b"
+    ));
+    lua.load("R.flush_cache()").exec().unwrap();
+    assert!(eval_bool(
+        &lua,
+        "local a = R.parse('$actor hits $target') R.flush_cache() return a ~= R.parse('$actor hits $target')"
+    ));
+}
+
+/// `render_for` renders once per distinct role set, not once per viewer.
+#[test]
+fn a_group_render_costs_one_pass_per_role_set() {
+    let lua = render_lua();
+    let out = eval_str(
+        &lua,
+        "local viewers = { wren, wisp } \
+         for i = 1, 8 do viewers[#viewers+1] = { char_id = 100 + i, name = 'Extra' } end \
+         local calls = 0 local real = R.render \
+         R.render = function(...) calls = calls + 1 return real(...) end \
+         local map = R.render_for('$Actor $actor.v(hit) $target.', ctx, viewers) \
+         R.render = real \
+         return calls .. '|' .. map[wren] .. '|' .. map[wisp] .. '|' .. map[viewers[3]]",
+    );
+    assert_eq!(
+        out,
+        "3|You hit a pale wisp.|Wren hits you.|Wren hits a pale wisp.",
+        "ten viewers, two participants, three distinct sentences and three renders"
+    );
+}
+
+/// `display_name` defaults to `name`, which is what `combat_d` did before this
+/// existed. The `config` stub returns nil, so this is the fallback path.
+#[test]
+fn display_name_prefers_name_by_default() {
+    let lua = render_lua();
+    assert_eq!(eval_str(&lua, "return R.display_name({ name = 'Wren' })"), "Wren");
+    assert_eq!(
+        eval_str(&lua, "return R.display_name({ name = 'wisp', short = 'a pale wisp' })"),
+        "wisp"
+    );
+    assert_eq!(eval_str(&lua, "return R.display_name({ short = 'a rat' })"), "a rat");
+    assert_eq!(eval_str(&lua, "return R.display_name({ id = 'x' })"), "something");
+    // An lfun short resolves, as it does everywhere else.
+    assert_eq!(
+        eval_str(&lua, "return R.display_name({ short = function() return 'a shifting light' end })"),
+        "a shifting light"
+    );
+}
+
+/// `game.display_name_prefers = "short"` makes messages read as prose.
+///
+/// Which field names a creature in a sentence is a decision about what kind of
+/// game this is — "You hit a pale wisp" for roleplay, "You hit wisp" for
+/// hack-and-slash — so it is configuration rather than a rule. Either way the
+/// *other* field is the fallback, so a thing carrying only one still works.
+#[test]
+fn display_name_can_prefer_short_instead() {
+    let lua = render_lua();
+    lua.load(
+        "config = function(k) if k == 'game.display_name_prefers' then return 'short' end end \
+         R.flush_cache()",
+    )
+    .exec()
+    .unwrap();
+
+    assert_eq!(
+        eval_str(&lua, "return R.display_name({ name = 'wisp', short = 'a pale wisp' })"),
+        "a pale wisp"
+    );
+    // Fallbacks, both directions.
+    assert_eq!(eval_str(&lua, "return R.display_name({ name = 'Wren' })"), "Wren");
+    assert_eq!(eval_str(&lua, "return R.display_name({ short = 'a rat' })"), "a rat");
+    assert_eq!(eval_str(&lua, "return R.display_name({ id = 'x' })"), "something");
+
+    // And it reaches a rendered line, which is the point of the setting.
+    assert_eq!(
+        eval_str(
+            &lua,
+            "return R.render('$Actor $actor.v(hit) $target.', \
+             { actor = { name = 'Wren' }, target = { name = 'wisp', short = 'a pale wisp' } }, nil)"
+        ),
+        "Wren hits a pale wisp."
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Queues — roundtime arithmetic and the shape of a track
+// ═══════════════════════════════════════════════════════════════════════════════
+
+fn queues_lua() -> Lua {
+    let lua = make_test_lua();
+    lua.load("Q = require('lib.queues') AB = require('lib.abilities')").exec().unwrap();
+    lua
+}
+
+/// Rounds ceil to whole seconds, because the clock is whole seconds.
+///
+/// `os_time()` is integer, so a stored expiry of `now + 2.25` is observed at
+/// one-second granularity — the gate would open somewhere in [2s, 3s] depending
+/// on where inside the second it was marked. A stated 3 beats an unstated
+/// 2-or-3, and the variance would be invisible and unreproducible.
+#[test]
+fn rounds_ceil_to_whole_seconds_because_the_clock_does() {
+    let lua = queues_lua();
+    assert_eq!(eval_int(&lua, "return Q.rounds_to_seconds(0.75, 4)"), 3);
+    assert_eq!(eval_int(&lua, "return Q.rounds_to_seconds(0.75, 8)"), 6);
+    assert_eq!(eval_int(&lua, "return Q.rounds_to_seconds(1, 3)"), 3);
+    assert_eq!(eval_int(&lua, "return Q.rounds_to_seconds(1.25, 4)"), 5);
+    // 2.25 rounds up rather than truncating to something the clock cannot show.
+    assert_eq!(eval_int(&lua, "return Q.rounds_to_seconds(0.5625, 4)"), 3);
+    // Floored at one: a roundtime of zero is not a roundtime.
+    assert_eq!(eval_int(&lua, "return Q.rounds_to_seconds(0.01, 4)"), 1);
+    // And nothing at all when either half is absent.
+    assert_eq!(eval_int(&lua, "return Q.rounds_to_seconds(0, 4)"), 0);
+    assert_eq!(eval_int(&lua, "return Q.rounds_to_seconds(1, 0)"), 0);
+}
+
+/// `{ rounds = n }` is multiplicative, which is why it is a branch and not a
+/// desugar into the additive `scale`.
+#[test]
+fn a_rounds_amount_multiplies_the_characters_round() {
+    let lua = queues_lua();
+
+    assert_eq!(eval_int(&lua, "return AB.roll({ rounds = 0.75 }, { round_length = 4 })"), 3);
+    assert_eq!(eval_int(&lua, "return AB.roll({ rounds = 1 }, { round_length = 4 })"), 4);
+    assert_eq!(eval_int(&lua, "return AB.roll({ rounds = 1.25 }, { round_length = 4 })"), 5);
+
+    // A different character, a different round — the same authored spec.
+    assert_eq!(eval_int(&lua, "return AB.roll({ rounds = 0.75 }, { round_length = 8 })"), 6);
+
+    // The proof it cannot be `scale`: scaling reads a trait off the *user* and
+    // adds, so with a base of 0 it is 0 whatever the round length is.
+    assert_eq!(
+        eval_int(
+            &lua,
+            "return AB.roll({ min = 0, max = 0, scale = { trait = 'round_length', per = 0.75 } }, { round_length = 4 })"
+        ),
+        0,
+        "the desugar could not have worked; scale is additive and off the user"
+    );
+}
+
+/// A rounds component may itself be rolled, and a scale adds flat seconds.
+#[test]
+fn a_rounds_amount_composes_with_the_shapes_around_it() {
+    let lua = queues_lua();
+
+    // A range of rounds, low end pinned.
+    assert_eq!(
+        eval_int(
+            &lua,
+            "return AB.roll({ rounds = { min = 1, max = 3 } }, { round_length = 4 }, function(n) return 1 end)"
+        ),
+        4
+    );
+    // Flat seconds on top of a round.
+    assert_eq!(
+        eval_int(
+            &lua,
+            "return AB.roll({ rounds = 1, scale = { trait = 'haste', per = 1 } }, { round_length = 4, user = { trait = function() return -2 end } })"
+        ),
+        2,
+        "one round of four, less two seconds of haste"
+    );
+}
+
+/// The roundtime key is per track, so two tracks cannot gate each other.
+#[test]
+fn the_roundtime_key_is_per_track() {
+    let lua = queues_lua();
+    assert_eq!(eval_str(&lua, "return Q.rt_key('combat')"), "rt.combat");
+    assert_eq!(eval_str(&lua, "return Q.rt_key('crafting')"), "rt.crafting");
+    assert_eq!(eval_str(&lua, "return Q.rt_key(nil)"), "rt.combat");
+    assert!(eval_bool(&lua, "return Q.rt_key('combat') ~= Q.rt_key('crafting')"));
+}
+
+/// A queue refuses past its bound rather than dropping what was promised.
+#[test]
+fn a_queue_refuses_the_newest_past_its_bound() {
+    let lua = queues_lua();
+    let out = eval_str(
+        &lua,
+        "local q = {} local opts = { max = 2 } local a = Q.push(q, { id = 'one' }, opts) local b = Q.push(q, { id = 'two' }, opts) local c = Q.push(q, { id = 'three' }, opts) return tostring(a) .. '|' .. tostring(b) .. '|' .. tostring(c) .. '|' .. #q .. '|' .. q[1].id",
+    );
+    assert_eq!(out, "true|true|false|2|one", "the newest is refused; the promised ones stay");
+}
+
+/// A front insert jumps the queue without displacing anything.
+#[test]
+fn a_front_insert_does_not_displace() {
+    let lua = queues_lua();
+    let out = eval_str(
+        &lua,
+        "local q = {} local opts = { max = 3 } Q.push(q, { id = 'one' }, opts) Q.push(q, { id = 'two' }, opts) Q.push(q, { id = 'jump' }, { max = 3, front = true }) local ids = {} for _, e in ipairs(q) do ids[#ids+1] = e.id end return table.concat(ids, ',') .. '|' .. Q.pop(q).id .. '|' .. #q",
+    );
+    assert_eq!(out, "jump,one,two|jump|2");
+}
+
+/// A stale entry is one the player would be surprised to see act.
+#[test]
+fn an_entry_goes_stale_rather_than_replaying_a_minute_later() {
+    let lua = queues_lua();
+    assert!(eval_bool(&lua, "return Q.is_stale({ at = 0 }, 45, 30)"));
+    assert!(!eval_bool(&lua, "return Q.is_stale({ at = 0 }, 20, 30)"));
+    // Zero disables it, and an entry with no timestamp never goes stale.
+    assert!(!eval_bool(&lua, "return Q.is_stale({ at = 0 }, 9999, 0)"));
+    assert!(!eval_bool(&lua, "return Q.is_stale({ id = 'x' }, 9999, 30)"));
+}
+
+/// History is newest-first, bounded, and carries no entity references.
+#[test]
+fn history_is_bounded_and_holds_no_entities() {
+    let lua = queues_lua();
+    let out = eval_str(
+        &lua,
+        "local h = {} for i = 1, 5 do Q.remember(h, { kind = 'ability', id = 'a' .. i, at = i, target = { id = 'mob:1' } }, 3) end local ids = {} local refs = 0 for _, e in ipairs(h) do ids[#ids+1] = e.id if e.target ~= nil then refs = refs + 1 end end return table.concat(ids, ',') .. '|' .. refs",
+    );
+    assert_eq!(out, "a5,a4,a3|0", "newest first, three kept, and the target did not come along");
+}
+
+/// A track fills itself out, and refuses a policy that is not one.
+#[test]
+fn a_track_normalises_and_refuses_a_bad_policy() {
+    let lua = queues_lua();
+    let out = eval_str(
+        &lua,
+        "local t = Q.normalise_track({ id = 'combat' }) return t.round_trait .. '|' .. t.round_seconds .. '|' .. t.max .. '|' .. t.empty",
+    );
+    assert_eq!(out, "round_length|3|3|idle");
+
+    // A crafting track names its own round, and nothing is hardcoded.
+    assert_eq!(
+        eval_str(&lua, "return Q.normalise_track({ id = 'crafting', round_trait = 'craft_round_length' }).round_trait"),
+        "craft_round_length"
+    );
+
+    assert_eq!(
+        eval_str(&lua, "local _, e = Q.normalise_track({ id = 'x', empty = 'wander' }) return e"),
+        "'wander' is not an empty-queue policy. One of: auto idle repeat"
+    );
+    assert_eq!(
+        eval_str(&lua, "local _, e = Q.normalise_track({}) return e"),
+        "a track needs a string id"
+    );
+}
+
+/// `track` defaults to combat, and `none` opts out for ever.
+#[test]
+fn an_ability_declares_which_track_it_belongs_to() {
+    let lua = queues_lua();
+    assert_eq!(eval_str(&lua, "return tostring(AB.normalise({ id = 'a' }).track)"), "combat");
+    assert_eq!(
+        eval_str(&lua, "return tostring(AB.normalise({ id = 'b', track = 'crafting' }).track)"),
+        "crafting"
+    );
+    assert_eq!(eval_str(&lua, "return tostring(AB.normalise({ id = 'c', track = 'none' }).track)"), "nil");
+    assert_eq!(eval_str(&lua, "return tostring(AB.normalise({ id = 'd', track = false }).track)"), "nil");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Combat — the resolution arithmetic
+// ═══════════════════════════════════════════════════════════════════════════════
+
+fn combat_lua() -> Lua {
+    let lua = make_test_lua();
+    lua.load("C = require('lib.combat')").exec().unwrap();
+    lua
+}
+
+/// **The most important test in the change.** The default configuration
+/// reproduces the one-line formula it replaced, exactly.
+///
+/// Combat was `clamp(60 + (a_dex - d_dex) * 3, 5, 95)`. The pipeline computes
+/// `clamp(BASE + (A - D) * STEP, FLOOR, CEIL)` with those four as defaults, so a
+/// game that configures nothing gets what it had — and there is no second code
+/// path to drift from the first.
+#[test]
+fn the_default_threshold_reproduces_the_formula_it_replaced() {
+    let lua = combat_lua();
+
+    for (a, d) in [
+        (10, 10), (12, 8), (8, 12), (20, 5), (5, 20),
+        (0, 0), (50, 1), (1, 50), (14, 13), (7, 19),
+    ] {
+        let want = (60 + (a - d) * 3).clamp(5, 95);
+        let got = eval_int(
+            &lua,
+            &format!("return C.threshold({a}, {{ {{ id = 'dodge', value = {d} }} }})"),
+        );
+        assert_eq!(got, want, "a={a} d={d}");
+    }
+}
+
+/// The clamp holds at both ends, so nothing is ever certain either way.
+#[test]
+fn the_threshold_clamps_at_both_ends() {
+    let lua = combat_lua();
+    assert_eq!(
+        eval_int(&lua, "return C.threshold(0, { { id = 'dodge', value = 999 } })"),
+        5
+    );
+    assert_eq!(
+        eval_int(&lua, "return C.threshold(999, { { id = 'dodge', value = 0 } })"),
+        95
+    );
+}
+
+/// Shares normalise over the **available** set, so an unusable channel costs
+/// nothing rather than leaking effort.
+#[test]
+fn effort_redistributes_over_what_can_actually_be_used() {
+    let lua = combat_lua();
+
+    // All three available: 2/2/1 of five.
+    let out = eval_str(
+        &lua,
+        "local s = C.shares({ dodge = 2, parry = 2, block = 1 }, { dodge = true, parry = true, block = true }) return string.format('%.2f|%.2f|%.2f', s.dodge, s.parry, s.block)",
+    );
+    assert_eq!(out, "0.40|0.40|0.20");
+
+    // No shield: block's share goes to the two that remain, not to waste.
+    let out = eval_str(
+        &lua,
+        "local s = C.shares({ dodge = 2, parry = 2, block = 1 }, { dodge = true, parry = true }) return string.format('%.2f|%.2f|%s', s.dodge, s.parry, tostring(s.block))",
+    );
+    assert_eq!(out, "0.50|0.50|nil", "not 0.40/0.40 with a fifth thrown away");
+
+    // Nothing available is an empty table, not a division by zero.
+    assert_eq!(
+        eval_str(&lua, "local s = C.shares({ dodge = 1 }, {}) local n = 0 for _ in pairs(s) do n = n + 1 end return tostring(n)"),
+        "0"
+    );
+}
+
+/// The strongest channel is the one that answers, and ties break by id.
+#[test]
+fn the_strongest_channel_is_the_one_that_defends() {
+    let lua = combat_lua();
+
+    let out = eval_str(
+        &lua,
+        "local cs = C.channels({ dodge = 1, parry = 3 }, 20, { dodge = true, parry = true }) local _, ch, d = C.threshold(10, cs) return ch .. '|' .. string.format('%.0f', d)",
+    );
+    assert_eq!(out, "parry|15", "three quarters of twenty");
+
+    // A tie is decided by name, never by `pairs` order.
+    let out = eval_str(
+        &lua,
+        "local cs = C.channels({ dodge = 1, parry = 1 }, 20, { dodge = true, parry = true }) local _, ch = C.threshold(10, cs) return ch",
+    );
+    assert_eq!(out, "dodge");
+}
+
+/// An ability's multipliers move the threshold in the direction their names claim.
+#[test]
+fn an_attacks_multipliers_move_the_contest() {
+    let lua = combat_lua();
+
+    let plain = eval_int(&lua, "return C.threshold(10, { { id = 'dodge', value = 10 } })");
+    assert_eq!(plain, 60);
+
+    // Harder to dodge: the defender's rating is cut, so the attack lands more.
+    let cut = eval_int(
+        &lua,
+        "local cs = C.channels({ dodge = 1 }, 10, { dodge = true }, { multipliers = { dodge = 0.5 } }) return C.threshold(10, cs)",
+    );
+    assert!(cut > plain, "a defence multiplier below one should help the attacker: {cut}");
+
+    // And accuracy does the same from the other side.
+    let out = eval_str(
+        &lua,
+        "local r = C.resolve({ accuracy = 10, accuracy_multiplier = 2, channels = { { id = 'dodge', value = 10 } } }, function(n) return 1 end) return r.threshold .. '|' .. tostring(r.hit)",
+    );
+    assert_eq!(out, "90|true");
+}
+
+/// The margin is out of 100, not out of the threshold.
+///
+/// A 95%-to-hit attack rolling 3 is a decisive blow — a skill differential
+/// expressing itself. A 10%-to-hit attack rolling 3 is a graze — that is luck,
+/// and luck should scrape. Dividing by the threshold inverts both.
+#[test]
+fn the_margin_is_out_of_a_hundred_so_luck_only_ever_grazes() {
+    let lua = combat_lua();
+
+    let skilled = eval_int(
+        &lua,
+        "return C.resolve({ accuracy = 99, channels = { { id = 'dodge', value = 0 } } }, function(n) return 3 end).margin",
+    );
+    let lucky = eval_int(
+        &lua,
+        "return C.resolve({ accuracy = 0, channels = { { id = 'dodge', value = 99 } } }, function(n) return 3 end).margin",
+    );
+    assert_eq!(skilled, 92, "95 threshold less a roll of 3");
+    assert_eq!(lucky, 2, "a 5 threshold less a roll of 3 — a scrape");
+    assert!(skilled > lucky * 10, "the two must not be close");
+}
+
+/// The shipped band table is one band worth exactly what a hit was worth before
+/// degrees existed. Asserted explicitly so nobody "improves" it into a
+/// compatibility break.
+#[test]
+fn the_shipped_degree_table_changes_no_damage() {
+    let lua = combat_lua();
+    assert_eq!(eval_int(&lua, "return #C.DEFAULT_DEGREES"), 1);
+    // `string.format`, not `tostring`: 5.5 renders a float `1.0` and LuaJIT
+    // renders `1`, and the assertion is about the value, not the printing.
+    assert_eq!(eval_str(&lua, "return string.format('%.1f', C.DEFAULT_DEGREES[1].power)"), "1.0");
+    assert_eq!(eval_int(&lua, "return C.DEFAULT_DEGREES[1].at"), 0);
+
+    // And a resolve with no band table reports power 1.
+    assert_eq!(
+        eval_str(&lua, "return string.format('%.1f', C.resolve({ accuracy = 50, channels = {} }, function(n) return 1 end).power)"),
+        "1.0"
+    );
+}
+
+/// A band table is looked up from the top down.
+#[test]
+fn a_degree_band_is_the_highest_one_the_margin_reaches() {
+    let lua = combat_lua();
+    lua.load(
+        "BANDS = C.normalise_degrees({ { id = 'graze', at = 0, power = 0.5 }, { id = 'solid', at = 30, power = 1.0 }, { id = 'decisive', at = 70, power = 1.75 } })",
+    )
+    .exec()
+    .unwrap();
+
+    // Sorted descending on normalise, whatever order they were written in.
+    assert_eq!(eval_str(&lua, "return BANDS[1].id"), "decisive");
+
+    for (margin, want) in [(0, "graze"), (29, "graze"), (30, "solid"), (69, "solid"), (70, "decisive"), (99, "decisive")] {
+        assert_eq!(
+            eval_str(&lua, &format!("return C.degree({margin}, BANDS).id")),
+            want,
+            "margin {margin}"
+        );
+    }
+}
+
+/// Damage composes the degree with where it landed.
+#[test]
+fn damage_composes_the_degree_and_the_location() {
+    let lua = combat_lua();
+
+    assert_eq!(eval_int(&lua, "return C.damage(10, { power = 1.0 })"), 10);
+    assert_eq!(eval_int(&lua, "return C.damage(10, { power = 1.5 })"), 15);
+
+    // A part multiplier and a proportional vulnerability compound.
+    assert_eq!(
+        eval_int(&lua, "return C.damage(10, { power = 1.0 }, { multiplier = 2 })"),
+        20
+    );
+    assert_eq!(
+        eval_int(
+            &lua,
+            "return C.damage(10, { power = 1.0 }, { vulnerable = { piercing = 0.25 } }, 'piercing')"
+        ),
+        12
+    );
+    // A vulnerability for another damage type does nothing.
+    assert_eq!(
+        eval_int(
+            &lua,
+            "return C.damage(10, { power = 1.0 }, { vulnerable = { piercing = 0.25 } }, 'blunt')"
+        ),
+        10
+    );
+}
+
+/// A channel spec fills itself out and refuses what cannot be one.
+#[test]
+fn a_channel_spec_normalises() {
+    let lua = combat_lua();
+    assert_eq!(eval_str(&lua, "return C.normalise_channel('parry', {}).trait"), "defense_parry");
+    assert_eq!(
+        eval_str(&lua, "return C.normalise_channel('parry', { trait = 'blade_work' }).trait"),
+        "blade_work"
+    );
+    assert_eq!(
+        eval_str(&lua, "local _, e = C.normalise_channel('x', { available = 3 }) return e"),
+        "a channel's `available` must be a function"
+    );
+    assert_eq!(
+        eval_str(&lua, "local _, e = C.normalise_channel(nil, {}) return e"),
+        "a channel needs a string id"
+    );
+}

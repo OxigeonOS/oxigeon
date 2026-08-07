@@ -290,6 +290,66 @@ and one memory-tier cache key.
 
 See `docs/src/lua-api/abilities.md`.
 
+## Roundtime Belongs to a Track, Never to a Command
+
+`look`, `say` and `who` work while you are recovering, and not by an exemption
+list: nothing in command dispatch reads a track, so they never enter the code
+path. A track is a named lane of intent — combat first, crafting and gathering
+later — with its own queue, its own gate and its own idea of a round.
+
+- **Recovery is not occupation.** `ability_d`'s `cast_time` owns "you are busy";
+  a track's roundtime owns "this lane may not act again yet". Because they are
+  different they need no arbitration — a tick skips an entity that is casting,
+  and that is the whole interaction.
+- **Roundtime is a `cooldown_d` entry under `rt.<track>`.** Always under a
+  minute, so the existing threshold rule already puts it in memory and forgets
+  it on restart, `evict_owner` already cleans it up, and `cooldown` already
+  answers "why can't I swing".
+- **Only roundtime enqueues.** A cooldown, a cost, a requirement and a mistyped
+  target all still refuse. The enqueue sits below target resolution, so a typo
+  still costs nothing.
+- **`{ rounds = n }` is multiplicative and `scale` is additive**, so it is a real
+  branch and never a desugar. A round is a derived trait the *game* defines; an
+  absent one falls back and warns, because a silent zero is a wrong answer.
+
+## Today's Combat Formula Is the New Default, Not a Second Path
+
+`clamp(60 + (a_dex - d_dex) * 3, 5, 95)` is `clamp(BASE + (A - D) * STEP, FLOOR,
+CEIL)` with the shipped configuration and both ratings falling back to
+dexterity. There is no `if legacy then` anywhere, and the prettier ratio form was
+rejected because it silently rebalances a shipped game.
+
+- **The margin is out of 100, not out of the threshold.** A 95% attack rolling 3
+  is a decisive blow; a 10% attack rolling 3 is a graze. Normalising inverts
+  both. What a degree is *worth* is game content — the mudlib ships one band at
+  power 1.0 so damage is unchanged until a game says otherwise.
+- **A defence channel is a registry entry, and presence is decided by storage**:
+  an entity has one iff it holds that channel's trait. The allocation is
+  ordinary attributes, so effects modify it for free and no new store exists.
+  Holding none gives one implicit dodge worth the whole pool, which is the
+  no-configuration path.
+- **A body layout is optional by absence.** No layout means no location, **no
+  roll consumed choosing one**, and `ev.hit_slot` nil — so the per-slot armour
+  guard is skipped, which is every call the game makes today.
+
+## A Line Is Authored Once and Read Per Viewer
+
+`"$Actor $actor.v(draw) a line of fire at $target."` renders three ways. `$` was
+chosen so it *subsumes* the substitution `ability_d` already did rather than
+competing with `{colour}` — `lib/color.lua` matches `{(.-)}` over the whole
+string, so a role and a colour tag would be indistinguishable in the source.
+
+- **An unknown token survives verbatim.** "You strike $victim" is a typo somebody
+  can see; "You strike " is a bug they will stare at. A table nothing can name
+  survives too, which is the general form of the `$target` bug that shipped.
+- **English asks the agreement question twice.** `plural` is agreement when the
+  *pronoun* is the subject; `collective` is agreement when the *name* is. A
+  they/them person takes "they swing" and "Ash swings", so one flag cannot do it.
+- **An entity with no gender is `it`, unless it is a player, and then `neutral`.**
+  Nothing sets `gender` at character creation, so that is the default path.
+- Which name a creature gets in a sentence is `game.display_name_prefers`, not a
+  rule: prose wants `short`, hack-and-slash wants `name`.
+
 ## Lua Coding Conventions
 
 - Use `\r\n` for player-facing text sent via `send()`
@@ -316,7 +376,7 @@ See `docs/src/lua-api/abilities.md`.
 
 ## Testing
 
-Run `cargo test` before committing. All tests must pass. Current count: 1097 on the default `lua55` and 1094 on `--no-default-features --features luajit`, both green.
+Run `cargo test` before committing. All tests must pass. Current count: 1196 on the default `lua55`, green on both it and `--no-default-features --features luajit`.
 
 Do not pin a number that is really a property of the daemon roster. A logpoint
 test asserted `#ids == 2` on `ticker_d.list()`, which meant adding a heartbeat to

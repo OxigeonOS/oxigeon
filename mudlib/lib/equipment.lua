@@ -144,6 +144,17 @@ local function ensure_protection_effect()
                     local state = ctx.inst.state
                     if type(state) ~= "table" then return end
 
+                    -- Only the piece that was actually in the way.
+                    --
+                    -- **When `ev.hit_slot` is nil this is skipped**, and it is
+                    -- nil for every call the game makes today: `affect damage`,
+                    -- an ability's damage, a poison tick, and every fight
+                    -- against a creature with no body layout. That is what
+                    -- makes per-location armour additive rather than a change.
+                    if ev.hit_slot and state.slot and ev.hit_slot ~= state.slot then
+                        return
+                    end
+
                     local reduction = tonumber(state.defense) or 0
                     -- Resist is looked up by the damage type on the event, so
                     -- a warded cloak blunts the wisp and does nothing at all
@@ -156,6 +167,33 @@ local function ensure_protection_effect()
                     ev.amount = (ev.amount or 0) - reduction
                 end,
             },
+            -- Proportional mitigation, in the `mult` phase so it lands *before*
+            -- the flat reduction above — which is the ordering `effects.md`
+            -- already argues for, so plate blunts a category and the flat
+            -- number then comes off what is left.
+            ["damage_taken#absorb"] = {
+                hook  = "damage_taken",
+                phase = "mult",
+                fn    = function(ev, ctx)
+                    local state = ctx.inst.state
+                    if type(state) ~= "table" then return end
+                    if ev.hit_slot and state.slot and ev.hit_slot ~= state.slot then
+                        return
+                    end
+                    if type(state.absorb) ~= "table" then return end
+
+                    local by_type = tonumber(state.absorb[ev.damage_type or "physical"])
+                        or tonumber(state.absorb.all)
+                    if not by_type or by_type == 0 then return end
+
+                    local cap = 0.75
+                    local cok, v = pcall(config, "game.combat_absorb_cap")
+                    if cok and type(v) == "number" then cap = v end
+                    if by_type > cap then by_type = cap end
+
+                    ev.scale = (ev.scale or 0) - by_type
+                end,
+            },
         },
     })
     return ok and "equip_protection" or nil
@@ -166,7 +204,7 @@ end
 --- The effect specs a single equipped item produces.
 --- @param item table  the resolved item
 --- @return table  array of `set_source_effects` specs
-local function specs_for(item)
+local function specs_for(item, slot)
     local specs = {}
     if type(item) ~= "table" then return specs end
 
@@ -178,6 +216,8 @@ local function specs_for(item)
     for _, spec in ipairs(Components.equip_specs(item, {
         trait_effect      = ensure_trait_effect,
         protection_effect = ensure_protection_effect,
+        -- Which slot this piece is in, so protection knows what it covers.
+        slot              = slot,
     })) do
         specs[#specs + 1] = spec
     end
@@ -230,7 +270,7 @@ function M.refresh_slot(entity, slot, item)
         pcall(DAEMON.ability.set_source_abilities, entity, source, item.grants_abilities)
     end
 
-    local specs = specs_for(item)
+    local specs = specs_for(item, slot)
     if #specs == 0 then return end
 
     local sok, serr = pcall(DAEMON.effect.set_source_effects, entity, source, specs)

@@ -86,9 +86,13 @@ return {
                      scale = { trait = "spell_power", per = 2 } },
         engage   = true,
 
+        -- One authored sentence, rendered per reader: the caster reads "You
+        -- draw", the target reads "you" as the thing being drawn at, and the
+        -- room reads names throughout. Before the render layer this was three
+        -- strings kept in step by hand, and the room's copy did not name a
+        -- target at all.
         messages = {
-            self   = "{red}You draw a line of fire at $target.{/}",
-            room   = "$name draws a line of fire.",
+            line   = "{red}$Actor $actor.v(draw) a line of fire at $target.{/}",
             result = "It takes $dealt.",
         },
     },

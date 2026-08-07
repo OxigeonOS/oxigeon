@@ -43,6 +43,12 @@ function M.from_data(data)
         armor_type = data.armor_type or "medium",
         -- damage_type -> reduction. Negative is a weakness: { fire = 5, ice = -3 }
         resist     = type(data.resist) == "table" and data.resist or {},
+        -- Proportional mitigation, per damage type, capped. `resist` is flat;
+        -- this is a fraction, so heavy plate can blunt a category rather than
+        -- subtracting a number that stops mattering as damage grows.
+        absorb     = type(data.absorb) == "table" and data.absorb or {},
+        -- Whether this interposes. Feeds combat's `block` channel.
+        shield     = data.shield == true,
         -- trait id -> bonus, applied while worn: { max_hp = 20, strength = 2 }
         stat_bonus = type(data.stat_bonus) == "table" and data.stat_bonus or {},
     }
@@ -62,6 +68,10 @@ M.fields = {
       help = "Weight class. Feeds the movement and dexterity penalty." },
     { name = "resist", type = "map", of = "number", default = {}, editable = true,
       help = "damage_type -> reduction. Negative is a weakness." },
+    { name = "absorb", type = "map", of = "number", default = {}, editable = true,
+      help = "damage_type -> fraction absorbed, 0..1. `all` covers every type." },
+    { name = "shield", type = "boolean", default = false, editable = true,
+      help = "Whether this can be blocked with. Feeds combat's block channel." },
     { name = "stat_bonus", type = "map", of = "number", key_source = "trait",
       default = {}, editable = true,
       help = "trait id -> bonus, applied while worn." },
@@ -79,6 +89,8 @@ function M.to_data(item)
         defense    = a.defense,
         armor_type = a.armor_type,
         resist     = a.resist,
+        absorb     = a.absorb,
+        shield     = a.shield,
         stat_bonus = a.stat_bonus,
     }
 end
@@ -177,12 +189,21 @@ function M.equip_specs(item, ctx)
     for _, v in pairs(a.resist or {}) do
         if type(v) == "number" and v ~= 0 then has_resist = true break end
     end
-    if (defense ~= 0 or has_resist) and type(ctx.protection_effect) == "function" then
+    local has_absorb = false
+    for _, v in pairs(a.absorb or {}) do
+        if type(v) == "number" and v ~= 0 then has_absorb = true break end
+    end
+    if (defense ~= 0 or has_resist or has_absorb)
+        and type(ctx.protection_effect) == "function" then
         local def_id = ctx.protection_effect()
         if def_id then
             specs[#specs + 1] = {
                 def = def_id,
-                state = { defense = defense, resist = a.resist or {} },
+                -- `slot` so a hit to the head is not blunted by boots. Nil when
+                -- the caller does not know, and the guard downstream is skipped
+                -- when it is nil.
+                state = { defense = defense, resist = a.resist or {},
+                          absorb = a.absorb or {}, slot = ctx.slot },
             }
         end
     end

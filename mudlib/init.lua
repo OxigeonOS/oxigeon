@@ -40,6 +40,12 @@ if not ok then log("warn", "Failed to load effect_d daemon: " .. tostring(err)) 
 ok, err = pcall(function() DAEMON.mobs    = require("daemons.mob_d") end)
 if not ok then log("warn", "Failed to load mob_d daemon: " .. tostring(err)) end
 
+-- Before combat and abilities, both of which register or read a track. It needs
+-- only cache, cooldown, trait and ticker at load; it reaches the other two
+-- through DAEMON at tick time, which is after everything has loaded.
+ok, err = pcall(function() DAEMON.queue   = require("daemons.queue_d") end)
+if not ok then log("warn", "Failed to load queue_d daemon: " .. tostring(err)) end
+
 ok, err = pcall(function() DAEMON.combat  = require("daemons.combat_d") end)
 if not ok then log("warn", "Failed to load combat_d daemon: " .. tostring(err)) end
 
@@ -253,6 +259,14 @@ function on_disconnect(session_id)
         -- Drop anything they were in the middle of. Before `evict_owner`,
         -- because cancelling a cast may adjust a gauge and that wants flushing
         -- with the rest.
+        if DAEMON and DAEMON.queue then
+            local ok, err = pcall(DAEMON.queue.cleanup, char_id)
+            if not ok then
+                log("error", "Failed to clear the action queue for "
+                    .. tostring(char_id) .. ": " .. tostring(err))
+            end
+        end
+
         if DAEMON and DAEMON.ability then
             local ok, err = pcall(DAEMON.ability.cleanup, char_id)
             if not ok then
@@ -530,6 +544,7 @@ function on_load(module_name)
         ["daemons.mob_d"]        = "mobs",
         ["daemons.combat_d"]     = "combat",
         ["daemons.ability_d"]    = "ability",
+        ["daemons.queue_d"]      = "queue",
     }
 
     -- Convert slash-separated path to dot-separated require path
@@ -576,5 +591,11 @@ function on_load(module_name)
     local prototypes = package.loaded["prototypes"]
     if prototypes and prototypes.flush_cache then
         prototypes.flush_cache()
+    end
+
+    -- And the body index, so an edited layout takes effect on reload.
+    local bodies = package.loaded["body"]
+    if bodies and bodies.flush_cache then
+        bodies.flush_cache()
     end
 end
