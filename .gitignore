@@ -1,6 +1,10 @@
 # Build output
 /target
 
+# Game and Mudlib dirs
+game/
+mudlib/
+
 # Database files
 oxigeon.db
 *.db-journal
