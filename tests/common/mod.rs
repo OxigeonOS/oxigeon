@@ -239,6 +239,29 @@ DAEMON.trait.define_all({
     { id = "fixture_skill", label = "Fixture Skill", kind = "counter",
       category = "skill", group = "skills", sets = false, min = 0 },
 
+    -- ─── The combat clock ────────────────────────────────────────────────────
+    --
+    -- A fixture world needs a round length, or `queue_d` falls back to the flat
+    -- `game.combat_round_seconds` and every test of pacing passes by measuring
+    -- a constant. That is not hypothetical: the first version of
+    -- `tests/mudlib/swing_rate.rs` asserted a 3.0s baseline and got it from the
+    -- fallback, in a world with no such trait.
+    --
+    -- Deliberately **not** the shipped game's formula. This one is coarser, so
+    -- nobody mistakes it for a statement about balance — the mudlib tests assert
+    -- that encumbrance and strength move the number, and `demo_world` asserts
+    -- what this game's numbers actually are.
+    { id = "encumbrance", label = "Encumbrance", kind = "attribute",
+      group = "derived", default = 0, min = 0, hidden = true },
+    { id = "round_length", label = "Round Length", kind = "derived",
+      group = "derived", depends = { "dexterity", "strength", "encumbrance" },
+      min = 1.5, max = 6, round = "none", hidden = true,
+      formula = function(t)
+          local over = t.encumbrance - t.strength
+          if over < 0 then over = 0 end
+          return 3.0 - (t.dexterity - 10) * 0.05 + over * 0.1
+      end },
+
     -- A footing resource: a 0-20 pool resting at 10, spent by heavy actions and
     -- restored by recovering. **No `regen` block**, so it never ticks on its
     -- own — which is the whole shape, and `trait_d` already permits it.

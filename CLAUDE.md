@@ -305,9 +305,29 @@ later — with its own queue, its own gate and its own idea of a round.
   minute, so the existing threshold rule already puts it in memory and forgets
   it on restart, `evict_owner` already cleans it up, and `cooldown` already
   answers "why can't I swing".
-- **Only roundtime enqueues.** A cooldown, a cost, a requirement and a mistyped
-  target all still refuse. The enqueue sits below target resolution, so a typo
-  still costs nothing.
+- **Waiting enqueues; being unable refuses.** Roundtime and a cooldown are both
+  waiting, so both queue. A cost you cannot pay, a requirement you do not meet,
+  an unknown ability and a mistyped target are *unable*, and refuse — queueing
+  those promises something that cannot happen. The enqueue sits below target
+  resolution, so a typo still costs nothing.
+
+  It was cooldowns-refuse for a while, on the argument that a cooldown says "not
+  this, for a while" and roundtime says "not yet, but soon". True, and not a
+  distinction the player is in a position to make: from the seat both are *I
+  want this and it is not happening*, and two behaviours out of one intent reads
+  as the game being arbitrary. `queue_d`'s resolver may return `"retry"` to be
+  put back rather than dropped, which is what makes it safe — without it a
+  queued ability whose cooldown had not cleared was popped and silently lost.
+- **A round is the entity's clock; `speed` is the action's cost in rounds.**
+  `round_length` gates everything on the track, so armour and encumbrance belong
+  there and are paid for out of `strength`. A weapon's `speed` is a *rate* — the
+  time one swing costs is `round_length / speed` — and it only affects swings.
+  That is why armour counts for more than a weapon without needing a bigger
+  coefficient: it taxes every action rather than one.
+
+  `game.queue_tick_seconds` quantises all of it. At the 1s it shipped with, a
+  player at 3.0s and a rat at 2.9s came free on the same tick and traded blows
+  in lockstep — no bug anywhere, a clock too coarse to tell them apart.
 - **`{ rounds = n }` is multiplicative and `scale` is additive**, so it is a real
   branch and never a desugar. A round is a derived trait the *game* defines; an
   absent one falls back and warns, because a silent zero is a wrong answer.
@@ -376,7 +396,7 @@ string, so a role and a colour tag would be indistinguishable in the source.
 
 ## Testing
 
-Run `cargo test` before committing. All tests must pass. Current count: 1230 on the default `lua55`, green on both it and `--no-default-features --features luajit`.
+Run `cargo test` before committing. All tests must pass. Current count: 1242 on the default `lua55`, green on both it and `--no-default-features --features luajit`.
 
 Do not pin a number that is really a property of the daemon roster. A logpoint
 test asserted `#ids == 2` on `ticker_d.list()`, which meant adding a heartbeat to

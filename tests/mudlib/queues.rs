@@ -132,28 +132,41 @@ fn two_tracks_keep_separate_roundtimes() {
 
     // And it uses its own round trait, so a crafting round is not a combat one.
     let out = vm.run(
-        r#"return Q.round_length(_p, "combat") .. "|" .. Q.round_length(_p, "crafting")"#,
+        r#"return string.format("%.1f|%.1f",
+             Q.round_length(_p, "combat"), Q.round_length(_p, "crafting"))"#,
     );
-    assert_eq!(out, "3|6");
+    assert_eq!(out, "3.0|6.0");
 }
 
 /// An absent round trait falls back **and says so**, rather than silently
 /// producing a roundtime of zero.
+///
+/// The absence is arranged rather than assumed: the fixture world defines a
+/// `round_length` now, because a world with no clock makes every test of pacing
+/// pass by measuring a constant. So this registers a track naming a trait
+/// nothing defines, which is the condition the fallback is actually for.
 #[test]
 fn an_absent_round_length_falls_back_and_says_so() {
     let mut vm = Vm::new();
 
-    let out = vm.run(r#"return tostring(DAEMON.trait.has(_p, "round_length"))"#);
-    assert_eq!(out, "false", "the fixture defines no round_length");
+    vm.run(
+        r#"Q.define_track("dreaming", { round_trait = "no_such_trait",
+             round_seconds = 7, empty = "idle",
+             resolve = function() return false end })
+           return "registered""#,
+    );
 
-    let out = vm.run(r#"return Q.round_length(_p, "combat")"#);
-    assert_eq!(out, "3", "so it falls back to the track's configured round");
+    let out = vm.run(r#"return tostring(DAEMON.trait.has(_p, "no_such_trait"))"#);
+    assert_eq!(out, "false", "this test needs a trait nothing defines");
+
+    let out = vm.run(r#"return string.format("%.1f", Q.round_length(_p, "dreaming"))"#);
+    assert_eq!(out, "7.0", "so it falls back to the track's configured round");
 
     // `journal.recent` hands back raw JSON lines, not tables.
     let warned = vm.run(
         "local found = false \
          for _, line in ipairs(DAEMON.journal.recent(200, 'warn') or {}) do \
-             if tostring(line):find('round_length', 1, true) then found = true end \
+             if tostring(line):find('no_such_trait', 1, true) then found = true end \
          end return tostring(found)",
     );
     assert_eq!(warned, "true", "and it warns, because a silent zero would be a wrong answer");
@@ -222,21 +235,34 @@ fn a_mistyped_target_is_never_queued() {
     );
 }
 
-/// Only roundtime enqueues. A cooldown still refuses, and says so differently.
+/// **A cooldown queues too**, and this test used to assert the opposite.
+///
+/// The old rule was that only roundtime enqueued: a cooldown said "not this,
+/// for a while" and roundtime said "not yet, but soon and certainly". That is a
+/// true distinction and not one the player is in a position to make — from the
+/// seat, "Not yet. (1s)" and "You will strike next" are the same situation, and
+/// two behaviours out of one intent reads as the game being arbitrary.
+///
+/// What still refuses is being *unable* rather than waiting: see
+/// `a_mistyped_target_is_never_queued` above and
+/// `something_you_cannot_afford_is_still_refused` below.
 #[test]
-fn a_cooldown_refuses_where_roundtime_queues() {
+fn a_cooldown_queues_rather_than_refusing() {
     let mut vm = Vm::new();
 
     let out = vm.run(
         r#"
         local m = DAEMON.mobs.spawn("fixture_mouse", "fixture.hall")
         A.use(_p, "fixture_strike", { target = m })
-        local ok, why = A.use(_p, "fixture_strike", { target = m })
-        return tostring(ok) .. "|" .. tostring(why):sub(1, 7) .. "|" .. #Q.list(_p, "combat")
+        DAEMON.cooldown.clear(_p, "rt.combat")
+        local ok, why, tag = A.use(_p, "fixture_strike", { target = m })
+        return tostring(ok) .. "|" .. tostring(tag) .. "|" .. #Q.list(_p, "combat")
         "#,
     );
-    assert!(out.starts_with("false|Not yet"), "{out}");
-    assert!(out.ends_with("|0"), "a cooldown must not queue: {out}");
+    assert_eq!(
+        out, "true|queued|1",
+        "off roundtime but on cooldown should still queue: {out}"
+    );
 }
 
 /// The queue is bounded, and refuses the newest rather than dropping a promise.
@@ -384,4 +410,89 @@ fn a_queue_does_not_outlive_what_it_belonged_to() {
         "#,
     );
     assert_eq!(out, "1|nil|0");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Waiting enqueues; being unable refuses
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// **A cooldown queues rather than refusing.**
+///
+/// The rule was that only roundtime enqueued: a cooldown said "not this, for a
+/// while" and roundtime said "not yet, but soon and certainly". That is a true
+/// distinction and not one the player is in a position to make — from the seat,
+/// "Not yet. (1s)" and "You will strike next" are the same situation, and
+/// getting two different behaviours out of one intent reads as arbitrary.
+#[test]
+fn an_ability_on_cooldown_is_queued_rather_than_refused() {
+    let mut vm = Vm::new();
+
+    // Off cooldown and free: it just happens.
+    let first = vm.run(        "_r = DAEMON.mobs.spawn('fixture_mouse', 'fixture.hall') \
+         local ok, err, tag = DAEMON.ability.use(_p, 'fixture_strike', { target = _r }) \
+         return tostring(ok) .. '|' .. tostring(tag)",
+    );
+    assert_eq!(first, "true|done", "the first use should resolve, not queue");
+
+    // Still on its four-second cooldown: queued, not refused.
+    let second = vm.run(        "local ok, err, tag = DAEMON.ability.use(_p, 'fixture_strike', { target = _r }) \
+         return tostring(ok) .. '|' .. tostring(tag) .. '|' .. tostring(err)",
+    );
+    assert_eq!(
+        second, "true|queued|nil",
+        "an ability on cooldown should queue"
+    );
+    assert_eq!(
+        vm.run("return tostring(#DAEMON.queue.list(_p, 'combat'))"),
+        "1"
+    );
+}
+
+/// **A queued entry that is still cooling is put back, not dropped.**
+///
+/// `advance` pops the head before resolving, so a resolver returning false
+/// loses the entry. Letting a cooldown enqueue without this would mean the
+/// player queues an ability and nothing ever happens — the worst of both.
+#[test]
+fn a_queued_entry_survives_a_cooldown_that_has_not_cleared() {
+    let mut vm = Vm::new();
+
+    vm.run(        "_r = DAEMON.mobs.spawn('fixture_mouse', 'fixture.hall') \
+         DAEMON.ability.use(_p, 'fixture_strike', { target = _r }) \
+         DAEMON.ability.use(_p, 'fixture_strike', { target = _r }) \
+         return 'queued'",
+    );
+    assert_eq!(vm.run("return tostring(#DAEMON.queue.list(_p, 'combat'))"), "1");
+
+    // Free of roundtime but still cooling: the tick must not consume it.
+    vm.run("DAEMON.cooldown.clear(_p, 'rt.combat') return 'free'");
+    vm.run("DAEMON.queue.advance(_p, 'combat') return 'ticked'");
+    assert_eq!(
+        vm.run("return tostring(#DAEMON.queue.list(_p, 'combat'))"),
+        "1",
+        "the entry was popped and dropped — the player's intent vanished"
+    );
+
+    // Once the cooldown clears it runs, and leaves the queue.
+    vm.run("DAEMON.cooldown.clear(_p, 'technique.fixture_strike') return 'ready'");
+    vm.run("DAEMON.queue.advance(_p, 'combat') return 'ticked'");
+    assert_eq!(
+        vm.run("return tostring(#DAEMON.queue.list(_p, 'combat'))"),
+        "0",
+        "it should have run once it could"
+    );
+}
+
+/// Being *unable* still refuses: a cost you cannot pay is not a wait.
+#[test]
+fn something_you_cannot_afford_is_still_refused() {
+    let mut vm = Vm::new();
+
+    let out = vm.run(        "_r = DAEMON.mobs.spawn('fixture_mouse', 'fixture.hall') \
+         DAEMON.trait.set_cur(_p, 'mp', 0) \
+         local ok, err, tag = DAEMON.ability.use(_p, 'fixture_strike', { target = _r }) \
+         return tostring(ok) .. '|' .. tostring(tag)",
+    );
+    assert!(out.starts_with("false|"), "an unaffordable cost should refuse: {out}");
+    assert_eq!(vm.run("return tostring(#DAEMON.queue.list(_p, 'combat'))"), "0");
 }

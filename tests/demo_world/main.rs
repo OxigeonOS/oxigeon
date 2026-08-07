@@ -46,6 +46,7 @@ mod rat_nest;
 mod real_mudlib_harness;
 mod roles;
 mod shipped_areas;
+mod shipped_copies;
 mod shop;
 mod thornhollow;
 mod traits_breadth;

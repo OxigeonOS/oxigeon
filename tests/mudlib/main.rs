@@ -40,6 +40,7 @@ mod queues;
 mod schema;
 mod serialize;
 mod spawners;
+mod swing_rate;
 mod state_cache;
 mod state_retention;
 mod trait_sparsity;

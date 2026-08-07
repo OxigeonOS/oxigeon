@@ -135,9 +135,15 @@ fn cast_and_perform_take_the_same_path() {
         )
         .unwrap();
 
+    // **The roundtime as well as the cooldown.** Emberlance costs a round now,
+    // so without clearing `rt.combat` the second cast is *queued* rather than
+    // resolved, comes back having dealt nothing, and this reads as a routing
+    // bug — which is correct behaviour meeting a comparison that assumed
+    // otherwise.
     let via_spell = vm
         .eval(
             "DAEMON.cooldown.clear(_p, 'spell.emberlance') \
+             DAEMON.cooldown.clear(_p, 'rt.combat') \
              DAEMON.trait.set_cur(_p, 'mp', _p:trait('max_mp')) \
              local m = DAEMON.mobs.spawn('reed_crawler', 'greywater_marsh.herb_beds') \
              local before = m:trait('hp') DAEMON.spell.cast(_p, 'emberlance', m) \

@@ -366,7 +366,10 @@ fn a_damage_spell_goes_through_the_damage_pipeline() {
     vm.eval("_j = DAEMON.items.spawn('leather_jerkin', nil) \
              require('lib.equipment').equip(_t, _j, DAEMON.items.resolve(_j)) return 'armoured'")
         .unwrap();
-    vm.eval("DAEMON.cooldown.clear(900, 'spell.emberlance') return 'ready'").unwrap();
+    // The roundtime too: emberlance costs a round, so the second cast would
+    // otherwise be queued and this would measure a spell that never landed.
+    vm.eval("DAEMON.cooldown.clear(900, 'spell.emberlance')              DAEMON.cooldown.clear(_p, 'rt.combat') return 'ready'")
+        .unwrap();
     vm.eval("_before2 = _t:trait('hp')").unwrap();
     vm.eval("DAEMON.spell.cast(_p, 'emberlance', 'dummy') return 'cast'").unwrap();
 

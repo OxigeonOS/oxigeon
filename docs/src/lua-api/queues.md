@@ -86,16 +86,107 @@ A silent zero would be a wrong answer, and this project does not ship those.
 `scale`: scaling is additive and a round is multiplicative, so no fixed authored
 spec expresses it.
 
-## An ability in roundtime is queued, not refused
-
-**Only roundtime enqueues.** A cooldown, the GCD, a cost, a requirement, an
-unknown ability and a mistyped target all still refuse. Short rule, and it keeps
-two different pieces of information distinct:
+## How fast anything acts: two layers
 
 ```
-cooldown    "Not yet. (12s)"              not this, for a while
-roundtime   "You will cleave next. (2s)"  not yet, but soon and certainly
+swing time = round_length / speed
 ```
+
+Keeping these apart is the whole model, and each answers a different question.
+
+| | | |
+|---|---|---|
+| `round_length` | a **derived trait** on the entity | how fast this *person* operates |
+| `speed` | a field on the **weapon**, or on the creature's template | how many swings fit in one round |
+
+`round_length` gates every action on the track — swinging, casting, drinking,
+fleeing — so **armour belongs there**. `speed` only affects swings.
+
+That is why armour counts for more than a weapon without needing a bigger
+coefficient: it taxes everything you do, and a greatsword taxes one thing.
+
+### `speed` is a rate, not a duration
+
+`dagger 1.2`, `sword 1.0`, `greatsword 0.7` — higher is faster. So the time one
+swing costs is `round_length / speed`, and the dead `weapon.dps` helper
+(`avg_damage * speed`) is what proves that was always the intent: damage per
+swing times swings per unit time is damage per unit time.
+
+Every authored number already meant the right thing, so none of them changed
+when this began to be read.
+
+A creature with nothing in its hands uses its **template's** `speed`, which is
+what makes a rat fast and weak rather than merely weak. Without it a creature's
+rate came from `round_length` alone, which moves 0.05s per point of dexterity —
+so a rat and a bear were within a tenth of a second of each other and no amount
+of authoring could separate them.
+
+### Armour is paid for out of strength
+
+`encumbrance` is an ordinary attribute fed by `stat_bonus` on worn pieces, and
+`round_length` charges only for what exceeds `strength * 1.5`:
+
+| build | dex | str | encumbrance | round |
+|---|---|---|---|---|
+| rogue, leather | 16 | 10 | 8 | 2.70s |
+| knight, plate | 12 | 18 | 35 | 3.54s |
+| average, plate | 10 | 10 | 35 | 4.60s |
+| wizard, plate | 10 | 8 | 35 | 4.84s |
+
+A flat penalty per armour class would charge the wizard and the knight the same,
+which is the opposite of true — and it is why this is a formula on a derived
+trait rather than a number on an item. It is game content: the mudlib ships no
+`round_length` and falls back to `game.combat_round_seconds`, saying so once per
+track.
+
+A **weapon** can carry a `stat_bonus` too, so a heavy blade that lengthens your
+round says so the same way armour does. `speed` is how often it swings; the
+bonus is how long a round is.
+
+> [!WARNING]
+> **`game.queue_tick_seconds` quantises all of it.** At the 1 second it shipped
+> with, a player at 3.0s and a rat at 2.9s came free on the same tick and traded
+> blows in perfect lockstep — no bug anywhere, a clock too coarse to tell them
+> apart. It is 0.25 now. Anything you want distinguishable has to differ by more
+> than one tick.
+
+> [!NOTE]
+> **Keep the `round_length` floor at or above the global cooldown.** Below it,
+> every point of speed buys nothing, and a player who finds that will read it as
+> a bug rather than as a cap.
+
+## Waiting enqueues; being unable refuses
+
+Roundtime and a cooldown are both **waiting**, so both queue. A cost you cannot
+pay, a requirement you do not meet, an unknown ability and a mistyped target are
+all **unable**, and all refuse — queueing those would promise something that
+cannot happen.
+
+```
+roundtime   "You will cleave next. (2s)"   waiting  -> queued
+cooldown    "You will cleave next. (12s)"  waiting  -> queued
+no mana     "You do not have the mana."    unable   -> refused
+bad target  "There is no nosuchthing here." unable  -> refused
+```
+
+The number is whichever gate clears last, because that is when it will actually
+happen.
+
+> [!NOTE]
+> **This was cooldowns-refuse**, on the argument that a cooldown says "not this,
+> for a while" where roundtime says "not yet, but soon and certainly". That is a
+> true distinction and it is not one the player is in a position to make. From
+> the seat, `Not yet. (1s)` and `You will emberlance next` are the same
+> situation, and getting two behaviours out of one intent reads as the game being
+> arbitrary rather than as a considered rule.
+
+Making it safe needed one thing in `queue_d`: a resolver may return `"retry"` to
+be **put back at the head** rather than dropped. `advance` pops the entry before
+resolving, so without it a queued ability whose cooldown had not yet cleared was
+popped, refused and silently lost — the player queues something and nothing ever
+happens, which is worse than either behaviour it replaced. The staleness bound
+already above it is what stops an entry that can never run blocking the head for
+ever.
 
 The enqueue sits **below target resolution**, so a typo still refuses
 immediately rather than queueing something doomed — the invariant inherited from

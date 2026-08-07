@@ -95,8 +95,14 @@ combat_reach_ratio = 1.15
 #
 # Separate from the round length because they answer different questions: the
 # round is how long an action costs you, this is how promptly the queue notices
-# you are free again. Default: 1.
-queue_tick_seconds = 1
+# you are free again.
+#
+# **This quantises every roundtime**, and it was 1 second, which is longer than
+# the gap between most fighters' rounds. A player at 3.0s and a rat at 2.9s both
+# came free on the same tick and traded blows in perfect lockstep — no bug
+# anywhere, just a clock too coarse to tell them apart. At 0.25 a rat swinging
+# 2.5 times to your one actually does. Default: 1.
+queue_tick_seconds = 0.25
 # How many actions one track will hold. When it is full the *newest* is refused
 # rather than the oldest dropped — silently discarding something already
 # committed to is the worse failure. Default: 3.

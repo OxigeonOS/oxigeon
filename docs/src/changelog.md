@@ -2,6 +2,55 @@
 
 ## Phase 4: Two Lua Runtimes
 
+### Weapon speed, encumbrance, and a clock fine enough to tell them apart
+
+- **`speed` was authored on every weapon in the game and read by nothing but
+  `examine`.** It is a *rate* — the dead `weapon.dps` helper is
+  `avg_damage * speed`, which only type-checks that way — so the time a swing
+  costs is `round_length / speed`, and every authored number already meant the
+  right thing. `auto_round` marks `{ rounds = 1 / speed }`, which is one line
+  and no new concept: `{ rounds = n }` was already multiplicative.
+- **Two layers, and keeping them apart is the design.** `round_length` is the
+  entity's clock and gates every action on the track; `speed` is the action's
+  cost in rounds and only affects swings. So armour belongs on `round_length`
+  and counts for more than a weapon without needing a bigger coefficient — it
+  taxes everything you do.
+- **`encumbrance` is paid for out of strength.** An attribute fed by
+  `stat_bonus` on worn pieces, with `round_length` charging only what exceeds
+  `strength * 1.5`. A flat penalty per armour class would cost a wizard and a
+  knight the same, which is the opposite of true.
+- **A weapon can carry a `stat_bonus`.** `lib/equipment.lua` had a top-level
+  `item.stat_bonus` branch commented "a weapon may carry stat bonuses too" since
+  it was written, and it was unreachable: `Item:new` copies a fixed list of
+  fields and `stat_bonus` was not among them. The weapon component contributes
+  its own equip specs now, the way armour does. **Fourth instance** of that
+  hazard — `on_drink`, the room spawner fields and `mob.speed` were the others —
+  and every constructor involved now says so in a comment.
+- **A creature has its own attack rate.** Without it a creature's rate came from
+  `round_length` alone, which moves 0.05s per point of dexterity, so a rat and a
+  bear swung within a tenth of a second of each other. The workshop's rats bite
+  at 2.5 to a swordsman's 1.
+- **`game.queue_tick_seconds` was 1 second and quantised all of it.** A player
+  at 3.0s and a rat at 2.9s came free on the same tick and traded blows in
+  perfect lockstep — nothing wrong anywhere, a clock too coarse to tell them
+  apart. It is 0.25 now.
+
+### Waiting enqueues; being unable refuses
+
+- **A cooldown queues rather than refusing.** The rule was that only roundtime
+  enqueued, on the argument that a cooldown says "not this, for a while" where
+  roundtime says "not yet, but soon and certainly". True, and not a distinction
+  the player is in a position to make: from the seat `Not yet. (1s)` and `You
+  will emberlance next` are the same situation, and two behaviours out of one
+  intent reads as arbitrary. A cost you cannot pay and a mistyped target are
+  *unable* rather than waiting, and still refuse.
+- `queue_d`'s resolvers may return `"retry"` to be put back at the head rather
+  than dropped. `advance` pops before resolving, so without it a queued ability
+  whose cooldown had not cleared was popped, refused and silently lost.
+- **`emberlance` costs a round.** It declared no `roundtime`, so it never marked
+  the combat track and `auto_round` went on swinging your fist on its own clock
+  — you cast *and* punched, in the same second.
+
 ### Spawners
 
 - **A room can produce creatures**, which is a different statement from a

@@ -223,6 +223,11 @@ fn flat_data_builds_an_item_and_survives_the_return_trip() {
 ///
 /// `weapon.new` set `slot = "weapon"` inline; `components.build` reads
 /// `M.item_defaults`. Two places deciding one thing is how they come to disagree.
+///
+/// The comparison walks table-valued fields by *content*. It used to compare
+/// every field with `~=`, which worked for as long as every weapon field was a
+/// scalar — `stat_bonus` is the first table among them, and two empty tables are
+/// never equal by identity.
 #[test]
 fn the_archetype_and_the_loader_build_the_same_item() {
     let mut vm = Vm::new();
@@ -239,7 +244,18 @@ fn the_archetype_and_the_loader_build_the_same_item() {
             return 'slot differs: ' .. tostring(via_loader.slot) .. ' vs ' .. tostring(via_archetype.slot)
         end
         for k, v in pairs(via_archetype.weapon) do
-            if via_loader.weapon[k] ~= v then return 'weapon.' .. k .. ' differs' end
+            local w = via_loader.weapon[k]
+            if type(v) == 'table' then
+                if type(w) ~= 'table' then return 'weapon.' .. k .. ' differs in type' end
+                for kk, vv in pairs(v) do
+                    if w[kk] ~= vv then return 'weapon.' .. k .. '.' .. tostring(kk) .. ' differs' end
+                end
+                for kk in pairs(w) do
+                    if v[kk] == nil then return 'weapon.' .. k .. '.' .. tostring(kk) .. ' is extra' end
+                end
+            elseif w ~= v then
+                return 'weapon.' .. k .. ' differs'
+            end
         end
         return 'ok'
     "#,

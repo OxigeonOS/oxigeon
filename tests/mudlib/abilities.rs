@@ -168,11 +168,13 @@ fn a_cooldown_lands_in_the_tier_its_duration_earns() {
         "4s is a game mechanic and lives in memory; 90s is a promise and is written"
     );
 
-    // And it actually gates.
+    // And it actually gates. Asserted on the cooldown rather than on `use`
+    // refusing, because an ability on cooldown is *queued* now — which is a
+    // statement about the queue and not about which tier the cooldown landed in.
     let out = vm.run(
-        r#"local ok, why = A.use(_p, "fixture_slow") return tostring(ok) .. "|" .. tostring(why)"#,
+        r#"return tostring(DAEMON.cooldown.ready(_p, "technique.fixture_slow"))"#,
     );
-    assert!(out.starts_with("false|Not yet."), "{out}");
+    assert_eq!(out, "false", "the cooldown is not holding: {out}");
 }
 
 /// A cost that is not a gauge is refused at define time.
@@ -662,11 +664,15 @@ fn a_shared_cooldown_is_just_a_shared_key() {
         A.define({ id = "probe_b", category = "technique", open = true, target = "none",
                    cooldown = { seconds = 20, shared = "probe.heavy" } })
         A.use(_p, "probe_a")
-        local ok, why = A.use(_p, "probe_b")
-        return tostring(ok) .. "|" .. tostring(why):sub(1, 7)
+        return tostring(DAEMON.cooldown.ready(_p, "probe.heavy"))
+            .. "|" .. tostring(DAEMON.cooldown.ready(_p, "technique.probe_b"))
         "#,
     );
-    assert_eq!(out, "false|Not yet", "using one gates the other");
+    // The shared key is held and `probe_b`'s own is not, which is the whole
+    // claim: `shared` is used as the key verbatim rather than adding a
+    // mechanism. Read off the cooldown rather than off a refusal, because an
+    // ability on cooldown is queued now.
+    assert_eq!(out, "false|true", "using one should gate the other: {out}");
 }
 
 // ─── Attacks ─────────────────────────────────────────────────────────────────

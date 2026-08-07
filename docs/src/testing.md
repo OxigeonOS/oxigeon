@@ -92,7 +92,7 @@ The `--test` argument is the *binary* now, not the file. What used to be
 `cargo test --test schema` no longer resolves -- use
 `cargo test --test mudlib schema`, which filters by module path.
 
-All tests should pass before committing — 1230 at the time of writing, green on
+All tests should pass before committing — 1242 at the time of writing, green on
 the default Lua 5.5 build and on `--no-default-features --features luajit`. The
 Lua unit tests alone run in ~20ms.
 
