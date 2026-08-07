@@ -350,7 +350,7 @@ the entity *has* one.
 Time never invalidates the value memo directly. The only way the clock can
 change a value is by expiring an effect, and that is one cached comparison.
 
-`tests/trait_sparsity.rs` pins this behaviourally rather than by timing: define
+`tests/mudlib/trait_sparsity.rs` pins this behaviourally rather than by timing: define
 200 derived traits, hand an entity the two inputs one of them needs, and assert
 that exactly **one** formula runs. A timing assertion would be flaky; a call
 count is exact.

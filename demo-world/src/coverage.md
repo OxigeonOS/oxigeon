@@ -83,7 +83,7 @@ things that had no user until something in the game needed them.
 | **Sparse presence** | a sword has no willpower | `trait_sparsity.rs` |
 | `category` as a lens | `score` vs `skills` vs `traits` | `trait_sparsity.rs` |
 | Skills as traits | herbalism, mining, swordsmanship… | `trait_sparsity.rs` |
-| `seal` reporting a cycle **as a path** | `traits/broken_example.lua` | `traits_breadth.rs` |
+| `seal` reporting a cycle **as a path** | defined by the test itself | `tests/mudlib/broken_traits.rs` |
 | Memoization, `bump_all` on reload | any repeated read | `traits_breadth.rs` |
 
 ## Effects

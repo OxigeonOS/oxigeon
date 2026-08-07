@@ -376,7 +376,7 @@ function subs.set(player, session_id, args_str)
         end
     end
 
-    local before = schema.render(descriptor, draft[descriptor.name])
+    local before = schema.render(descriptor, schema.at(kind, draft, field))
     local set_ok, err = schema.set(kind, draft, field, value)
     if not set_ok then return fail(player, tostring(err)) end
 
@@ -394,7 +394,7 @@ function subs.set(player, session_id, args_str)
         return
     end
     ok(player, id .. "." .. field .. " = "
-        .. schema.render(descriptor, draft[descriptor.name])
+        .. schema.render(descriptor, schema.at(kind, draft, field))
         .. "  {dim}(was " .. before .. "){/}")
 end
 

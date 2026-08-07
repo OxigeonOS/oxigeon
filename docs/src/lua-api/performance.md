@@ -155,7 +155,7 @@ where it can keep the compiler *and* stop blocking every player.
 
 The benchmark lives in `benches/dispatch.rs` and is built on
 `tests/common/mod.rs`'s `RealVm::boot_real_mudlib`, the same harness the
-integration tests use. `tests/real_mudlib_harness.rs` proves that harness
+integration tests use. `tests/demo_world/real_mudlib_harness.rs` proves that harness
 actually boots the game, so a benchmark cannot quietly measure a half-started
 server.
 

@@ -190,6 +190,29 @@ Strings are not narrowed at all. `lib/serialize.lua` handles quotes, `]]`,
 backslashes, control bytes and UTF-8, so there is nothing to protect the file
 from.
 
+### Collections
+
+A `map` and a keyed `record_array` are both set one entry at a time, and the
+whole-field form is refused with the syntax that works:
+
+```
+olc set exits.north crypt.hall           a map:          key -> value
+olc set dialogue.bones They come up.     a map:          topic -> text
+olc set spawn_table.black_rat 5          a record_array: template -> weight
+olc set loot_table.brass_key 0.1         a record_array: item -> chance
+olc unset spawn_table.black_rat          removes that entry
+```
+
+Setting the same key twice **updates** rather than appending, so correcting a
+weight leaves one entry rather than two that disagree.
+
+A `record_array` is addressable only when its record declares which field is the
+key, with `key = true` in the schema. Declared rather than inferred: "the first
+field, if it looks like an id" reads the wrong one the first time somebody writes
+a record in a different order, and reads it silently. `echoes` declares no key —
+its natural address is a whole sentence — so it is refused and told which file to
+write it in.
+
 ### Prose
 
 `olc set description Some short text` sets it directly. `olc set description`

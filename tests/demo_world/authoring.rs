@@ -5,9 +5,9 @@
 //! world should not inherit a failing suite over content they removed.
 //!
 //! Two things are worth pinning against real content rather than a fixture. The
-//! linter has to be quiet about an area that works, and hand-authored areas have
-//! to be *refused* by OLC — a regeneration would delete the very things that
-//! make them worth shipping.
+//! linter has to be quiet about an area that works, and every shipped area has
+//! to be editable in the game — which means OLC-managed, with everything OLC
+//! cannot author moved into a `custom.lua` beside it.
 
 use crate::common::RealVm;
 
@@ -23,75 +23,91 @@ fn probe() -> RealVm {
     RealVm::boot_real_mudlib_with_probe()
 }
 
-/// None of the shipped areas is OLC-managed, and that is deliberate.
+/// **Every shipped area is OLC-managed**, so a builder can edit any of them
+/// from inside the game.
 ///
-/// Every one of them holds something OLC cannot author — thornhollow's square
-/// has two inline room actions, greywater_marsh's descriptions are lfuns keyed
-/// on the weather — so regenerating any of them would delete it silently. The
-/// gate is what stops that, and this asserts the gate is closed.
+/// This used to assert the exact opposite, and the reason it did was real: each
+/// of these areas holds something OLC cannot author — the square's inline room
+/// actions, the marsh's weather-keyed lfun descriptions, the mine's two exits
+/// with a `check` — and regenerating a file wholesale would have deleted them
+/// silently. The gate being *closed* was the only thing standing in the way.
+///
+/// Closing the gate was never the goal, though; not losing the behaviour was.
+/// So each area was split instead: the data in the generated files, everything
+/// that is a function in a hand-written `custom.lua` that OLC never touches. The
+/// gate is open now because there is nothing left behind it to eat.
 #[test]
-fn the_shipped_areas_are_not_olc_managed() {
+fn every_shipped_area_is_olc_managed() {
     let mut vm = probe();
 
     for area in ["thornhollow", "wizard_workshop", "greywater_marsh", "collapsed_mine"] {
         let out = vm
             .eval(&format!(
-                "local ok, why = require('daemons.codegen_d').is_managed('{area}') \
-                 return tostring(ok) .. '|' .. tostring(why)"
+                "local ok, why = require('daemons.codegen_d').is_managed('{area}')                  return tostring(ok) .. '|' .. tostring(why)"
             ))
             .unwrap();
         assert!(
-            out.starts_with("false|"),
-            "'{area}' is OLC-managed — a regeneration would eat its hand-written \
-             behaviour: {out}"
+            out.starts_with("true|"),
+            "'{area}' is not OLC-managed, so it cannot be edited in the game: {out}"
         );
     }
 }
 
-/// `olc adopt thornhollow` reports the room actions it would move.
+/// …and each one kept a `custom.lua`, which is the other half of that bargain.
 ///
-/// The demo that makes `custom.lua` make sense, and the regression that would
-/// catch an adoption which quietly dropped them instead.
+/// A managed area with no `custom.lua` is not automatically wrong — an area that
+/// is genuinely all data needs none. But all four of these had behaviour that
+/// could not be expressed as data, so a missing file here means it was dropped
+/// on the way rather than moved.
 #[test]
-fn adopting_thornhollow_reports_its_room_actions() {
+fn every_shipped_area_kept_its_hand_written_half() {
     let mut vm = probe();
 
-    let out = vm
-        .eval(&one_line(
-            "return table.concat(DAEMON.adopt.run(nil, 'thornhollow', false), '\\n')",
-        ))
-        .unwrap();
-
-    assert!(out.contains("not OLC-managed"), "{out}");
-    assert!(out.contains("Moves to custom.lua"), "{out}");
-    assert!(
-        out.contains("actions"),
-        "square.lua's room actions should be reported as moving:\n{out}"
-    );
-    assert!(out.contains("Nothing has been written"), "a dry run must not write:\n{out}");
+    for area in ["thornhollow", "wizard_workshop", "greywater_marsh", "collapsed_mine"] {
+        let out = vm
+            .eval(&format!(
+                "local c = require('daemons.codegen_d').read('{area}', 'custom')                  return type(c)"
+            ))
+            .unwrap();
+        assert_eq!(out, "table", "'{area}' lost its custom.lua");
+    }
 }
 
-/// `olc adopt greywater_marsh` reports its lfun descriptions.
+/// No shipped area is still assembled by an `init.lua`.
 ///
-/// A different shape of the same problem: not a named hand-written field but an
-/// ordinary one whose *value* is a function. Both have to be caught, and by
-/// different halves of `schema.lossy`.
+/// `areaload.inspect` prefers `init.lua` over `rooms.lua` unconditionally, so a
+/// generated `rooms.lua` beside a surviving `init.lua` would never be read —
+/// every `olc save` writing to a file the loader ignores, reporting success.
+/// Thornhollow was in exactly that shape and is the reason `adopt_d` now refuses
+/// it out loud.
 #[test]
-fn adopting_the_marsh_reports_its_lfun_descriptions() {
+fn no_shipped_area_is_assembled_by_an_init_lua() {
     let mut vm = probe();
 
-    let out = vm
-        .eval(&one_line(
-            "return table.concat(DAEMON.adopt.run(nil, 'greywater_marsh', false), '\\n')",
-        ))
-        .unwrap();
-
-    assert!(out.contains("Moves to custom.lua"), "{out}");
-    assert!(
-        out.contains("description") && out.contains("function"),
-        "the weather-keyed descriptions should be reported:\n{out}"
-    );
+    for area in ["thornhollow", "wizard_workshop", "greywater_marsh", "collapsed_mine"] {
+        let entry = vm
+            .eval(&format!(
+                "return tostring(require('lib.areaload').inspect('{area}').entry)"
+            ))
+            .unwrap();
+        assert_eq!(
+            entry, "rooms",
+            "'{area}' is still entered through {entry}.lua, which OLC cannot write"
+        );
+    }
 }
+
+
+// `adopting_the_marsh_reports_its_lfun_descriptions` lived here. It asserted
+// that a dry run named the marsh's weather-keyed lfun descriptions as fields
+// that would move to `custom.lua` — which was worth pinning while the marsh was
+// hand-authored and the adoption was hypothetical. The marsh is OLC-managed now
+// and its descriptions *are* in `custom.lua`, so adoption refuses it, and what
+// the test was really about is asserted directly by
+// `marsh::descriptions_read_the_weather_without_being_told`. What `adopt`
+// classifies as lossy is a mudlib claim and is tested against fixtures in
+// `tests/mudlib/olc_adopt.rs`.
+
 
 /// The shipped content passes its own linter.
 ///

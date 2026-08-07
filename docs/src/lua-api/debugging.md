@@ -93,7 +93,7 @@ function (an efun, `string.*`, …), which has no source line.
 ### Why returns show no value
 
 A `<` line records *that* a function returned, not *what* it returned. This is a
-LuaJIT constraint, not an oversight — `tests/debug_ret_spike.rs` records the
+LuaJIT constraint, not an oversight — `tests/driver/debug_ret_spike.rs` records the
 evidence:
 
 ```

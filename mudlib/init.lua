@@ -40,6 +40,14 @@ if not ok then log("warn", "Failed to load effect_d daemon: " .. tostring(err)) 
 ok, err = pcall(function() DAEMON.mobs    = require("daemons.mob_d") end)
 if not ok then log("warn", "Failed to load mob_d daemon: " .. tostring(err)) end
 
+-- After `mob_d`, because it spawns from templates, and after `ticker_d`, which
+-- it registers one heartbeat with at load. It must exist **before the world is
+-- registered**: `world_d.register_room` tells it about each room as that room
+-- arrives, so a spawner_d loaded afterwards would have missed every room in
+-- every area and would sit there with an empty index.
+ok, err = pcall(function() DAEMON.spawner = require("daemons.spawner_d") end)
+if not ok then log("warn", "Failed to load spawner_d daemon: " .. tostring(err)) end
+
 -- Before combat and abilities, both of which register or read a track. It needs
 -- only cache, cooldown, trait and ticker at load; it reaches the other two
 -- through DAEMON at tick time, which is after everything has loaded.
@@ -123,6 +131,27 @@ if not ok then log("warn", "Failed to load tag_d daemon: " .. tostring(err)) end
 -- Shops need items and tasks, both of which are already up.
 ok, err = pcall(function() DAEMON.shop    = require("daemons.shop_d") end)
 if not ok then log("warn", "Failed to load shop_d daemon: " .. tostring(err)) end
+
+-- Creatures that attack on sight. It subscribes to `room.entered`,
+-- `combat.started` and `character.left` **at load**, so everything those
+-- handlers reach — mob_d, combat_d, world_d, character_d, ticker_d — has to be
+-- up first. Nothing calls it; the events do.
+ok, err = pcall(function() DAEMON.aggro   = require("daemons.aggro_d") end)
+if not ok then log("warn", "Failed to load aggro_d daemon: " .. tostring(err)) end
+
+-- The notice board. After `task_d`, which it asks for the expiry sweep, and
+-- after `audit_d`, which it writes a removal to.
+ok, err = pcall(function() DAEMON.board   = require("daemons.board_d") end)
+if not ok then log("warn", "Failed to load board_d daemon: " .. tostring(err)) end
+
+-- The quest engine. Last of the world group, because an objective names a room,
+-- an item, a creature or a kill and it wants all four registries up.
+--
+-- Here rather than in the game layer because none of it is one game's: the
+-- objective kinds, the three storage tiers and the reward shape are a schema,
+-- and *which quests exist* is already a separate file the game registers.
+ok, err = pcall(function() DAEMON.quest   = require("daemons.quest_d") end)
+if not ok then log("warn", "Failed to load quest_d daemon: " .. tostring(err)) end
 
 -- Ensure the first account is always admin (covers pre-existing databases)
 if type(set_admin) == "function" then
@@ -542,9 +571,13 @@ function on_load(module_name)
         ["daemons.trait_d"]      = "trait",
         ["daemons.effect_d"]     = "effect",
         ["daemons.mob_d"]        = "mobs",
+        ["daemons.spawner_d"]    = "spawner",
         ["daemons.combat_d"]     = "combat",
         ["daemons.ability_d"]    = "ability",
         ["daemons.queue_d"]      = "queue",
+        ["daemons.quest_d"]      = "quest",
+        ["daemons.board_d"]      = "board",
+        ["daemons.aggro_d"]      = "aggro",
     }
 
     -- Convert slash-separated path to dot-separated require path

@@ -272,6 +272,27 @@ function M.build(data)
         -- nil is the answer: an empty table would be indistinguishable from a
         -- real constraint of zero.
         item[mod.component] = built
+
+        -- ─── The hand-written fields, carried across ────────────────────────
+        --
+        -- A component's `hand_written` names are functions, so `from_data`
+        -- cannot return them — and `Item:new` copies a *fixed list* of hooks
+        -- (`on_use`, `on_pickup`, `on_drop`, `on_equip`, `on_remove`) that
+        -- naturally does not know about them.
+        --
+        -- So `drinkable`'s `on_drink` reached an item only through the
+        -- archetype path, where `drinkable.apply` assigns it to an
+        -- already-built object. Authored as flat data — which is what a
+        -- generated `items.lua` plus a `custom.lua` patch *is* — it was read
+        -- off the data, merged correctly by `patch.apply`, and then silently
+        -- dropped here. The potion was drinkable and did nothing.
+        --
+        -- Driven off `hand_written` rather than a second list of hook names,
+        -- because a second list is the thing that rots: `to_data` already asks
+        -- the component this same question in the opposite direction.
+        for _, name in ipairs(mod.hand_written or {}) do
+            if merged[name] ~= nil then item[name] = merged[name] end
+        end
     end
 
     return item

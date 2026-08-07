@@ -168,6 +168,37 @@ function M.field(kind, path, data)
                     help       = f.help,
                 }, head
             end
+
+            -- A `record_array` whose record **declares a key** addresses like a
+            -- map: `spawn_table.black_rat 5` is the entry for that creature.
+            --
+            -- Declared rather than inferred. "The first field, if it looks like
+            -- an id" is a rule that reads the wrong one the first time somebody
+            -- writes a record in a different order, and reads it silently.
+            -- `echoes` declares no key and stays unsettable, because its natural
+            -- key is a sentence and a sentence is not an address.
+            --
+            -- The descriptor returned is a copy of the *value* field — `weight`,
+            -- `chance` — so coercion and validation are the ordinary ones for
+            -- its type, with the two record field names carried alongside.
+            if f.type == "record_array" then
+                local key_field, value_field
+                for _, rf in ipairs(f.record or {}) do
+                    if rf.key then key_field = rf
+                    elseif not value_field then value_field = rf end
+                end
+                if not (key_field and value_field) then return nil end
+
+                local d = {}
+                for k, v in pairs(value_field) do d[k] = v end
+                d.name         = path
+                d.editable     = f.editable
+                d.component    = f.component
+                d.help         = f.help
+                d.record_key   = key_field.name
+                d.record_value = value_field.name
+                return d, head
+            end
             -- A component's own name is not a path prefix: its fields are flat.
             return nil
         end
@@ -328,9 +359,25 @@ function M.coerce(descriptor, text)
         return { text }
     end
 
-    if t == "map" or t == "record_array" then
+    if t == "map" then
         return nil, "'" .. descriptor.name .. "' holds several values. "
             .. "Set one at a time: " .. descriptor.name .. ".<key> <value>"
+    end
+
+    if t == "record_array" then
+        local keyed
+        for _, rf in ipairs(descriptor.record or {}) do
+            if rf.key then keyed = rf.name end
+        end
+        if keyed then
+            return nil, "'" .. descriptor.name .. "' holds several entries. "
+                .. "Set one at a time: " .. descriptor.name .. ".<" .. keyed
+                .. "> <value>"
+        end
+        -- No declared key, so there is no address for an entry. Saying where it
+        -- *can* be written is more use than saying it cannot be done here.
+        return nil, "'" .. descriptor.name .. "' is a list with no key, so there "
+            .. "is no way to name one entry. Write it in the area file."
     end
 
     return nil, "no rule for a '" .. t .. "' field"
@@ -358,6 +405,26 @@ function M.render(descriptor, value)
         table.sort(keys)
         return #keys .. " entr" .. (#keys == 1 and "y" or "ies")
             .. ": " .. table.concat(keys, ", ")
+    end
+    if t == "record_array" and type(value) == "table" then
+        if #value == 0 then return "(none)" end
+        local key_name, value_name
+        for _, rf in ipairs(descriptor.record or {}) do
+            if rf.key then key_name = rf.name
+            elseif not value_name then value_name = rf.name end
+        end
+        if not key_name then
+            return #value .. " entr" .. (#value == 1 and "y" or "ies")
+        end
+        local parts = {}
+        for _, e in ipairs(value) do
+            if type(e) == "table" then
+                parts[#parts + 1] = tostring(e[key_name])
+                    .. (value_name and (" " .. tostring(e[value_name])) or "")
+            end
+        end
+        table.sort(parts)
+        return table.concat(parts, ", ")
     end
     if type(value) == "function" then return "<function>" end
     if type(value) == "table" then return "<table>" end
@@ -578,6 +645,44 @@ function M.set(kind, data, path, text)
     local value, err = M.coerce(descriptor, text)
     if err then return false, err end
 
+    -- A keyed `record_array`. The entry is found by its key field and updated
+    -- in place, or appended — so setting the same key twice leaves one entry
+    -- carrying the second value rather than two entries disagreeing.
+    if container and descriptor.record_key then
+        local key = path:match("%.([^%.]+)$")
+        local ok, why = M.valid_map_key(key)
+        if not ok then return false, why end
+
+        if value ~= nil then
+            local ok2, why2 = validate_one(descriptor, value, data)
+            if not ok2 then return false, path .. " " .. why2 end
+        end
+
+        local list = data[container]
+        if type(list) ~= "table" then list = {} ; data[container] = list end
+
+        for i, entry in ipairs(list) do
+            if type(entry) == "table" and entry[descriptor.record_key] == key then
+                if value == nil then
+                    table.remove(list, i)
+                else
+                    entry[descriptor.record_value] = value
+                end
+                return true
+            end
+        end
+
+        -- Clearing an entry that is not there is not an error: `olc unset` on
+        -- an absent key means the same thing afterwards as it did before.
+        if value == nil then return true end
+
+        list[#list + 1] = {
+            [descriptor.record_key]   = key,
+            [descriptor.record_value] = value,
+        }
+        return true
+    end
+
     if container then
         local key = path:match("%.([^%.]+)$")
         local ok, why = M.valid_map_key(key)
@@ -593,6 +698,37 @@ function M.set(kind, data, path, text)
     end
     data[descriptor.name] = value
     return true
+end
+
+--- The value at a field path, dotted or not.
+---
+--- `olc set` printed `= (unset) (was (unset))` for every dotted set, because it
+--- read `draft[descriptor.name]` — and `descriptor.name` for a path *is the
+--- path*, so it was reading `draft["exits.north"]`, which nothing ever writes.
+--- Wrong for maps from the beginning; the keyed `record_array` only made it
+--- visible, because a spawn table is a field somebody watches while editing it.
+--- @param kind string
+--- @param data table
+--- @param path string
+--- @return any
+function M.at(kind, data, path)
+    local descriptor, container = M.field(kind, path, data)
+    if not descriptor then return nil end
+    if not container then return data[descriptor.name] end
+
+    local held = data[container]
+    if type(held) ~= "table" then return nil end
+    local key = path:match("%.([^%.]+)$")
+
+    if descriptor.record_key then
+        for _, entry in ipairs(held) do
+            if type(entry) == "table" and entry[descriptor.record_key] == key then
+                return entry[descriptor.record_value]
+            end
+        end
+        return nil
+    end
+    return held[key]
 end
 
 -- ─── What will not survive a write ───────────────────────────────────────────

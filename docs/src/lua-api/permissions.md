@@ -120,7 +120,7 @@ So the convention is now enforced rather than suggested:
 
 Two tests hold the line, and they ask different questions:
 
-- `tests/command_layout.rs` — every gated command's `M.permission` is
+- `tests/mudlib/command_layout.rs` — every gated command's `M.permission` is
   `cmd.<its own verb>`. The "own verb" half matters: a uniform prefix alone
   still let `dig` ask for `cmd.olc`, which it did, so `dig` could not be granted
   separately from `olc`.

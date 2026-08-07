@@ -296,6 +296,74 @@ local function check_references(out, area)
                 "its key '" .. item.key .. "' does not exist, so it can never be unlocked")
         end
     end
+
+    -- ─── Spawners ────────────────────────────────────────────────────────────
+    local function mob_data(id)
+        for _, m in ipairs(area.mobs or {}) do if m.id == id then return m end end
+        return DAEMON.mobs and DAEMON.mobs.get(id) or nil
+    end
+
+    for _, room in ipairs(area.rooms or {}) do
+        if type(room) == "table" and room.id then
+            local max = tonumber(room.spawn_max) or 0
+            local entries = type(room.spawn_table) == "table" and room.spawn_table or {}
+
+            -- Half a spawner is the shape worth catching: both halves look
+            -- deliberate on their own and together they do nothing at all.
+            if max > 0 and #entries == 0 then
+                out[#out + 1] = finding("warn", "rooms.lua", room.id,
+                    "has spawn_max " .. max .. " and an empty spawn_table, so it "
+                    .. "spawns nothing")
+            elseif max <= 0 and #entries > 0 then
+                out[#out + 1] = finding("warn", "rooms.lua", room.id,
+                    "has a spawn_table and no spawn_max, so it spawns nothing")
+            end
+
+            for i, entry in ipairs(entries) do
+                local id = type(entry) == "table" and entry.template or nil
+                if type(id) ~= "string" then
+                    out[#out + 1] = finding("error", "rooms.lua", room.id,
+                        "spawn_table[" .. i .. "] has no template")
+                else
+                    local mob = mob_data(id)
+                    if not mob then
+                        out[#out + 1] = finding("warn", "rooms.lua", room.id,
+                            "spawn_table[" .. i .. "] names creature '" .. id
+                            .. "', which does not exist")
+                    else
+                        -- **Two sources, one room.** `mob_d` schedules a
+                        -- per-death respawn from `respawn_time`, and the
+                        -- spawner tops up on its own clock. A template in a
+                        -- spawn table carrying either of these is fed by both,
+                        -- and the room drifts above `spawn_max` one kill at a
+                        -- time — slowly enough that it reads as a balance
+                        -- problem rather than as a bug.
+                        if mob.respawn_time then
+                            out[#out + 1] = finding("warn", "rooms.lua", room.id,
+                                "spawn_table names '" .. id .. "', which also has "
+                                .. "respawn_time — it will be respawned by mob_d "
+                                .. "*and* topped up here, so the room will drift "
+                                .. "past spawn_max")
+                        end
+                        if mob.spawn_room then
+                            out[#out + 1] = finding("warn", "rooms.lua", room.id,
+                                "spawn_table names '" .. id .. "', which also has "
+                                .. "spawn_room '" .. tostring(mob.spawn_room)
+                                .. "' — populate() and this spawner are two "
+                                .. "sources for one creature")
+                        end
+                    end
+                end
+
+                local weight = type(entry) == "table" and tonumber(entry.weight) or nil
+                if weight and weight <= 0 then
+                    out[#out + 1] = finding("warn", "rooms.lua", room.id,
+                        "spawn_table[" .. i .. "] has weight " .. weight
+                        .. ", so it can never be picked")
+                end
+            end
+        end
+    end
 end
 
 --- Trait ids, against what `trait_d` actually defines.

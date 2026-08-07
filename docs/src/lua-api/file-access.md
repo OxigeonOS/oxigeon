@@ -160,7 +160,7 @@ than assumed. Every entry carries a `root` field either way.
 >
 > The jailed implementation existed the whole time and production never reached
 > it — the same failure shape as the sandbox and instruction-limit bugs
-> `CLAUDE.md`'s testing section was written about. `tests/list_dir_jail.rs` asks
+> `CLAUDE.md`'s testing section was written about. `tests/driver/list_dir_jail.rs` asks
 > the question through the engine's own VM, so a helper-level test cannot pass
 > while the reachable version is broken.
 

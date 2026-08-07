@@ -124,8 +124,8 @@ Three seconds later it attacks. The delay is long enough to read the room and
 turn round, which is the difference between a threat and an ambush.
 
 `aggressive` had been on every mob template since the class was written and
-**nothing read it**. What reads it now is `game/daemons/aggro_d.lua`, and it is
-in the game layer on purpose:
+**nothing read it**. What reads it now is `mudlib/daemons/aggro_d.lua`, and the
+delay and the level gap are config keys rather than constants:
 
 > [!NOTE]
 > The driver ships the flag and the `room.entered` event and takes no position

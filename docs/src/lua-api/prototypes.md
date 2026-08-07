@@ -292,3 +292,5 @@ same reasoning as `/game/lib`. Reads stay open, because `verify prototypes` and
 - [Creatures & Combat](./combat.md) — templates and instances
 - [Items, Equipment & Containers](./items.md) — components, which are the other
   axis
+- [Spawners](./spawners.md) — the workshop's rat nest, which is a prototype chain
+  and a spawner used together and is the shortest worked example of either

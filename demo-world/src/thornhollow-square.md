@@ -151,7 +151,7 @@ command**. Nor `up`, `in` or `out`.
 Every test that visited the undercroft got there with `goto`. The stair was
 described, listed in the exits, and unwalkable.
 
-`tests/world_graph.rs` now cross-references every direction any room uses
+`tests/demo_world/world_graph.rs` now cross-references every direction any room uses
 against the command registry:
 
 ```rust

@@ -73,6 +73,39 @@ M.fields = {
 
     { name = "stats", type = "map", of = "number", key_source = "trait", editable = true,
       help = "Trait id -> value. A room's corruption is a trait like any other." },
+
+    -- ─── The spawner ─────────────────────────────────────────────────────────
+    --
+    -- A place that *produces* creatures, which is a different statement from a
+    -- creature saying where it lives. Both exist and they are not
+    -- interchangeable:
+    --
+    --   mob.spawn_room + mob.count     a fixed population — the smith is in the
+    --                                  smithy, and there is one of her
+    --   room.spawn_*                   a source — this nest makes rats, of
+    --                                  these kinds, up to this many, over time
+    --
+    -- Authoring a spawner on the *room* rather than as a fourth generated kind
+    -- means OLC can already edit it: these are three ordinary fields in types
+    -- the schema has, so `olc set spawn_max 4` needs no new machinery. The cost
+    -- is that a room has one spawner and it seeds itself, which is what a nest
+    -- is. See docs/src/lua-api/spawners.md.
+    { name = "spawn_max", type = "integer", min = 0, max = 50, editable = true,
+      help = "Most creatures from this spawner alive here at once. Absent or 0 "
+          .. "means the room has no spawner." },
+
+    { name = "spawn_interval", type = "number", min = 1, default = 60, editable = true,
+      help = "Seconds between top-ups. One creature per tick, so this is the "
+          .. "rate the room refills at, not how long it takes to fill." },
+
+    { name = "spawn_table", type = "record_array", editable = true,
+      record = {
+          { name = "template", type = "id", target = "mob", required = true,
+            key = true },
+          { name = "weight", type = "number", min = 0, default = 1 },
+      },
+      help = "{ { template = 'black_rat', weight = 5 }, ... } — weighted, and "
+          .. "the weights are relative to each other rather than to anything." },
 }
 
 --- Fields the class reads that OLC deliberately cannot author.

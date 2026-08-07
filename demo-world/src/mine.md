@@ -172,7 +172,7 @@ one timer rather than stacking two.
 > That detail has history. `ticker_d.remove_by_prefix` once had a bug where
 > every per-player timer leaked, and a leaked closure pins its upvalues —
 > including the Player object. Arming by id is the shape that does not leak, and
-> `tests/mine.rs` asserts that two `after` calls with one id leave one timer.
+> `tests/demo_world/mine.rs` asserts that two `after` calls with one id leave one timer.
 
 ## The Delver
 

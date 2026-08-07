@@ -1,3 +1,18 @@
+-- mudlib/daemons/pager_d.lua — Long output, one screen at a time.
+--
+-- ─── Every path here ends its output with a newline ──────────────────────────
+--
+-- `Player:_process_output` appends `\r\n` to everything it sends, and
+-- `send_prompt` adds no leading newline — so the prompt sits on the line after
+-- whatever was last sent. This daemon writes through the raw `send` efun and so
+-- has to keep that contract itself.
+--
+-- The short-text path did not, for as long as it existed: text under one page
+-- was sent verbatim and the prompt landed **on** its last line. It showed up
+-- worst in `olc`, which pages more than anything else and whose output is
+-- almost always shorter than a screen — so the paged path, which did append,
+-- was almost never the one taken.
+
 local M = {}
 
 local _paging = {}
@@ -19,7 +34,11 @@ function M.page(session_id, text, page_length)
     end
     
     if #lines <= page_length then
-        local ok, err = pcall(function() send(session_id, text) end)
+        -- Terminated, like `_send_page` below and like `Player:_process_output`.
+        -- Unconditionally rather than only-when-missing: the two paths in this
+        -- file have to agree, and a caller that wanted a blank line should say
+        -- so rather than depend on whether its text happened to fit a screen.
+        local ok, err = pcall(function() send(session_id, text .. "\r\n") end)
         if not ok then log_error("pager_d page err: " .. tostring(err)) end
         return
     end

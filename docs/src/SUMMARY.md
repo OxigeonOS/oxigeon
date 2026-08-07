@@ -27,6 +27,7 @@
   - [Messages — One Line, Three Readers](./lua-api/messages.md)
   - [Creatures & Combat](./lua-api/combat.md)
   - [Body Layouts — Where a Blow Lands](./lua-api/bodies.md)
+  - [Spawners — Places That Produce Creatures](./lua-api/spawners.md)
   - [Efuns — Driver Functions](./lua-api/efuns.md)
   - [Event Hooks](./lua-api/events.md)
   - [File & System Access](./lua-api/file-access.md)

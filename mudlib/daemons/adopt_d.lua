@@ -39,11 +39,30 @@ end
 
 --- The area's current content, in *authoring* form.
 ---
---- Through `require` rather than `load(read_file(...))`: `require` keeps chunk
---- names, so a compile error still names the file and the debugger and `reload`
---- keep working. Items come back as built `Item`s, so `components.to_data` is
---- what gets them back to a form that can be written — the only direction that
---- exists, and why every component has a `to_data`.
+--- ─── Read from disk, never through `require` ────────────────────────────────
+---
+--- This used `require`, for the good reason that it keeps chunk names so a
+--- compile error still names the file. It also meant reading the **module
+--- cache**, and by the time anybody types `olc adopt` the loader has already
+--- been through that table: `prototype.resolve_list` flattens each record's
+--- prototype chain *in place* — deliberately, so `areaload`'s references see
+--- the resolved form — and `patch.apply` merges `custom.lua` in the same way.
+---
+--- So adopting an area that used prototypes copied the prototype's output into
+--- the generated file beside the `prototype` field that produced it. Every such
+--- record was then pinned: area data outranks a prototype, so editing the
+--- prototype afterwards would change nothing, and nothing anywhere would say so.
+--- `greywater_marsh`'s lurker came out carrying `name`, `race`, `faction`,
+--- `aggressive`, `damage_type` and `tags` that its own file never mentions.
+---
+--- `codegen_d.read` is `read_file` + `load`, so it runs a fresh chunk against
+--- what is on disk and nothing has mutated it. It passes `"@" .. path` as the
+--- chunk name, so the compile-error argument for `require` is answered too.
+---
+--- Items come back as built `Item`s either way — the file itself calls
+--- `Weapon{…}` — so `components.to_data` is what gets them back to a form that
+--- can be written. That is the only direction that exists, and why every
+--- component has a `to_data`.
 --- @param area_name string
 --- @return table|nil { rooms, items, mobs }, string|nil err
 function M.read_current(area_name)
@@ -56,9 +75,13 @@ function M.read_current(area_name)
 
     local function load_one(file, into)
         if file ~= spec.entry and not spec.has[file] then return end
-        local ok, value = pcall(require, "areas." .. area_name .. "." .. file)
+        local ok, value, rerr = pcall(DAEMON.codegen.read, area_name, file)
         if not ok then
             log_error("ADOPT: " .. area_name .. "/" .. file .. ".lua: " .. tostring(value))
+            return
+        end
+        if rerr then
+            log_error("ADOPT: " .. area_name .. "/" .. file .. ".lua: " .. tostring(rerr))
             return
         end
         if type(value) == "table" then out[into] = value end
@@ -135,6 +158,35 @@ function M.plan(area_name)
         return nil, "'" .. area_name .. "' is already OLC-managed."
     end
 
+    local areaload = require('lib.areaload')
+    local found = areaload.inspect(area_name)
+    if not found then return nil, "no such area" end
+    if not found.entry then return nil, "no rooms.lua or init.lua" end
+
+    -- ─── An `init.lua` area is refused, out loud ─────────────────────────────
+    --
+    -- `areaload.inspect` prefers `init.lua` over `rooms.lua` *unconditionally*,
+    -- so a generated `rooms.lua` written beside a surviving `init.lua` is never
+    -- read. The adoption would report success, set `managed`, and change
+    -- nothing about what the game loads — and every later `olc save` would
+    -- write to a file the loader ignores.
+    --
+    -- This used to fail by accident instead: `plan.legacy` was built from
+    -- `codegen_d.GENERATED[].file` — the literal `"rooms"` — rather than from
+    -- the entry file actually read, so `olc adopt` on such an area stopped at
+    -- "Could not read rooms.lua", which is true and explains nothing.
+    --
+    -- Note that `init` is also in the known-entry set below, so it is not even
+    -- reported as a stray. There is no arrangement of those two lists that
+    -- makes this shape adoptable; it has to be consolidated first.
+    if found.entry == "init" then
+        return nil, "'" .. area_name .. "' is assembled by its own init.lua, "
+            .. "which OLC cannot adopt: init.lua always wins over rooms.lua, so "
+            .. "the generated file would never be loaded. Consolidate the rooms "
+            .. "into one rooms.lua (and items.lua / mobs.lua), delete init.lua, "
+            .. "then adopt."
+    end
+
     local current, err = M.read_current(area_name)
     if not current then return nil, err end
 
@@ -171,19 +223,25 @@ function M.plan(area_name)
 
         plan.kinds[spec.kind] = converted
         if #converted > 0 then
-            plan.legacy[#plan.legacy + 1] = spec.file
+            -- **The file that was read**, not the one that will be written.
+            -- `read_current` loads the *rooms* kind from `found.entry`, which is
+            -- not always `spec.file`, and step 1 of `confirm` copies whatever is
+            -- named here — so naming the output file made it try to copy a file
+            -- that need not exist. The two are equal now only because the
+            -- `init.lua` shape is refused above; deriving it is what keeps that
+            -- true if the entry names ever grow again.
+            local source = (spec.file == "rooms") and found.entry or spec.file
+            plan.legacy[#plan.legacy + 1] = source
         end
     end
 
     -- Anything in the directory that is not one of the five entry names. Its
     -- content has already been adopted (its entry file required it), but the
     -- file itself will be left behind, unloaded, and that is worth saying.
-    local areaload = require('lib.areaload')
-    local spec = areaload.inspect(area_name)
     local entries = { rooms = true, init = true, items = true, mobs = true,
                       shops = true, custom = true, _meta = true }
     plan.strays = {}
-    for name in pairs(spec.has or {}) do
+    for name in pairs(found.has or {}) do
         if not entries[name] then plan.strays[#plan.strays + 1] = name end
     end
     table.sort(plan.strays)
@@ -360,6 +418,12 @@ function M.confirm(area_name)
         title  = meta.title,
         author = meta.author,
         level  = meta.level,
+        -- Carried through, which it was not. `generate_meta` defaults a missing
+        -- one to `<area>.entrance`, and that is right for an area `olc new area`
+        -- made and wrong for every hand-authored one — the marsh starts at
+        -- `causeway_head`. `verify`'s reachability walk starts here, so losing it
+        -- reports every room in the area as an orphan.
+        entrance = meta.entrance,
         status = meta.status,
     })
     if not ok then

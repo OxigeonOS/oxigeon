@@ -249,7 +249,7 @@ client rather than a re-implementation of it: `dap_live_tests.rs` drives the
 actual transport against a real adapter and a real Lua VM and asserts the
 breakpoint fires. That last part matters — a path that does not match the
 `@`-chunk name `require` produced is still answered `verified: true`, and then
-never stops. `tests/tui_inspect_payload.rs` runs the Inspect tab's Lua against a
+never stops. `tests/demo_world/tui_inspect_payload.rs` runs the Inspect tab's Lua against a
 booted mudlib for the same reason.
 
 See also [Debugging & Tracing](./lua-api/debugging.md) for the adapter itself,

@@ -15,6 +15,7 @@
 //! concurrently, and a job spinning a core for its whole deadline would skew any
 //! timing assertion a neighbour made.
 
+#[path = "common/mod.rs"]
 mod common;
 
 use std::time::{Duration, Instant};
@@ -99,7 +100,16 @@ fn the_pool_recovers_from_a_job_that_had_to_be_killed() {
     vm.eval("return compute('compute.runaway', 'hog', nil)").unwrap();
     assert_eq!(vm.next_compute_result().kind, "timeout");
 
-    vm.eval("return compute('compute.runaway', 'ok', nil)").unwrap();
+    // **Its own deadline, deliberately generous.** `default_deadline_ms` is 1.5s
+    // because that is how long we are willing to wait for the *hog* to be
+    // killed — and the recovery job was silently inheriting it, so it had to
+    // spawn a fresh worker process and run inside a budget picked to answer a
+    // different question. The claim being made here is that the pool recovers at
+    // all; how promptly a deadline is honoured is the previous test's claim, and
+    // it makes it with its own `Instant`.
+    //
+    // 40s, against a configured maximum of 60s and a 45s harness probe timeout.
+    vm.eval("return compute('compute.runaway', 'ok', nil, { deadline_ms = 40000 })").unwrap();
     let next = vm.next_compute_result();
     assert_eq!(
         next.kind, "ok",

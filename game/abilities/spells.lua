@@ -79,11 +79,26 @@ return {
         cooldown = 4,
         target   = "creature",
 
+        -- **Through `resolve_attack`, which is what a sword goes through.**
+        -- This file's own header claimed the damage met armour and resists
+        -- "exactly as they meet a sword", and `damage` had stopped being that:
+        -- a sword is a contest that can miss, is answered by a defence channel,
+        -- lands somewhere on the target and reports a degree of success, and
+        -- `damage` is a number applied. `attack` is the one that means what the
+        -- header says.
+        --
         -- `damage_type = "fire"`, so a resist table can meet it. An ability that
         -- dealt untyped damage would be the one thing in the game no armour
         -- could ever be designed against.
-        damage   = { min = 8, max = 8, type = "fire",
-                     scale = { trait = "spell_power", per = 2 } },
+        --
+        -- Magic is answered by *evasion only*: you cannot parry a line of fire
+        -- and a buckler is not in its way. Naming the channel is how that is
+        -- said — a spell that omitted `defenses` would be blocked by a shield.
+        attack   = {
+            defenses = { dodge = 1.0 },
+            damage   = { min = 8, max = 8, type = "fire",
+                         scale = { trait = "spell_power", per = 2 } },
+        },
         engage   = true,
 
         -- One authored sentence, rendered per reader: the caster reads "You
@@ -94,6 +109,9 @@ return {
         messages = {
             line   = "{red}$Actor $actor.v(draw) a line of fire at $target.{/}",
             result = "It takes $dealt.",
+            -- `attack` can miss, so there has to be something to read when it
+            -- does. `damage` never could, which is why this line is new.
+            miss   = "The fire goes wide of $target.",
         },
     },
 

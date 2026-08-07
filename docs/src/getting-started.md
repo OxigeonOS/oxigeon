@@ -133,19 +133,26 @@ mudlib/                  ← the driver's Lua half: reusable across games
 game/                    ← this game: content, and policy the driver has no view on
 ├── init.lua             ← registers everything below
 ├── setup_roles.lua      ← which roles exist and what they may do
-├── daemons/
-│   ├── aggro_d.lua      ← whether an aggressive creature attacks
-│   ├── weather_d.lua    ← and what the sky is doing
-│   ├── quest_d.lua      board_d.lua  spell_d.lua  reach_d.lua
+├── daemons/            ← only what *names things* belongs here
+│   ├── weather_d.lua    ← reeds and shutters; nowhere else has them
+│   ├── reach_d.lua      ← names a room id and an area
+│   ├── level_d.lua      ← the XP curve, which is a design document
+│   ├── spell_d.lua      ← a "spell" vocabulary over the engine's `ability`
 │   └── gmcp_game_d.lua  ← this game's own GMCP packages
-├── traits/  effects/  spells/  quests/
-├── areas/
-│   ├── thornhollow/     ← a town, in three room files merged into one area
+├── traits/  effects/  abilities/  quests/  prototypes/  body/
+├── areas/               ← every one of them OLC-managed
+│   ├── thornhollow/     ← a town: rooms.lua, items.lua, mobs.lua, custom.lua
 │   ├── greywater_marsh/ ← weather-driven descriptions, aggressive creatures
 │   ├── collapsed_mine/  ← dark rooms, a locked door, a puzzle, a boss
 │   └── wizard_workshop/ ← the original example, kept as a regression fixture
-└── cmds/                ← board, quest, cast, navigate
+└── cmds/                ← quest, cast, navigate
 ```
+
+An area is four files. `rooms.lua`, `items.lua` and `mobs.lua` are **OLC-owned**
+and rewritten wholesale by `olc save`; `custom.lua` is hand-written, never read
+or written by OLC, and holds everything that is a function — room actions, lfun
+descriptions, `on_death` hooks. That split is what lets an area be edited from
+inside the game without a regeneration eating its behaviour.
 
 ### Adding a New Command
 

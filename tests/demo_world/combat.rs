@@ -15,12 +15,25 @@ const LOADED_DICE: &str = "DAEMON.combat._roll = function(n) \
                              if n == 100 then return 1 else return n end end";
 
 /// A probe VM with the real game world, a player, and a rat to hit.
+///
+/// **The pantry has a spawner now, and a spawner picks a kind at random.** These
+/// tests assert exact damage, exact experience and exact occupancy, so taking
+/// whatever the nest happened to make would make them fail one morning for no
+/// reason — the muscular rat awards 30 experience where the black one awards 12.
+///
+/// So the room is cleared and given one known creature. `black_rat` is the
+/// drop-in: it overrides nothing but prose, so it inherits `vermin.rat`'s 24
+/// health, 2–5 damage and 12 experience — the numbers the old `workshop_rat`
+/// carried and the numbers every expectation below was written against.
 fn arena() -> RealVm {
     let mut vm = RealVm::boot_real_mudlib_with_probe();
     vm.eval(&format!(
         "local Player = require('lib.player') \
          p = Player:from_save(1, {{ name = 'Probe', account_id = 1 }}, {{}}) \
-         rat = DAEMON.mobs.in_room('wizard_workshop.pantry')[1] \
+         for _, m in ipairs(DAEMON.mobs.in_room('wizard_workshop.pantry')) do \
+             DAEMON.mobs.despawn(m) \
+         end \
+         rat = DAEMON.mobs.spawn('black_rat', 'wizard_workshop.pantry') \
          {LOADED_DICE} \
          return rat and rat.name or 'NO RAT'"
     ))
@@ -28,14 +41,24 @@ fn arena() -> RealVm {
     vm
 }
 
+/// Put a second known rat in the pantry, for the tests that need two.
+fn second_rat(vm: &mut RealVm) {
+    vm.eval("rat2 = DAEMON.mobs.spawn('black_rat', 'wizard_workshop.pantry') return 'ok'")
+        .unwrap();
+}
+
 #[test]
 fn the_game_layer_spawned_its_mobs() {
     let mut vm = RealVm::boot_real_mudlib_with_probe();
     assert_eq!(
         vm.eval("return tostring(#DAEMON.mobs.in_room('wizard_workshop.pantry'))").unwrap(),
-        "2",
-        "the area file asks for two rats"
+        "3",
+        "the pantry's nest fills to its spawn_max at load"
     );
+    // All three rat kinds share `name = "rat"`, inherited from `vermin.rat`, so
+    // `attack rat` works whichever one the nest made. That is not incidental:
+    // a spawner whose output could not be addressed by one noun would need the
+    // player to know which kind they were looking at before they could hit it.
     assert_eq!(
         vm.eval("return DAEMON.mobs.find_in_room('wizard_workshop.pantry', 'rat').name").unwrap(),
         "rat",
@@ -46,14 +69,10 @@ fn the_game_layer_spawned_its_mobs() {
 #[test]
 fn a_mob_has_its_own_health_not_the_templates() {
     let mut vm = arena();
-    vm.eval("local rats = DAEMON.mobs.in_room('wizard_workshop.pantry') \
-             DAEMON.trait.adjust(rats[1], 'hp', -10) \
-             return 'ok'")
-        .unwrap();
+    second_rat(&mut vm);
+    vm.eval("DAEMON.trait.adjust(rat, 'hp', -10) return 'ok'").unwrap();
     assert_eq!(
-        vm.eval("local rats = DAEMON.mobs.in_room('wizard_workshop.pantry') \
-                 return tostring(rats[1]:trait('hp') ~= rats[2]:trait('hp'))")
-            .unwrap(),
+        vm.eval("return tostring(rat:trait('hp') ~= rat2:trait('hp'))").unwrap(),
         "true",
         "wounding one rat must not wound every rat that shares the template"
     );
@@ -154,7 +173,7 @@ fn a_dead_mob_leaves_the_world_and_the_fight_ends() {
 
     assert_eq!(
         vm.eval("return tostring(#DAEMON.mobs.in_room('wizard_workshop.pantry'))").unwrap(),
-        "1",
+        "0",
         "the corpse should not still be standing there"
     );
     assert_eq!(
@@ -406,11 +425,13 @@ fn a_wounded_creature_regenerates_on_game_time_not_wall_time() {
         "this is the regeneration rate the bug report measured"
     );
 
-    // The rat is alive throughout — it never died and respawned, which was the
-    // other candidate explanation for health going back up.
+    // The rat is alive throughout — it never died and was replaced, which was
+    // the other candidate explanation for health going back up. One in the room
+    // and it is the same one: `arena` cleared the nest's output and put this
+    // single creature there.
     assert_eq!(
         vm.eval("return tostring(#DAEMON.mobs.in_room('wizard_workshop.pantry'))").unwrap(),
-        "2"
+        "1"
     );
     assert_eq!(vm.eval("return tostring(rat._killed_by)").unwrap(), "nil");
 }

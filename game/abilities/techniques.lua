@@ -45,11 +45,27 @@ return {
         cast_time = 1,
         interrupt = { on_damage = true, on_move = true, threshold = 5 },
 
-        damage = { min = 4, max = 9, type = "physical",
-                   -- `rank` is a pseudo-trait resolving to this ability's own
-                   -- rank, so the slope works whether the rank came from the
-                   -- trait or from something that granted it.
-                   scale = { trait = "rank", per = 1.5 } },
+        -- Through the resolution pipeline, like a sword: it can miss, a defence
+        -- channel answers it, it lands on a body part and it reports a degree.
+        -- `damage` is a number applied and could do none of that, which made
+        -- this a poor demonstration of a technique.
+        attack = {
+            damage = { min = 4, max = 9, type = "physical",
+                       -- `rank` is a pseudo-trait resolving to this ability's
+                       -- own rank, so the slope works whether the rank came
+                       -- from the trait or from something that granted it.
+                       scale = { trait = "rank", per = 1.5 } },
+        },
+
+        -- **A round and a half of recovery**, which is the queue half this
+        -- record existed to demonstrate and did not.
+        --
+        -- `{ rounds = n }` is *multiplicative* — n times whatever a round is for
+        -- this fighter — which is why it is not the same thing as `scale`, and
+        -- why it cannot be desugared into one. A slow fighter's cleave costs
+        -- them proportionally more real time than a quick one's, and neither
+        -- number is written down here.
+        roundtime = { rounds = 1.5 },
 
         apply = { { effect = "weakened", to = "target", duration = 12, chance = 0.4 } },
 
@@ -58,6 +74,7 @@ return {
             self   = "You sweep your blade through $target.",
             room   = "$name sweeps a blade through $target.",
             result = "It takes $dealt.",
+            miss   = "$Target steps inside the arc and it goes past.",
         },
     },
 }

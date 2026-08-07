@@ -93,7 +93,16 @@ Your game, in two parts, and the line between them is the one to hold on to:
 The test of which side something goes on is not size or subject, it is: would
 another game want this one unchanged, or would it want a different file? A
 pathfinder is mudlib; the `navigate` command that decides what to do with a
-route is game. `Mobile.aggressive` is mudlib; `aggro_d`, which reads it, is not.
+route is game. A sharper test still is whether the file **names things**:
+`reach_d` names a room id and an area, `weather_d` names reeds and shutters,
+`gmcp_game_d` names a package only this game has. None of them would mean
+anything in another world.
+
+`aggro_d` was the example here, and it was the wrong one. It named nothing — two
+tunable constants and a message string — so it moved to the mudlib along with
+`board_d` and `quest_d`. A mudlib that ships `Mobile.aggressive`,
+`Mobile:is_aggressive()` and a `room.entered` event with **nothing that reads
+them** unless each game writes its own `aggro_d` is a mudlib with a hole in it.
 
 The driver calls these global Lua functions (defined in `mudlib/init.lua`):
 - `on_connect(session_id)`
@@ -194,7 +203,7 @@ Two things qualify that, both opt-in:
   `[servers.debug] stop_the_world = false`, a breakpoint parks that one command
   as a coroutine and the loop carries on serving everyone else. Sequential
   becomes *interleaved*, which is why module-level guards in the mudlib are keyed
-  per entity rather than per process — see `tests/interleaving.rs`.
+  per entity rather than per process — see `tests/mudlib/interleaving.rs`.
 - **Compute runs elsewhere.** `compute()` hands a job to an `oxigeon-compute`
   child process with its own LuaJIT VM and no efuns at all, and the answer comes
   back through `on_compute_result`. It is a separate binary because it links a

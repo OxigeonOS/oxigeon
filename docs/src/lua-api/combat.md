@@ -33,25 +33,30 @@ round timer. Anything more is a game's decision, not a driver's.
 Templates are plain data, authored per area exactly as rooms and items are:
 
 ```lua
--- game/areas/wizard_workshop/mobs.lua
+-- game/areas/thornhollow/mobs.lua
 return {
     {
-        id          = "workshop_rat",
-        name        = "rat",
-        short       = "a grey rat",
-        description = "A scrawny grey rat with matted fur and clever, wary eyes.",
+        id          = "town_guard",
+        name        = "guard",
+        short       = "a town guard",
+        description = "Bored, and paid to be.",
         -- `max_hp_flat`, not `max_hp`: see "Authored health" below.
-        stats       = { hp = 24, max_hp_flat = 24, strength = 6, dexterity = 12,
-                        constitution = 8, level = 1 },
-        damage      = { min = 2, max = 5 },
-        xp_award    = 12,
-        spawn_room  = "wizard_workshop.pantry",
+        stats       = { hp = 60, max_hp_flat = 60, strength = 12, dexterity = 11,
+                        constitution = 12, level = 4 },
+        damage      = { min = 3, max = 7 },
+        xp_award    = 40,
+        spawn_room  = "thornhollow.square",
         count        = 2,
-        respawn_time = 120,
-        loot_table  = { { item_id = "empty_vial", chance = 0.35 } },
+        loot_table  = { { item_id = "brass_key", chance = 0.1 } },
     },
 }
 ```
+
+`spawn_room` and `count` are a **fixed population**: this creature lives there
+and there are two of it. The other way a creature gets into the world is a
+[spawner](./spawners.md) — a *room* that produces creatures of several kinds up
+to a cap. The two are not interchangeable and a creature should be fed by one of
+them, never both.
 
 Register and populate from `game/init.lua`:
 
@@ -65,7 +70,11 @@ with its own id, its own health and its own effects. Wounding one rat does not
 wound every rat.
 
 `populate()` is idempotent — a template already at its `count` is left alone —
-so it is safe to call on an area reset without the world filling up with rats.
+so it is safe to call on an area reset without the world filling up with guards.
+
+Note what it counts: **per template**. Three rat templates at `count = 2` is six
+rats, and there is no way here to say "six rats of any kind is too many for one
+pantry". That is what [spawners](./spawners.md) are for.
 
 > [!NOTE]
 > **Mobs are never saved.** If the server restarts, the rat is a new rat. That
@@ -285,9 +294,17 @@ harness does, so a fight never resolves in the background of an unrelated test.
 - **No corpses.** Loot falls on the floor of the room the fight was in — see
   [Items](./items.md). It used to go straight to the killer, and that was never
   a design decision: nothing in the mudlib could put an item in a room.
-- **No aggression policy.** `aggressive` is read now, but by the *game* layer.
-  The driver ships the flag and the `room.entered` event; whether an aggressive
-  creature attacks, how long it waits, whether it cares about level or faction,
-  and whether it gives up when you flee are content decisions. See
-  `game/daemons/aggro_d.lua` for one game's answer — a different game writes a
-  different file rather than configuring that one into shapelessness.
+- **Aggression is the mudlib's, its numbers are the game's.**
+  `mudlib/daemons/aggro_d.lua` reads the flag and the `room.entered` event and
+  decides that an aggressive creature attacks after a delay unless the level gap
+  is hopeless. How long it waits and how wide that gap is are
+  `game.aggro_delay_seconds` and `game.aggro_ignore_level_gap` in
+  `config/server.toml`.
+
+  This lived in the game layer, on the argument that whether a creature attacks
+  is a content decision. It named nothing — two constants and one message — and
+  the cost of the argument was a mudlib shipping `Mobile.aggressive`,
+  `Mobile:is_aggressive()` and a `room.entered` event with **nothing that read
+  them** unless every game wrote its own copy. A game that wants different
+  behaviour still replaces the daemon; a game that wants different *numbers* now
+  edits a config file.

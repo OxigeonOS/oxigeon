@@ -17,30 +17,54 @@ layer it is in and why**.
 ```
 game/areas/
 ├── wizard_workshop/
+│   ├── _meta.lua        managed = "olc.v1" — the gate on every OLC write
 │   ├── rooms.lua        6 rooms, the cauldron puzzle, the scrying mirror
-│   ├── items.lua        the potions and the vial
-│   ├── gear.lua         weapons, armour and containers — the equipment showcase
-│   └── mobs.lua         rats and a mephit
+│   ├── items.lua        the potions and the vial, plus all the equipment
+│   ├── mobs.lua         three kinds of rat, and a mephit
+│   └── custom.lua       the puzzle: pouring, collecting, the teleport
 ├── thornhollow/
-│   ├── init.lua         ROOM_D.merge over the three files below
-│   ├── square.lua       square, smithy, tavern, west gate
-│   ├── market.lua       arcade, general store, apothecary
-│   ├── undercroft.lua   stair, undercroft, crypt
+│   ├── _meta.lua
+│   ├── rooms.lua        10 rooms — square, market and undercroft in one file
 │   ├── items.lua        provisions, potions, the vault
 │   ├── mobs.lua         seven townsfolk
-│   └── shops.lua        three shops — registered against rooms, not in them
+│   ├── shops.lua        three shops — registered against rooms, not in them
+│   └── custom.lua       the well, the notices, the flagstone, Bellow's lfun
 ├── greywater_marsh/
-│   ├── rooms.lua        five rooms, all lfun descriptions
-│   └── mobs.lua         lurkers, crawlers, the Wisp
+│   ├── _meta.lua
+│   ├── rooms.lua        five rooms
+│   ├── mobs.lua         lurkers, crawlers, the Wisp
+│   └── custom.lua       every description — they are all lfuns
 └── collapsed_mine/
+    ├── _meta.lua
     ├── rooms.lua        six rooms, the door, the levers, the seam
     ├── items.lua        ore, the pick, the claw, the corpse
-    └── mobs.lua         crawlers and the Delver
+    ├── mobs.lua         crawlers and the Delver
+    └── custom.lua       the lever puzzle, and the two exits with a `check`
 ```
 
-`shops.lua` being separate from `market.lua` is worth a sentence: a shop is a
-registration *against* a room rather than a property of one, which is what lets a
-shop move without editing a room and a room be rebuilt without losing its shop.
+**Four files, and the split is the point.** `rooms.lua`, `items.lua` and
+`mobs.lua` are OLC-owned and rewritten wholesale by `olc save`; `custom.lua` is
+hand-written and OLC never reads or writes it. That is what lets every area here
+be edited from inside the game without a regeneration silently deleting the room
+actions and lfun descriptions that make them worth shipping.
+
+Two consequences visible above:
+
+- **`gear.lua` is gone.** It held ten items and `items.lua` appended it, because
+  the loader has five entry names and anything else has to be pulled in by one
+  of them. It worked, and it also meant ten items `olc list` could not see and
+  `olc save` would not have written back.
+- **Thornhollow is one `rooms.lua`.** It was `init.lua` merging `square.lua`,
+  `market.lua` and `undercroft.lua`, which split the town by *place* so three
+  builders need never touch the same file. `areaload.inspect` prefers `init.lua`
+  over `rooms.lua` unconditionally, so a generated `rooms.lua` beside a
+  surviving `init.lua` would never be read — every save writing to a file the
+  loader ignores. That was the price.
+
+`shops.lua` being separate is worth a sentence: a shop is a registration
+*against* a room rather than a property of one, which lets a shop move without
+editing a room and a room be rebuilt without losing its shop. It is not a
+`GENERATED` kind, so OLC leaves it alone.
 
 ## The game's own systems
 
@@ -49,32 +73,40 @@ game/
 ├── init.lua              registers everything, each step in its own pcall
 ├── setup_roles.lua       which roles exist and what they carry
 ├── daemons/
-│   ├── aggro_d.lua       whether an aggressive creature attacks
-│   ├── weather_d.lua     and what the sky is doing
+│   ├── weather_d.lua     what the sky is doing — reeds, shutters, fog
 │   ├── level_d.lua       the experience curve
-│   ├── quest_d.lua       what a quest is
-│   ├── board_d.lua       the notice board
-│   ├── spell_d.lua       casting
-│   ├── reach_d.lua       the virtual provider
+│   ├── spell_d.lua       a "spell" vocabulary over the engine's `ability`
+│   ├── reach_d.lua       the virtual provider — names a room id and an area
 │   └── gmcp_game_d.lua   Game.Quest
 ├── traits/
-│   ├── core.lua          22 traits: attributes, gauges, derived, hidden
+│   ├── core.lua          attributes, gauges, derived, hidden, and the four
+│   │                     combat traits that turn defence channels on
 │   ├── skills.lua        five skills, in no seed set
-│   └── broken_example.lua  deliberately broken; loaded only by a test
 ├── effects/
 │   ├── core.lua          the worked examples, plus wardskin
 │   ├── marsh.lua         poison, chill, the Wisp's mark
 │   └── mine.lua          the Delver's Regard
-├── spells/core.lua       four spells, one per mechanism
+├── abilities/
+│   ├── spells.lua        four spells, one per mechanism
+│   └── techniques.lua    cleave — the whole spec surface in one record
+├── prototypes/beasts.lua   what "a beast in this game" means
+├── body/creatures.lua      humanoid, beast, insectile, amorphous
 ├── quests/thornhollow.lua  five quests, one per persistence shape
 └── cmds/
-    ├── board.lua  quest.lua  quests.lua  cast.lua  navigate.lua
+    ├── quest.lua  quests.lua  cast.lua  navigate.lua
 ```
 
-**Every one of these daemons is a policy decision.** `aggro_d` is the clearest:
-the driver ships `Mobile.aggressive` and the `room.entered` event and takes no
-position on what should happen next. `level_d` is the same shape — the mudlib
-owns `award_xp` and the `xp_gained` pipeline; the *curve* is content.
+**Every one of these daemons is a policy decision, and the test is whether it
+*names things*.** `weather_d` names reeds and shutters. `reach_d` names a room
+id and an area. `level_d`'s `THRESHOLDS` is a design document as much as a
+table — the mudlib owns `award_xp` and the `xp_gained` pipeline; the *curve* is
+content.
+
+`aggro_d` used to head this list as the clearest example, and it was the wrong
+one: it named nothing but two tunable constants, so it is in the mudlib now,
+along with `board_d` and `quest_d`. A driver that ships `Mobile.aggressive` and
+the `room.entered` event with nothing that reads them is not taking no position,
+it is shipping a hole.
 
 ## What the driver provides
 
@@ -144,12 +176,14 @@ destroyed.
 
 ## Reading order, if you are new to the codebase
 
-1. `game/areas/thornhollow/square.lua` — what an area file looks like.
-2. `game/daemons/aggro_d.lua` — what a game daemon looks like, and the layer
-   argument stated in a header comment.
+1. `game/areas/greywater_marsh/rooms.lua` and its `custom.lua` — what an area
+   is, and where the line between data and code falls.
+2. `game/daemons/reach_d.lua` — what a game daemon looks like, and the layer
+   argument stated in a header comment: it names a room id and an area, so no
+   other world could want it unchanged.
 3. `mudlib/lib/carry.lua` — the shape of a mudlib library, and why five verbs
    share one.
 4. `mudlib/daemons/trait_d.lua` — the most load-bearing file in the driver, and
    the one whose header explains the most.
-5. `tests/world_graph.rs` — the shortest demonstration of why walking a world
+5. `tests/demo_world/world_graph.rs` — the shortest demonstration of why walking a world
    catches what testing it does not.

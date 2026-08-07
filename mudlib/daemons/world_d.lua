@@ -71,6 +71,15 @@ function M.register_room(room)
     if DAEMON and DAEMON.tag then
         pcall(DAEMON.tag.index, "room", room.id, room.tags)
     end
+
+    -- Same reason as the tag index above: a room entering the world is the one
+    -- moment every path goes through — an area load, an area reset, a `dig`, a
+    -- virtual room being realised — so an index fed here cannot drift out of
+    -- step with what exists. A room that has lost its spawner drops out of that
+    -- index on re-registration rather than lingering.
+    if DAEMON and DAEMON.spawner then
+        pcall(DAEMON.spawner.notice, room)
+    end
 end
 
 function M.register_area(rooms_array)

@@ -192,7 +192,7 @@ observing it proves. Anything with **no vehicle today** is a coverage hole.
 | `round` modes | one trait each of `floor`/`ceil`/`round`/`none` | `score` values |
 | `hidden` | an internal `luck_seed` | absent from `score` |
 | **Gauge regeneration** — remainder carry, re-anchor at target, `offline = false` | `stamina` drained by `flee` and by mining; `mp` by casting | log out an hour, log in, check |
-| `seal()` reporting a **cycle as a path** and a missing dep | `game/traits/broken_example.lua`, loaded only by a test | error text names the path; server stays up |
+| `seal()` reporting a **cycle as a path** and a missing dep | `tests/broken_traits.rs`, which defines the broken traits itself | error text names the path; server stays up |
 | Memoization + `bump_all` on reload | `reload('daemons.trait_d')` mid-session | values recompute, no stale numbers |
 | `Mobile:stat(id)` on a **mob** | mob-vs-mob or boss stats | works off-player |
 

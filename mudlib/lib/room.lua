@@ -25,6 +25,20 @@ function Room:new(data)
     -- rooms are outdoors?") goes through `tag_d`, which indexes it.
     obj.tags        = data.tags or {}
 
+    -- The spawner, read live off this object by `spawner_d` every heartbeat —
+    -- which is what makes `olc set spawn_max 4` take effect without a reload.
+    --
+    -- Note the hazard this shares with `Item:new`: both copy a **fixed list of
+    -- fields**, so a new schema field that nobody adds here is authored, saved,
+    -- linted, round-tripped through the generated file — and then silently
+    -- absent from the object the game actually uses. It is not an error
+    -- anywhere. `drinkable`'s `on_drink` was lost that way for exactly as long
+    -- as it took somebody to author a potion as data instead of through the
+    -- archetype.
+    obj.spawn_max      = data.spawn_max
+    obj.spawn_interval = data.spawn_interval
+    obj.spawn_table    = data.spawn_table
+
     return obj
 end
 

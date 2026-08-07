@@ -95,6 +95,50 @@ no exits at all. You leave by touching the orb.
 | **lfun scenery** | `look cauldron` is also a function, and gives a different answer at each step |
 | **Teleporting items** | the purple potion's `on_drink` calls `player:move_to()` |
 | **A room with no exits** | the vault, which you can only leave the way you came |
+| **A spawner** | the pantry's rat nest: three kinds, up to three at once, one more every 45 seconds |
+| **A prototype chain** | those three rats are four lines each — `{ id, prototype }` — and inherit everything else |
+
+## The nest
+
+Behind the lowest shelf of the pantry: *a heap of shredded parchment, gnawed cork
+and one entire glove. It is warm.*
+
+It is three fields on the room, and nothing else:
+
+```lua
+spawn_max      = 3,
+spawn_interval = 45,
+spawn_table    = {
+    { template = "black_rat",    weight = 5 },
+    { template = "scrawny_rat",  weight = 3 },
+    { template = "muscular_rat", weight = 1 },
+},
+```
+
+Three things are worth noticing.
+
+**The cap is across kinds.** Three rats of *any* mix is the limit. The older way
+of putting creatures in a room — `spawn_room` and `count` on each template —
+counts per template, so three rat templates at `count = 2` is six rats and there
+is no way to say what the room should hold. See
+[Spawners](../book/lua-api/spawners.html).
+
+**The kinds are a prototype chain.** `black_rat`, `scrawny_rat` and
+`muscular_rat` are each two lines in `mobs.lua`:
+
+```lua
+{ id = "black_rat", prototype = "vermin.rat.black" },
+```
+
+Everything else — the name, the health, the damage, the loot table, the body
+layout — comes from `vermin.rat` and its three children in
+`game/prototypes/beasts.lua`. The scrawny one names four stats and keeps the rest,
+because `stats` is a schema `map` and a patch of a map merges key by key.
+
+**It is authored data, so it is editable in the game.** `olc set spawn_max 4` and
+`olc set spawn_table.black_rat 8` both work, and `verify` checks that the
+templates exist and that none of them *also* respawns on its own — which would
+feed the room from two sources and drift it past its cap one kill at a time.
 
 > [!NOTE]
 > **The lfun pattern is the thing to take away here.** A room's description can
@@ -117,7 +161,7 @@ The town's tests passed, because they reach the town with `goto` — an admin
 command. The whole demo world was unreachable by a player, and every test was
 green.
 
-What catches it now is `tests/world_graph.rs`, which floods the exit graph from
+What catches it now is `tests/demo_world/world_graph.rs`, which floods the exit graph from
 the configured start room and asserts every area is reached:
 
 ```rust
@@ -140,9 +184,11 @@ stair down from Thornhollow Square had never been walkable.
 ## Things to try here
 
 - `gaze` in the scrying chamber, more than once.
-- `taste` in the pantry. There are rats in there; they are level 1 and will not
-  bother you unless you bother them.
+- `taste` in the pantry. There are rats in there; most are level 1 and will not
+  bother you unless you bother them. The red one will.
 - `attack rat`, to see a fight before anything can hurt you.
+- Kill all three rats and stand there. One comes back every 45 seconds, up to
+  three, and then it stops — see [the nest](#the-nest), below.
 - `pour blue` first, on purpose, and read what the cauldron says at each step —
   the room's *description* changes, not just the reply.
 - `reload areas.wizard_workshop.rooms` after solving half the puzzle. The

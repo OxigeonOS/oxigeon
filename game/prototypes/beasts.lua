@@ -17,9 +17,13 @@
 --       ├ mine.beast        + faction and tags
 --       │   ├ mine.crawler  + the noun
 --       │   └ mine.lurker
---       └ marsh.beast
---           ├ marsh.crawler
---           └ marsh.venomous  + a bite that carries something
+--       ├ marsh.beast
+--       │   ├ marsh.crawler
+--       │   └ marsh.venomous  + a bite that carries something
+--       └ vermin.rat        what a rat is, and what the workshop nest makes
+--           ├ vermin.rat.black
+--           ├ vermin.rat.scrawny
+--           └ vermin.rat.muscular
 --
 -- A crawler is a crawler in both areas, and the area is not the noun — so there
 -- are two things worth inheriting from and inheritance is single. The area wins,
@@ -58,6 +62,10 @@ return {
             damage_type = "physical",
             count       = 1,
         },
+        -- `race` already resolves to the `beast` layout — `body` is the first
+        -- rung and `race` the second, so nothing above needs to name one. What
+        -- follows overrides that where the shape is genuinely different, which
+        -- is the only reason `body` is written down at all.
 
         -- ─── The collapsed mine ──────────────────────────────────────────────
         ["mine.beast"] = {
@@ -65,7 +73,8 @@ return {
             faction   = "mine",
             tags      = { "beast", "mine" },
         },
-        ["mine.crawler"] = { prototype = "mine.beast", name = "crawler" },
+        ["mine.crawler"] = { prototype = "mine.beast", name = "crawler",
+                             body = "insectile" },
         ["mine.lurker"]  = { prototype = "mine.beast", name = "lurker" },
 
         -- ─── Greywater marsh ────────────────────────────────────────────────
@@ -74,7 +83,8 @@ return {
             faction   = "marsh",
             tags      = { "beast", "marsh" },
         },
-        ["marsh.crawler"] = { prototype = "marsh.beast", name = "crawler" },
+        ["marsh.crawler"] = { prototype = "marsh.beast", name = "crawler",
+                              body = "insectile" },
 
         -- A function in a prototype, which is the half `custom.lua` cannot do:
         -- `custom.lua` gives *this area's* hooks, and this gives everyone's.
@@ -82,6 +92,73 @@ return {
             prototype = "marsh.beast",
             name      = "lurker",
             on_combat = bite_carrying("marsh_poison", 25),
+        },
+
+        -- ─── Rats ────────────────────────────────────────────────────────────
+        --
+        -- What the workshop's nest makes. This is the branch to read if you
+        -- want to see what prototypes buy, because the three children below are
+        -- four lines each and are genuinely different creatures.
+        --
+        -- `vermin.rat` is the old `workshop_rat` template with its identity
+        -- taken out: everything here is true of any rat, and nothing here says
+        -- which rat. It carries no `spawn_room`, `count` or `respawn_time` —
+        -- the nest is the only thing that decides where rats come from and how
+        -- many there are, and a template that also carried those would be fed
+        -- by two sources at once. `verify` reports that if anyone adds them.
+        ["vermin.rat"] = {
+            prototype   = "beast",
+            name        = "rat",
+            race        = "beast",
+            body        = "beast",
+            faction     = "vermin",
+            aggressive  = false,
+            xp_award    = 12,
+            damage      = { min = 2, max = 5 },
+            stats       = { hp = 24, max_hp_flat = 24, strength = 6, dexterity = 12,
+                            constitution = 8, intelligence = 2, wisdom = 4, level = 1 },
+            loot_table  = { { item_id = "empty_vial", chance = 0.35 } },
+            tags        = { "vermin" },
+        },
+
+        -- The common one. Nothing but prose differs, which is the point: most
+        -- of a bestiary is prose, and a prototype is what stops the twelve keys
+        -- underneath it being retyped for every line of it.
+        ["vermin.rat.black"] = {
+            prototype   = "vermin.rat",
+            short       = "a black rat",
+            description = "Sleek, unhurried and entirely unbothered by being "
+                       .. "looked at. It has the manner of something that lives "
+                       .. "here and knows you do not.",
+        },
+
+        -- Weaker, and worth less. Two numbers.
+        ["vermin.rat.scrawny"] = {
+            prototype   = "vermin.rat",
+            short       = "a scrawny grey rat",
+            description = "Matted fur over a frame you can count. It has been "
+                       .. "living on spilled reagents and it has not agreed with "
+                       .. "it.",
+            stats       = { hp = 14, max_hp_flat = 14, strength = 4, dexterity = 14 },
+            xp_award    = 6,
+        },
+
+        -- The one worth being careful about. **`stats` is a map, so a patch of
+        -- it merges key by key** — `dexterity`, `intelligence` and `wisdom` are
+        -- inherited untouched rather than being wiped by the four named here.
+        -- An array field would have replaced the lot, and `tags` below does
+        -- exactly that, which is why it restates `vermin`.
+        ["vermin.rat.muscular"] = {
+            prototype   = "vermin.rat",
+            short       = "a muscular red rat",
+            description = "Half again the size of the others and the colour of "
+                       .. "old brick. Something in the pantry has agreed with "
+                       .. "this one enormously.",
+            stats       = { hp = 40, max_hp_flat = 40, strength = 11, constitution = 12 },
+            damage      = { min = 4, max = 8 },
+            xp_award    = 30,
+            aggressive  = true,
+            tags        = { "vermin", "dangerous" },
         },
     },
 }

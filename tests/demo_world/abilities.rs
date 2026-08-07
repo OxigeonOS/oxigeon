@@ -117,6 +117,15 @@ fn cast_and_perform_take_the_same_path() {
         .unwrap();
     assert_eq!(out, "ready");
 
+    // Emberlance goes through `resolve_attack` now, so it can miss — and a test
+    // that compares two damage numbers from something that can miss is a test
+    // that fails one morning for no reason. Pin the die low, which always hits;
+    // the damage itself is `min == max` plus a fixed slope, so the comparison
+    // below is exact rather than approximate.
+    vm.eval("DAEMON.combat._roll = function(n) if n == 100 then return 1 else return n end end \
+             return 'loaded'")
+        .unwrap();
+
     let via_ability = vm
         .eval(
             "local m = DAEMON.mobs.spawn('reed_crawler', 'greywater_marsh.herb_beds') \

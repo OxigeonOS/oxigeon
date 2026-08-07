@@ -189,4 +189,79 @@ return {
     --- number a game wants and a player has no business reading.
     { id = "luck_seed", label = "Luck", kind = "attribute", group = "derived",
       default = 7, min = 0, max = 99, hidden = true },
+
+    -- ─── Combat ──────────────────────────────────────────────────────────────
+    --
+    -- `combat_d` decides what a fighter can do by **which traits they store**:
+    -- there is no list anywhere naming who may parry. Until these existed every
+    -- fight in the game took the no-configuration path — one implicit dodge
+    -- worth the whole pool — so parry and block could not happen to anyone.
+    --
+    -- ─── A pool and three weights, not four ratings ──────────────────────────
+    --
+    -- This is the part that is easy to get backwards. `defense` is the pool;
+    -- `defense_dodge`, `defense_parry` and `defense_block` are **weights**,
+    -- normalised into shares of it across the channels you can actually use.
+    -- The contest then takes your *best* channel.
+    --
+    -- So more channels is not more defence — three equal weights would leave
+    -- your best worth a third of the pool, and picking up a shield would make
+    -- you easier to hit. The numbers below are chosen so that does not happen:
+    --
+    --   unarmed          dodge alone, share 1.0        → the whole pool
+    --   armed            dodge 6, parry 10             → parry, 0.625 of pool
+    --   armed + shield   the buckler's `stat_bonus` raises both the pool and
+    --                    the block weight, so block dominates and is worth more
+    --                    than parry was
+    --
+    -- At level 1 with everything at 10 that middle case comes out at exactly
+    -- `dexterity`, which is what `rating()` fell back to before — so a fight
+    -- between two ordinary characters is arithmetically unchanged, and what is
+    -- new is that the result now *names the channel*.
+
+    { id = "defense", label = "Defence", kind = "derived", group = "derived",
+      depends = { "dexterity", "reflex" }, min = 1, round = "none",
+      formula = function(t) return t.dexterity + t.reflex end },
+
+    --- Agility, so a light character evades where a heavy one does not.
+    { id = "defense_dodge", label = "Dodge", kind = "derived", group = "derived",
+      depends = { "reflex" }, min = 0, round = "none",
+      formula = function(t) return t.reflex end },
+
+    --- Skill with whatever is in your hand. `combat_d`'s channel is unavailable
+    --- without a weapon and refuses a crossbow, so this weight only ever
+    --- competes when parrying is genuinely possible.
+    { id = "defense_parry", label = "Parry", kind = "derived", group = "derived",
+      depends = { "dexterity" }, min = 0, round = "none",
+      formula = function(t) return t.dexterity end },
+
+    --- Bracing behind something. Low on its own: a shield is what makes this
+    --- worth having, and it says so through `stat_bonus` rather than through a
+    --- special case here.
+    { id = "defense_block", label = "Block", kind = "derived", group = "derived",
+      depends = { "strength" }, min = 0, round = "none",
+      formula = function(t) return t.strength / 2 end },
+
+    --- What the attacker brings. `rating()` fell back to `dexterity`, so this
+    --- deliberately *is* dexterity at level 1 and pulls ahead slowly — the point
+    --- is not the curve, it is that a weapon can now raise it through the
+    --- ordinary `stat_bonus` path.
+    { id = "accuracy", label = "Accuracy", kind = "derived", group = "derived",
+      depends = { "dexterity", "level" }, min = 0, round = "floor",
+      formula = function(t) return t.dexterity + (t.level - 1) * 0.5 end },
+
+    --- How long one combat round takes you, in seconds.
+    ---
+    --- `queue_d` warned once per track that it was falling back to a flat 3s and
+    --- that roundtime therefore responded to nothing. It responds to dexterity
+    --- now, and — because encumbrance and what you wield reach traits through
+    --- `stat_bonus` — to those too, with no code anywhere reading a weapon.
+    ---
+    --- Exactly 3.0 at dexterity 10, which is the value it replaces. Bounded at
+    --- both ends: `Abilities.roll` multiplies by this, so a zero would make
+    --- every roundtime nothing and a large one would stall a fight.
+    { id = "round_length", label = "Round Length", kind = "derived",
+      group = "derived", depends = { "dexterity" }, min = 1.5, max = 6,
+      round = "none", hidden = true,
+      formula = function(t) return 3.0 - (t.dexterity - 10) * 0.05 end },
 }

@@ -24,20 +24,28 @@ fn curve(constitution: i64, level: i64) -> i64 {
 
 #[test]
 fn the_scrawny_rat_is_scrawny() {
-    // The bug as reported: `game/areas/wizard_workshop/mobs.lua` says 24.
+    // Named rather than taken from the room. The pantry has a spawner now and a
+    // spawner picks a kind at random, so `in_room(...)[1]` is whichever rat the
+    // nest happened to make — and the three have different health, which is the
+    // whole subject of this test.
     let mut vm = RealVm::boot_real_mudlib_with_probe();
-    vm.eval("_rat = DAEMON.mobs.in_room('wizard_workshop.pantry')[1] return 'ok'")
+    vm.eval("_rat = DAEMON.mobs.spawn('scrawny_rat', 'wizard_workshop.pantry') return 'ok'")
         .unwrap();
 
-    assert_eq!(vm.eval("return tostring(_rat:trait('max_hp'))").unwrap(), "24");
+    assert_eq!(vm.eval("return tostring(_rat:trait('max_hp'))").unwrap(), "14");
     assert_eq!(
         vm.eval("return tostring(_rat:trait('hp'))").unwrap(),
-        "24",
-        "and it spawns at full health rather than at 24 of a possible 90"
+        "14",
+        "and it spawns at full health rather than at 14 of a possible 90"
     );
 
-    // The curve would have said 90 — that is the number that was showing.
+    // The curve would have said 90 — that is the number that was showing. Note
+    // the constitution is 8: `vermin.rat.scrawny` names four stats and `stats`
+    // is a schema `map`, so the patch **merges key by key** and constitution
+    // comes through from `vermin.rat` untouched. An array field would have
+    // replaced the lot and this would read 50.
     assert_eq!(curve(8, 1), 90);
+    assert_eq!(vm.eval("return tostring(_rat:trait('constitution'))").unwrap(), "8");
 }
 
 #[test]

@@ -58,8 +58,8 @@ Walk two hundred rooms into the grid and back:
  Lua heap:    12.4 MB / 64 MB (19%)
 ```
 
-The number does not climb. `tests/state_retention.rs` asserts the registry size
-is flat after a 200-step walk, and `tests/virtual_rooms.rs` asserts a
+The number does not climb. `tests/mudlib/state_retention.rs` asserts the registry size
+is flat after a 200-step walk, and `tests/demo_world/virtual_rooms.rs` asserts a
 regenerated room is byte-identical to the one thrown away.
 
 ## Deterministic, not random

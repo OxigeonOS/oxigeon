@@ -85,7 +85,10 @@ M.fields = {
 
     { name = "loot_table", type = "record_array", editable = true,
       record = {
-          { name = "item_id", type = "id", target = "item", required = true },
+          -- `key = true`: the field an entry is addressed by, so
+          -- `olc set loot_table.brass_key 0.5` finds or appends one.
+          { name = "item_id", type = "id", target = "item", required = true,
+            key = true },
           { name = "chance", type = "number", min = 0, max = 1, default = 1 },
       },
       help = "{ { item_id = 'x', chance = 0.4 }, ... }" },

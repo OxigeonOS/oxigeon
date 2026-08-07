@@ -76,6 +76,15 @@ function M.from_data(data)
         -- "which rooms are outdoors" wants a reverse index rather than a walk
         -- over the whole world on every tick, which is what `tag_d` is for.
         tags        = data.tags or {},
+
+        -- The spawner, carried through rather than read back off the file.
+        -- `spawner_d` reads these off the *live* room every tick, so
+        -- `olc set spawn_max 4` takes effect immediately the way every other
+        -- OLC edit does — a spawner that read the authored data instead would
+        -- be the one field a builder had to reload for.
+        spawn_max      = data.spawn_max,
+        spawn_interval = data.spawn_interval,
+        spawn_table    = data.spawn_table,
     }
 
     return Room:new(room_data)

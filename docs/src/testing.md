@@ -14,8 +14,29 @@ trusted. So:
 
 | | |
 |---|---|
-| `tests/*.rs` | the driver and the mudlib. Needs a world? Use `RealVm::boot_with_fixture_world`. |
+| `tests/driver/` | the engine: the stores, the sandbox, the debugger, the file jail, permissions. |
+| `tests/mudlib/` | the Lua system layer: OLC, schema, components, abilities, GMCP, the cache. |
 | `tests/demo_world/` | Thornhollow, the marsh, the mine, the workshop. **Deleted along with `game/`.** |
+
+Three binaries rather than sixty, and the split between the first two answers
+one question:
+
+> **If you deleted `mudlib/` and wrote your own from scratch, would you keep this
+> test or rewrite it?** Keep it -> `tests/driver/`. Rewrite it -> `tests/mudlib/`.
+
+That resolves the genuinely ambiguous ones without arguing. `staff` is a driver
+test although it drives the mudlib, because the RBAC efuns are Rust and the
+mudlib is only the vehicle. `fs_shell` is a mudlib test although it exercises
+the jail, because `ls` and `cd` are mudlib commands and a new mudlib would write
+its own.
+
+`tests/compute_wedge.rs` is deliberately **not** in either, and the reason is in
+its own header: every test in it spins a core in `while true do end` for the
+whole of its deadline, so as a neighbour it starves whatever it shares a binary
+with. Folded into `tests/driver/` it made the pool-recovery test fail
+intermittently -- a job that could not get scheduled inside a *forty-second*
+deadline, with nothing wrong with the pool. Merge it into another binary and
+that comes back.
 
 `boot_with_fixture_world` writes a small self-contained game layer into a temp
 directory — three rooms, one creature, one item, a trait set, a role, and one
@@ -36,7 +57,7 @@ The check that keeps this honest, and the only one that proves it:
 # directory in place, so the version of this check that used it never removed
 # `game/` and never proved anything. Move them out of the tree.
 mkdir ../away && mv game ../away/ && mv tests/demo_world ../away/
-cargo test --no-fail-fast
+cargo test --test driver --test mudlib --no-fail-fast
 mv ../away/game . && mv ../away/demo_world tests/ && rmdir ../away
 ```
 
@@ -44,7 +65,7 @@ That must be green. If a test you are writing fails it, ask whether it is really
 asserting an authored value — a room's prose, a mob's hit points, a quest id. If
 so it belongs in `tests/demo_world/`. If not, it wants the fixture.
 
-`tests/fixture_world.rs` is the proof the fixture is a real world you can play
+`tests/mudlib/fixture_world.rs` is the proof the fixture is a real world you can play
 in, and `boot_real_mudlib` now reads `start_room` out of `config/server.toml`
 rather than hardcoding one, so re-pointing the config re-points the harness.
 
@@ -54,17 +75,24 @@ rather than hardcoding one, so re-pointing the config re-points the harness.
 # Run the entire test suite
 cargo test
 
-# Run only the Lua unit tests
-cargo test --test lua_unit
+# Run one bucket
+cargo test --test driver
+cargo test --test mudlib
+cargo test --test demo_world
+
+# Run one file's worth, by module name
+cargo test --test mudlib lua_unit
 
 # Run a single test by name
-cargo test --test lua_unit test_mobile_take_damage
-
-# Run tests matching a pattern
-cargo test --test lua_unit test_player
+cargo test --test mudlib test_mobile_take_damage
 ```
 
-All tests should pass before committing — 891 at the time of writing, green on
+The `--test` argument is the *binary* now, not the file. What used to be
+`tests/mudlib/schema.rs` is `tests/mudlib/schema.rs` and a module inside one binary, so
+`cargo test --test schema` no longer resolves -- use
+`cargo test --test mudlib schema`, which filters by module path.
+
+All tests should pass before committing — 1230 at the time of writing, green on
 the default Lua 5.5 build and on `--no-default-features --features luajit`. The
 Lua unit tests alone run in ~20ms.
 
@@ -79,7 +107,7 @@ which looks like a test run that hangs with no output.
 
 ## How Lua Tests Work
 
-The Lua test file (`tests/lua_unit.rs`) boots a **lightweight LuaJIT VM** that:
+The Lua test file (`tests/mudlib/lua_unit.rs`) boots a **lightweight LuaJIT VM** that:
 
 1. Points `package.path` at the **real** `mudlib/` and `game/` directories
 2. Stubs only the efuns that touch Rust state (networking, DB, sessions)
@@ -280,7 +308,7 @@ fn test_room_d_load_area_with_world_daemon() {
 ## What's Currently Tested
 
 **687 tests.** The table below is the *integration* suite — the files that boot
-a real `ScriptEngine` and ask what game code can actually do. `tests/lua_unit.rs`
+a real `ScriptEngine` and ask what game code can actually do. `tests/mudlib/lua_unit.rs`
 is a further 160-odd unit tests over the Lua libraries in isolation.
 
 ### The security and boundary suites

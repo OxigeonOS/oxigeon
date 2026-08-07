@@ -131,6 +131,22 @@ fn a_weapons_damage_type_reaches_the_defenders_resist() {
     vm.eval("_real_roll = DAEMON.combat._roll; DAEMON.combat._roll = function() return 1 end")
         .unwrap();
 
+    // **One band, at power 1.0 — this test is about mitigation, not degrees.**
+    //
+    // Pinning the die to 1 makes the damage roll its minimum, and it also makes
+    // every hit land at the top of the game's degree table: margin is
+    // `threshold - roll`, so a roll of 1 is as decisive as it gets. Once
+    // `game/init.lua` defined bands, that multiplied every number below by 1.9
+    // and the arithmetic being asserted here — flat `resist` against typed
+    // damage — became impossible to read off the result.
+    //
+    // So the band table is flattened for the duration. The alternative is to
+    // multiply the expected values through by whatever the game's top band
+    // happens to be today, which makes a mitigation test fail whenever somebody
+    // retunes a damage curve.
+    vm.eval("DAEMON.combat.define_degrees({ { id = 'hit', at = 0, power = 1.0 } }) return 'flat'")
+        .unwrap();
+
     // Attacker with the silver dagger (magic, min 3) and one with the
     // apprentice dagger (physical, min 2).
     let hit_for = |vm: &mut RealVm, weapon: &str, cloak: bool| -> i64 {

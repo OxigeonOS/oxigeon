@@ -40,7 +40,19 @@ use oxigeon::domain::models::{DieselAccountStore, DieselCharacterStore};
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 
 /// How long to wait for the Lua thread to answer one probe.
-const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+///
+/// This is a **wedged-thread backstop, not a latency assertion**. No test reads
+/// it, and the one place latency is actually claimed says so itself — see
+/// `a_deadline_is_enforced` in `tests/driver/compute_wedge.rs`, which asserts a
+/// bound with its own `Instant`.
+///
+/// It was 10 seconds, which was comfortable while the suite was ~60 small test
+/// binaries: cargo runs binaries in parallel but each held few threads. Merged
+/// into three, the in-process parallelism went up sharply, and a probe that
+/// waits on something spawning an OS process — the compute pool respawning its
+/// only worker after a kill — could genuinely take longer than that on a loaded
+/// machine. Raising it costs only how long a real hang takes to be reported.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// The result of running a probe chunk in the live VM.
 #[derive(Debug, PartialEq, Eq)]
@@ -300,11 +312,37 @@ DAEMON.ability.define_all({
       target = "none", messages = { self = "Borrowed." } },
 })
 
+-- Items exist here so that a test of a *mudlib* command has a subject without
+-- reaching for Thornhollow's. Between them they cover the shapes `objdump`'s
+-- flags are about: an inherited method chain, and a component nesting three
+-- deep so `-d` has something to run out of.
 DAEMON.items.register_all({
     require('lib.item'):new{
         id = "fixture_stone", short = "a smooth stone",
         description = "A grey stone, worn smooth.", weight = 1, value = 1,
         tags = { "junk" },
+    },
+
+    -- Tagged `weapon`, so "item_d feeds the tag index" has something to find
+    -- that is not this game's.
+    require('components.weapon'){
+        id = "fixture_blade", short = "a plain blade",
+        description = "A blade with no history to speak of.",
+        slot = "weapon", weight = 2, value = 10,
+        damage = { min = 2, max = 4 }, speed = 1.0, weapon_type = "sword",
+        tags = { "weapon" },
+    },
+
+    -- item -> armour -> resist is three levels, which is exactly where
+    -- `objdump`'s default depth of 2 stops. `magic` is the leaf the depth test
+    -- looks for.
+    require('components.armor'){
+        id = "fixture_cloak", short = "a warded cloak",
+        description = "Grey wool with thread worked into the hem.",
+        slot = "back", weight = 3, value = 100,
+        defense = 1, armor_type = "cloth",
+        resist = { magic = 6 },
+        tags = { "armour" },
     },
 })
 
@@ -314,8 +352,21 @@ DAEMON.world.register_area(DAEMON.room.load_area({
         id = "fixture.hall", short = "A Plain Hall",
         description = "A plain hall with a door at each end.",
         light = 3, tags = { "indoor" },
-        exits = { north = "fixture.store", south = "fixture.cellar" },
+        exits = { north = "fixture.store", south = "fixture.cellar",
+                  east = "fixture.yard" },
         items = { door = "A plain door. There are two of them." },
+    },
+    -- The one room whose `description` is a function. `description` is
+    -- `lfun = true` in the room schema, so this is legal authored content —
+    -- and it gives `objdump -r` something to resolve that is not this game's
+    -- weather-keyed marsh.
+    {
+        id = "fixture.yard", short = "A Walled Yard",
+        description = function(room, viewer)
+            return "A yard walled in on three sides."
+        end,
+        light = 4, tags = { "outdoor" },
+        exits = { west = "fixture.hall" },
     },
     {
         id = "fixture.store", short = "A Store Room",

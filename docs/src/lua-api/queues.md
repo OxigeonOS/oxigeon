@@ -21,7 +21,7 @@ one needs no edit to the mudlib.
 `look`, `say`, `who`, `score` and walking all work while you are recovering — and
 not because of an exemption list. Nothing in command dispatch reads a track, so
 they never enter the code path at all. `lib/commands.lua` is untouched by this
-whole feature, and `tests/queues.rs` opens by asserting it.
+whole feature, and `tests/mudlib/queues.rs` opens by asserting it.
 
 That is a deliberate rejection of the single global "action" cooldown other
 engines use, where being mid-swing stops you looking at the room.

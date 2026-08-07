@@ -203,59 +203,10 @@ fn offline_regeneration_is_per_gauge() {
     );
 }
 
-/// `seal` reports a cycle **as a path** and a missing dependency **by name**,
-/// and one bad trait does not disable the other thirty.
-#[test]
-fn a_broken_trait_file_is_reported_and_survivable() {
-    let mut vm = RealVm::boot_real_mudlib_with_probe();
-
-    // Deliberately not registered by `game/init.lua`. Loading it here is the
-    // point: a broken trait file must not take the server down, the same way a
-    // broken area file does not.
-    vm.eval("DAEMON.trait.define_all(require('traits.broken_example'))").unwrap();
-    assert_eq!(
-        vm.eval("return tostring(DAEMON.trait.seal())").unwrap(),
-        "false",
-        "seal should report that something is broken"
-    );
-
-    let errors = vm.eval("return DAEMON.trait.errors().broken_dangling").unwrap();
-    assert!(
-        errors.contains("no_such_trait"),
-        "a missing dependency should be named: {errors}"
-    );
-
-    // The cycle is a *path*, naming every link, because "there is a cycle
-    // somewhere in your thirty traits" is not something anybody can act on.
-    let cycle = vm.eval("return DAEMON.trait.errors().broken_cycle_a").unwrap();
-    assert!(cycle.contains("->"), "a cycle should be reported as a path: {cycle}");
-    for link in ["broken_cycle_a", "broken_cycle_b", "broken_cycle_c"] {
-        assert!(cycle.contains(link), "the path should name '{link}': {cycle}");
-    }
-
-    // The server is up and the rest of the graph still works.
-    vm.eval("_c = { stats = {} } DAEMON.trait.seed(_c, 'character') return 'seeded'").unwrap();
-    assert_eq!(
-        vm.eval("return DAEMON.trait.value(_c, 'max_hp')").unwrap(),
-        "100",
-        "one bad trait disabled the other thirty"
-    );
-
-    // A failed trait answers with its default rather than raising.
-    assert_eq!(
-        vm.eval("return DAEMON.trait.value(_c, 'broken_dangling')").unwrap(),
-        "3"
-    );
-
-    // And a *bystander* in the same file — depending on a real trait — keeps
-    // working, which is the property that makes "one bad trait" survivable
-    // rather than "one bad file".
-    assert_eq!(
-        vm.eval("return DAEMON.trait.value(_c, 'broken_bystander')").unwrap(),
-        "20",
-        "wisdom 10 * 2; a healthy trait beside a broken one must still compute"
-    );
-}
+// `a_broken_trait_file_is_reported_and_survivable` used to live here, loaded
+// from `game/traits/broken_example.lua`. Both are gone: broken code does not
+// belong in a content directory, and nothing about that test depended on this
+// game — it is `tests/broken_traits.rs` now, on the fixture world.
 
 /// Memoization, and `bump_all` on a reload.
 #[test]
@@ -384,6 +335,14 @@ fn a_damage_spell_goes_through_the_damage_pipeline() {
 
     vm.eval("_t = DAEMON.mobs.spawn('spell_dummy', 'spell.room')").unwrap();
     vm.eval("_before = _t:trait('hp')").unwrap();
+
+    // Emberlance goes through `resolve_attack` now rather than applying a
+    // number, so it can miss — and "the spell dealt nothing" is exactly what a
+    // miss looks like from here. Pin the die low, which always hits. The claim
+    // is that the damage travels the pipeline, not that it never misses.
+    vm.eval("DAEMON.combat._roll = function(n) if n == 100 then return 1 else return n end end \
+             return 'loaded'")
+        .unwrap();
     assert_eq!(
         vm.eval("return tostring(DAEMON.spell.cast(_p, 'emberlance', 'dummy'))").unwrap(),
         "true"

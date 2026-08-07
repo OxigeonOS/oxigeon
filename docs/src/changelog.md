@@ -2,6 +2,174 @@
 
 ## Phase 4: Two Lua Runtimes
 
+### Spawners
+
+- **A room can produce creatures**, which is a different statement from a
+  creature saying where it lives, and both now exist. `spawn_max`,
+  `spawn_interval` and `spawn_table` are room schema fields, so a spawner is
+  authored and edited in OLC with no new generated file kind. The thing that
+  could not be said before is the **cap across kinds**: `mob_d.populate()`
+  counts per template, so three rat templates at `count = 2` is six rats and
+  there was no way to write "six rats of any kind is too many for one pantry".
+- Filled to `spawn_max` at load and a trickle of one per interval afterwards. A
+  server that has just started should not have empty rooms for
+  `max × interval` seconds, and a cleared room should refill at a rate the
+  player can outrun; those are different needs and one rule cannot serve both.
+- The cap counts **the spawner's own kinds**, not every occupant — otherwise a
+  player switches a nest off by luring something unrelated into the room.
+- One `ticker_d` heartbeat for every spawner in the world, each keeping its own
+  `due`. The index is fed from `world_d.register_room`, beside the `tag_d` call
+  and for the same reason: a room entering the world is the one moment every
+  path goes through, so an index fed there cannot drift.
+- `verify` reports a half-spawner, a table naming a creature that does not
+  exist, a zero weight, and the one that would have been silent — a template in
+  a spawn table that *also* carries `respawn_time` or `spawn_room`, and is
+  therefore fed by two sources and drifts past its cap one kill at a time.
+- The workshop's `workshop_rat` is gone, replaced by a nest in the pantry and a
+  `vermin.rat` prototype with three children. Each rat is `{ id, prototype }` in
+  `mobs.lua` and inherits everything else — which is the shortest worked example
+  of either feature in the demo world. See [Spawners](./lua-api/spawners.md).
+
+### A keyed `record_array` is settable in OLC
+
+- `loot_table`, `echoes` and `spawn_table` are all `record_array`, and **none of
+  them could be set in OLC at all**: `schema.set` refused the type outright and
+  pointed at a `<field>.<key>` syntax that did not work. A builder could make a
+  room with a spawner and never fill in what it spawned.
+- A record now declares which field is its address with `key = true`, and
+  `olc set spawn_table.black_rat 5` finds or appends that entry. Declared rather
+  than inferred: "the first field, if it looks like an id" reads the wrong one
+  the first time somebody writes a record in a different order, and reads it
+  silently. `echoes` declares no key — its address would be a whole sentence —
+  so it is refused and told which file to write it in.
+- **`olc set` printed `= (unset) (was (unset))` for every dotted set**, because
+  it read `draft[descriptor.name]` and a path descriptor's name *is the path* —
+  so it was reading `draft["exits.north"]`, which nothing ever writes. Wrong for
+  maps since they existed; `schema.at` reads a path properly now.
+- `Room:new` copies a fixed list of fields, so the three spawner fields had to be
+  added to it — the same hazard that lost `drinkable`'s `on_drink`, noted in a
+  comment on both constructors. A field the schema knows, `verify` checks and the
+  generated file round-trips can still be silently absent from the object the
+  game uses.
+
+### Layer boundaries, and the areas becoming editable
+
+- **`aggro_d`, `board_d` and `quest_d` moved to the mudlib.** The test that
+  decided it: a correctly game-specific daemon **names things**. `reach_d` names
+  a room id and an area, `weather_d` names reeds and shutters, `gmcp_game_d`
+  names a package only this game has. None of the three movers named anything.
+  A mudlib shipping `Mobile.aggressive`, `Mobile:is_aggressive()` and a
+  `room.entered` event with nothing that reads them is a mudlib with a hole in
+  it. `aggro_d`'s two constants became `game.aggro_delay_seconds` and
+  `game.aggro_ignore_level_gap`; `board_d`'s categories and lifetime became a
+  `DAEMON.board.configure{…}` call from `game/init.lua`. **`spell_d` stayed** —
+  it is a "spell" vocabulary over an engine that deliberately calls the concept
+  `ability`, and a compatibility shim belongs beside the thing it keeps
+  compatible.
+
+- **Every shipped area is OLC-managed.** Four files each: `rooms.lua`,
+  `items.lua` and `mobs.lua` are OLC-owned and rewritten wholesale, and a
+  hand-written `custom.lua` holds everything that is a function. Thornhollow
+  lost its three-way `ROOM_D.merge` split, because `areaload.inspect` prefers
+  `init.lua` over `rooms.lua` unconditionally and a generated `rooms.lua` beside
+  a surviving `init.lua` would never have been read. `wizard_workshop/gear.lua`
+  folded into `items.lua` — ten items OLC could not list, lint or save.
+
+- **`olc adopt` was baking prototype output into the files it wrote.**
+  `read_current` used `require`, which reads the module cache, and
+  `prototype.resolve_list` flattens each record's prototype chain *in place* by
+  design. So adopting an area copied the prototype's output in beside the
+  `prototype` field that produced it, pinning the record: area data outranks a
+  prototype, so later edits to the prototype would have done nothing and nothing
+  would have said so. It reads from disk now. Two smaller ones with it: an
+  `init.lua` area is refused with a reason instead of failing at "Could not read
+  rooms.lua", and the authored `entrance` is carried through rather than
+  defaulted to `<area>.entrance` — which would have made `verify` report every
+  room in an area as an orphan.
+
+- **A component's hand-written field survives being authored as data.**
+  `drinkable` declares `on_drink` as `hand_written`, and `Item:new` copies a
+  *fixed list* of hooks that does not include it — so `on_drink` reached an item
+  only through the archetype path, where `drinkable.apply` assigns it to an
+  already-built object. The moment a potion was authored as flat data plus a
+  `custom.lua` patch, the hook was merged onto the data correctly and then
+  silently dropped during construction. The potion was drinkable and did
+  nothing. `components.build` now carries every component's `hand_written`
+  names across, driven off the declaration rather than a second list.
+
+- **An integral float in authored content is a cross-runtime hazard.**
+  `speed = 1.0` serialises as `1.0` on Lua 5.5, which has an integer subtype and
+  keeps the point so the value does not change type on the way back, and as `1`
+  on LuaJIT, which has no such subtype. Same value, different file — so
+  `olc save` produced a different diff depending on which Lua the server was
+  built against. `demo_world` now asserts that regenerating every shipped area
+  file from its own contents reproduces it byte for byte, on both runtimes.
+
+### The combat systems are fed
+
+Everything added in the previous phase was wired and inert. `game/` now feeds it:
+
+- **Defence channels.** `combat_d` decides what a fighter can do by which traits
+  they store, and nobody stored any — so every fight took the no-configuration
+  path and parry and block could not occur to anyone. `defense`, `defense_dodge`,
+  `defense_parry` and `defense_block` are derived traits now. The shape is a
+  *pool and three weights*, not four ratings: the weights normalise into shares
+  of the pool across the channels you can actually use, and the contest takes
+  your best. So more channels is not more defence, and a naive table would have
+  made picking up a shield make you easier to hit. The numbers are chosen so an
+  ordinary level-1 defender is worth exactly `dexterity` — the value `rating()`
+  fell back to — and the buckler's `stat_bonus` raises both the pool and the
+  block weight so a shield is worth carrying.
+
+- **Degrees of success.** `margin` was computed on every swing and discarded,
+  because the mudlib ships one band at power 1.0. Four bands now — graze, hit,
+  solid, decisive — with the top one rerolling the hit location.
+
+- **Body layouts.** `Body.locate` ran on every swing and returned nil, because
+  no creature named a layout and there was no layout to name.
+  `game/body/creatures.lua` ships humanoid, beast, insectile and amorphous, and
+  every shipped creature resolves to one — through `race` where the prototypes
+  already set it, and through `body` where the shape genuinely differs.
+
+- **Roundtime answers to the fighter.** `queue_d` was falling back to a flat
+  three seconds and warning about it once per track. `round_length` is a derived
+  trait, exactly 3.0 at dexterity 10 so nothing moved, and reachable by
+  encumbrance and equipment through the ordinary `stat_bonus` path.
+
+- **`emberlance` and `cleave` go through `resolve_attack`.** Both used `damage`,
+  which is a number applied and cannot miss. `emberlance`'s own header claimed
+  its damage met armour "exactly as they meet a sword", and that had stopped
+  being true. `cleave` gained `roundtime = { rounds = 1.5 }`, the queue half it
+  existed to demonstrate and did not.
+
+- **`oak_buckler` is a shield.** It was tagged one and `armour.shield` was
+  false, so the game's only shield could not be blocked with.
+
+### Testing
+
+- **Three test binaries** — `tests/driver/`, `tests/mudlib/`, `tests/demo_world/`
+  — where there were about sixty files. The line between the first two is one
+  question: if you deleted `mudlib/` and wrote your own, would you keep this test
+  or rewrite it? The check that matters is that
+  `mv game tests/demo_world ../away && cargo test --test driver --test mudlib`
+  is green; it had thirteen failing binaries before.
+- `tests/compute_wedge.rs` stays its own binary, and now says why in its header:
+  every test in it spins a core for its whole deadline, so as a neighbour it
+  starved the pool-recovery test past a forty-second deadline.
+- `game/traits/broken_example.lua` is gone. Deliberately broken code in a content
+  directory is bad form, and `make_test_lua()` put `game/` on `package.path`, so
+  it sat one `require` away from every Lua unit test. The five broken traits are
+  defined inline in `tests/mudlib/broken_traits.rs`.
+
+### Output
+
+- **`pager_d` terminates its short-text path.** Text under one page went out
+  without a trailing newline while the paged path appended one, so `send_prompt`
+  — which adds no leading newline — landed *on* the last line of output. It read
+  worst in `olc`, which pages more than anything else and whose output is almost
+  always shorter than a screen, so the path that did terminate was almost never
+  the one taken.
+
 ### The development cockpit
 
 - **`oxigeon-tui`**, a second binary in the same crate: telnet and the debug

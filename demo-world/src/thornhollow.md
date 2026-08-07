@@ -16,23 +16,22 @@
 
 Go east from the workshop entrance, then up twice, and you are in the square.
 
-## Three files, one area
+## One file, and what it cost
 
-The town is written as three room files joined by `ROOM_D.merge`:
+The town used to be three room files joined by `ROOM_D.merge` — `square.lua`,
+`market.lua` and `undercroft.lua`, with an `init.lua` assembling them. The split
+was by **place**, not by size: somebody editing the market should not have to
+read the undercroft, and a merge conflict in one should not touch the other.
 
-```lua
--- game/areas/thornhollow/init.lua
-return ROOM_D.merge(
-    meta,
-    require('areas.thornhollow.square'),
-    require('areas.thornhollow.market'),
-    require('areas.thornhollow.undercroft')
-)
-```
+It is one `rooms.lua` now, and that is a loss taken deliberately.
+`areaload.inspect` prefers `init.lua` over `rooms.lua` *unconditionally*. So an
+OLC-managed thornhollow with a surviving `init.lua` would have had a generated
+`rooms.lua` nothing ever read — every `olc save` writing to a dead file and
+reporting success. Being editable from inside the game was worth more than the
+three-way split, and `ROOM_D.merge` is still there for an area that wants it and
+is not managed.
 
-The split is by **place**, not by size. Somebody editing the market should not
-have to read the undercroft, and a merge conflict in one should not touch the
-other. What comes out the far end is a single area: one entry in `areas`, one
+What comes out is what always came out: a single area, one entry in `areas`, one
 `_meta`, one reset.
 
 ```

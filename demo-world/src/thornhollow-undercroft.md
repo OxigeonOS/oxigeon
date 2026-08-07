@@ -131,7 +131,7 @@ caught it before anyone walked it:
 AUDIT ONEWAY: thornhollow.undercroft west -> wizard_workshop.entrance (no east back)
 ```
 
-`tests/world_graph.rs` asserts every exit with a known opposite has a matching
+`tests/demo_world/world_graph.rs` asserts every exit with a known opposite has a matching
 return. One-way exits are legitimate — a trapdoor, a teleport — but they should
 be *chosen*, and an accidental one makes an area reachable and not leavable.
 

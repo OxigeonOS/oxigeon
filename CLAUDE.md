@@ -160,7 +160,7 @@ account 1's `is_admin` bypass could build. Both halves looked right in isolation
 
 Two tests, asking different questions:
 
-- `tests/command_layout.rs` — the *shape*: `cmd.<own verb>`. The "own verb" half
+- `tests/mudlib/command_layout.rs` — the *shape*: `cmd.<own verb>`. The "own verb" half
   is what stopped `dig` asking for `cmd.olc`, which it did, so `dig` could not be
   granted separately.
 - `tests/demo_world/roles.rs` — that somebody can actually *be given* it: every
@@ -376,7 +376,7 @@ string, so a role and a colour tag would be indistinguishable in the source.
 
 ## Testing
 
-Run `cargo test` before committing. All tests must pass. Current count: 1196 on the default `lua55`, green on both it and `--no-default-features --features luajit`.
+Run `cargo test` before committing. All tests must pass. Current count: 1230 on the default `lua55`, green on both it and `--no-default-features --features luajit`.
 
 Do not pin a number that is really a property of the daemon roster. A logpoint
 test asserted `#ids == 2` on `ticker_d.list()`, which meant adding a heartbeat to
@@ -387,20 +387,42 @@ enjoy finding.
 
 `cargo test` does not build `oxigeon-compute` — it is a separate workspace member that links LuaJIT unconditionally, and cargo unifies features across one invocation. The harness builds it on demand into `target/compute-worker/`.
 
-### A mudlib test must not depend on this game
+### Three buckets, and a mudlib test must not depend on this game
 
-`tests/demo_world/` holds everything asserting the shipped content and is
-deleted along with `game/`. Everything else goes in `tests/` and, if it needs a
-world at all, uses `RealVm::boot_with_fixture_world` rather than Thornhollow.
-The check:
+| | |
+|---|---|
+| `tests/driver/` | the engine: stores, sandbox, debugger, file jail, permissions |
+| `tests/mudlib/` | the Lua system layer: OLC, schema, components, abilities, GMCP, cache |
+| `tests/demo_world/` | the shipped content. **Deleted along with `game/`.** |
+
+The driver/mudlib line is one question: **if you deleted `mudlib/` and wrote
+your own, would you keep this test or rewrite it?** Keep → driver. Rewrite →
+mudlib. That decides the awkward ones without argument — `staff` is a driver
+test although the mudlib is its vehicle, because the RBAC efuns are Rust;
+`fs_shell` is a mudlib test although it exercises the jail, because `ls` and
+`cd` are mudlib commands.
+
+If it needs a world, use `RealVm::boot_with_fixture_world` or
+`boot_fixture_with_probe`, never Thornhollow. `boot_real_mudlib_with_probe`
+copies the real `game/` in, so anything using it is asserting shipped content
+and belongs in `demo_world`. The check:
 
 ```bash
 # `git stash push <path>` only reverts changes — it does not remove the
 # directory, so it never tested anything. Move them out of the tree instead.
 mkdir ../away && mv game ../away/ && mv tests/demo_world ../away/
-cargo test --no-fail-fast
+cargo test --test driver --test mudlib --no-fail-fast
 mv ../away/game . && mv ../away/demo_world tests/ && rmdir ../away
 ```
+
+`--test` names the **binary**, not the file: `tests/schema.rs` is now
+`tests/mudlib/schema.rs`, a module, so it is `cargo test --test mudlib schema`.
+
+`tests/compute_wedge.rs` is deliberately outside all three. Every test in it
+spins a core in `while true do end` for its whole deadline, so as a neighbour it
+starves whatever shares its binary — folded into `tests/driver/` it made the
+pool-recovery test fail intermittently on a *forty-second* deadline, with
+nothing wrong with the pool.
 
 See `docs/src/testing.md`.
 
@@ -415,4 +437,4 @@ and never read. Both suites were green the whole time.
 it*. Any test of a security boundary — the sandbox, the instruction budget,
 permission gating, the auth path — goes through that harness, so it asks what
 game code can actually do rather than what a function does when called
-directly. See `tests/sandbox_reality_check.rs` for the shape.
+directly. See `tests/driver/sandbox_reality_check.rs` for the shape.

@@ -2,7 +2,7 @@
 
 Twenty-seven authored rooms in four areas, plus a generated grid. Every exit
 below is real — this is dumped from `DAEMON.world.exit_graph()` rather than
-drawn by hand, and `tests/world_graph.rs` asserts it stays connected.
+drawn by hand, and `tests/demo_world/world_graph.rs` asserts it stays connected.
 
 ```
                           ┌─────────────────────┐

@@ -48,6 +48,15 @@ cache_evict_seconds = 900
 # minute is a promise to the player. Default: 60.
 cooldown_durable_seconds = 60
 
+# ─── Aggression ──────────────────────────────────────────────────────────────
+# How long a player gets between walking in and being attacked. Long enough to
+# read the room and turn round is the difference between a threat and an
+# ambush. Default: 3.
+aggro_delay_seconds = 3
+# Levels above a creature at which it stops caring. A rat that suicides into a
+# passing archmage is comedy the first time and tedium the second. Default: 8.
+aggro_ignore_level_gap = 8
+
 # ─── Effects and combat ──────────────────────────────────────────────────────
 # How often expired effects are swept, so on_expire fires and its message is
 # sent even for a player who is typing nothing. Default: 5.

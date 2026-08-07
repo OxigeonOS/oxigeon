@@ -2,7 +2,7 @@
 
 Oxigeon runs Lua in a controlled sandbox designed to prevent untrusted mudlib code from escaping the server.
 
-The boundary is one function — `apply_sandbox` in `src/core/scripting/sandbox.rs` — called by `ScriptEngine::start` after the efuns are registered and before any mudlib code loads. What game code can reach is exactly what survives that call, and `tests/sandbox_reality_check.rs` asserts the table below against the VM the engine actually builds, not against a helper.
+The boundary is one function — `apply_sandbox` in `src/core/scripting/sandbox.rs` — called by `ScriptEngine::start` after the efuns are registered and before any mudlib code loads. What game code can reach is exactly what survives that call, and `tests/driver/sandbox_reality_check.rs` asserts the table below against the VM the engine actually builds, not against a helper.
 
 ## What is Removed
 
@@ -67,7 +67,7 @@ The wrapper is otherwise transparent, and both halves of that matter:
   That quietly broke the whole debug evaluator — watch expressions, breakpoint
   conditions, the REPL and logpoints all compile a snapshot of the paused frame
   as the chunk's environment, so a local read as a global and came back `nil`.
-  `tests/sandbox.rs` pins both properties.
+  `tests/driver/sandbox.rs` pins both properties.
 
 ## The `require` Jail
 

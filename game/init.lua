@@ -46,16 +46,12 @@ end
 -- wrapped so a broken one does not take the rest of the layer down, the same
 -- way the mudlib loads its own.
 --
--- `aggro_d` is the clearest case for why the split exists: the driver ships
--- `Mobile.aggressive` and the `room.entered` event, and takes no position on
--- whether an aggressive creature attacks, how long it waits, or whether it
--- cares about level. That is content, so it lives here.
-
-ok, err = pcall(function() DAEMON.aggro = require('daemons.aggro_d') end)
-if not ok then log("error", "Failed to load aggro_d: " .. tostring(err)) end
-
-ok, err = pcall(function() DAEMON.board = require('daemons.board_d') end)
-if not ok then log("error", "Failed to load board_d: " .. tostring(err)) end
+-- `reach_d` is the clearest case for why the split exists: it names a room id,
+-- an area and a hardcoded table of prose. Nothing about it would mean anything
+-- in another game. The test for this side of the line is whether a daemon
+-- *names things* — `weather_d` names reeds and shutters, `gmcp_game_d` names a
+-- package only this game has. `aggro_d`, `board_d` and `quest_d` named nothing,
+-- and are in the mudlib.
 
 -- After `tag_d` exists, which it does by now: the weather tick asks the tag
 -- index which rooms are outdoors rather than walking the world every time.
@@ -63,18 +59,44 @@ ok, err = pcall(function() DAEMON.weather = require('daemons.weather_d') end)
 if not ok then log("error", "Failed to load weather_d: " .. tostring(err)) end
 
 -- Experience into levels. The mudlib owns `award_xp` and the `xp_gained`
--- pipeline; the *curve* is this game's, so it listens to `player.xp_gained`
--- exactly as `aggro_d` listens to `room.entered`.
+-- pipeline; the *curve* is this game's — `THRESHOLDS` is a design document as
+-- much as a table, and it is the whole reason this one stayed.
 ok, err = pcall(function() DAEMON.level = require('daemons.level_d') end)
 if not ok then log("error", "Failed to load level_d: " .. tostring(err)) end
-
-ok, err = pcall(function() DAEMON.quest = require('daemons.quest_d') end)
-if not ok then log("error", "Failed to load quest_d: " .. tostring(err)) end
 
 -- The virtual provider for the drowned reach. After `world_d`, obviously, and
 -- it registers itself on load.
 ok, err = pcall(function() DAEMON.reach = require('daemons.reach_d') end)
 if not ok then log("error", "Failed to load reach_d: " .. tostring(err)) end
+
+-- ─── What a degree of success is worth ───────────────────────────────────────
+--
+-- `combat_d` computes `margin` on every swing and hands back a band. The mudlib
+-- ships one band at power 1.0, so until a game says otherwise the margin is
+-- computed and thrown away — which is what was happening here.
+--
+-- The margin is `threshold - roll`, **out of 100 and deliberately not divided
+-- by the threshold**. So a 95%-to-hit attack that rolls 3 has margin 92 and is a
+-- skill differential expressing itself; a 10%-to-hit attack that rolls 3 has
+-- margin 7 and is luck. Luck gets a scrape. That is why the bands below are
+-- absolute numbers rather than percentages of anything.
+--
+-- The floor band has to be `at = 0`, or a hit whose margin falls below every
+-- band gets the last one by fallback and the table reads as if it did not.
+if DAEMON.combat then
+    ok, err = pcall(function()
+        DAEMON.combat.define_degrees({
+            { id = "graze",    at = 0,  power = 0.6 },
+            { id = "hit",      at = 20, power = 1.0 },
+            { id = "solid",    at = 45, power = 1.4 },
+            -- Beat them by seventy and you chose where it landed. `combat_d`
+            -- rerolls the location for this band, which is the difference
+            -- between "hard" and "hard, in the throat".
+            { id = "decisive", at = 70, power = 1.9, reroll_location = true },
+        })
+    end)
+    if not ok then log("error", "Failed to define degrees: " .. tostring(err)) end
+end
 
 -- Abilities after traits and effects, because a spec names both: a `rank_trait`
 -- has to exist to be present on anybody, and an `apply` names a definition.
@@ -136,6 +158,20 @@ if DAEMON.channel then
     if not ok then log("error", "Failed to create channels: " .. tostring(err)) end
 end
 
+-- ─── The notice board ────────────────────────────────────────────────────────
+-- The board is a mudlib mechanism; *what it is for* is content, the same way
+-- the channels above are. A game that says nothing gets the defaults.
+
+if DAEMON.board then
+    ok, err = pcall(function()
+        DAEMON.board.configure({
+            categories = { "news", "trade", "help", "rp" },
+            lifetime   = 14 * 24 * 3600,
+        })
+    end)
+    if not ok then log("error", "Failed to configure the board: " .. tostring(err)) end
+end
+
 -- ─── Areas ───────────────────────────────────────────────────────────────────
 -- Each area lives in its own subdirectory under game/areas/.
 -- Area files return plain data tables. ROOM_D.load_area() processes them
@@ -184,6 +220,16 @@ if DAEMON.world and DAEMON.room then
     if DAEMON.mobs then
         ok, err = pcall(DAEMON.mobs.populate)
         if not ok then log("error", "Failed to populate mobs: " .. tostring(err)) end
+    end
+
+    -- Spawners after `populate`, and for the same reason it is here at all: a
+    -- world that has just loaded should be populated before the first player
+    -- arrives rather than filling in over the next few heartbeats. `fill_all`
+    -- counts what is already alive, so an area reset calls it again without the
+    -- pantry ending up knee-deep in rats.
+    if DAEMON.spawner then
+        ok, err = pcall(DAEMON.spawner.fill_all)
+        if not ok then log("error", "Failed to fill spawners: " .. tostring(err)) end
     end
 else
     log("error", "Cannot register areas: world_d or room_d daemon failed to load.")
