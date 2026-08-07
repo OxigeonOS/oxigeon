@@ -198,3 +198,74 @@ fn the_spawner_is_authored_data_that_olc_owns() {
         .unwrap();
     assert_eq!(known, "spawn_interval,spawn_max,spawn_table");
 }
+
+/// **A hostile ability aims at what you are already fighting.**
+///
+/// `perf emberlance` used to answer "At what?" while a rat was biting you, and
+/// the mechanism to fix it existed — `cleave` declared `default_target =
+/// "combat"` and nothing else did. It is defaulted from the declared *outcome*
+/// now, so an ability that attacks or damages a creature aims at your fight
+/// without every author remembering a line.
+///
+/// This is also what makes always-disambiguating safe: the case where a player
+/// has no time to pick is served without a name at all.
+#[test]
+fn a_hostile_ability_needs_no_target_once_you_are_fighting() {
+    let mut vm = RealVm::boot_real_mudlib_with_probe();
+
+    assert_eq!(
+        vm.eval("return tostring(DAEMON.ability.get('emberlance').default_target)").unwrap(),
+        "combat",
+        "an attacking ability should aim at your fight by default"
+    );
+
+    // …and a healing one should not, which is what proves it reads the outcome
+    // rather than assuming every creature-targeting ability is hostile.
+    assert_ne!(
+        vm.eval("return tostring(DAEMON.ability.get('mend').default_target)").unwrap(),
+        "combat",
+        "a heal should not default to whatever is biting you"
+    );
+}
+
+/// **This server is configured to name creatures by their short.**
+///
+/// `game.display_name_prefers` defaulted to `name`, so a black rat, another
+/// black rat and a muscular red rat all reported as `rat` — unreadable the
+/// moment a nest puts three of them in one room.
+///
+/// Asserted against `config/server.toml` rather than through a booted VM,
+/// because the harness supplies its own config and would only be told what this
+/// test already assumed. The *mechanism* — that the key reaches Lua and changes
+/// the naming — is `tests/mudlib/display_name.rs`; what is shipped is a
+/// deployment decision and lives in a file neither layer owns.
+#[test]
+fn this_server_names_creatures_by_their_short() {
+    let toml = std::fs::read_to_string(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config/server.toml"),
+    )
+    .expect("config/server.toml");
+
+    assert!(
+        toml.contains(r#"display_name_prefers = "short""#),
+        "the rats all read as `rat` again — three creatures in a room need \
+         their shorts to be told apart"
+    );
+
+    // …and the three rats really do have distinguishable shorts to show.
+    let mut vm = RealVm::boot_real_mudlib_with_probe();
+    let shorts = vm
+        .eval(
+            "local out = {} \
+             for _, id in ipairs({ 'black_rat', 'scrawny_rat', 'muscular_rat' }) do \
+                 out[#out + 1] = DAEMON.mobs.get(id).short \
+             end \
+             return table.concat(out, '|')",
+        )
+        .unwrap();
+    assert_eq!(
+        shorts,
+        "a black rat|a scrawny grey rat|a muscular red rat",
+        "preferring shorts buys nothing if the shorts are the same"
+    );
+}

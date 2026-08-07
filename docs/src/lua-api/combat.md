@@ -28,6 +28,40 @@ design: no initiative, no groups, no positioning, no ranged weapons, no spell
 casting, no aggro, no directional fleeing. One attacker, one target, one shared
 round timer. Anything more is a game's decision, not a driver's.
 
+## Naming one of several
+
+```
+> attack rat
+rat matched 3:
+  1.rat  a black rat
+  2.rat  a scrawny grey rat
+  3.rat  a scrawny grey rat
+
+> attack 2.rat
+You attack a scrawny grey rat!
+```
+
+A keyword matching more than one thing **refuses and lists**, rather than taking
+the first. Picking the wrong creature to fight can be fatal on its own, and there
+is no need to guess: `attack` with no argument, and every hostile ability, aim at
+what you are already fighting.
+
+`1.` is the oldest of the matches present, because the room's occupants are
+sorted on their spawn sequence. When one dies the rest shift down — explicable,
+where an arbitrary permutation would not be.
+
+Three exceptions, all of them structural rather than a list:
+
+| | |
+|---|---|
+| one match | no ordinal needed, which is the ordinary case |
+| a `stackable` item | interchangeable by declaration, so there is nothing to ask |
+| `Carry.find{ any = true }` | *code* named the target — a quest taking three roots has nobody to ask |
+
+One implementation, in `mudlib/lib/matching.lua`, used by `mob_d`, `item_d` and
+`lib/carry.lua` — so `attack`, `look`, `get` and `talk` cannot disagree about
+which rat you meant.
+
 ## Creatures
 
 Templates are plain data, authored per area exactly as rooms and items are:

@@ -99,10 +99,18 @@ end
 function M.describe_target(player, name)
     if type(name) ~= "string" or name == "" then return false end
 
-    local entry, item, where = Carry.find(player, name,
+    local entry, item, where, why = Carry.find(player, name,
         { inventory = true, room = true, equipped = true })
     if entry then
         describe_item(player, entry, item, where)
+        return true
+    end
+    -- Several items answer to that word. Say so here rather than falling
+    -- through to creatures and scenery: the player named something they can
+    -- reach, and the next category down would answer a question they did not
+    -- ask.
+    if why then
+        player:send(why)
         return true
     end
 
@@ -110,9 +118,13 @@ function M.describe_target(player, name)
     if not room_id then return false end
 
     if DAEMON.mobs and DAEMON.mobs.find_in_room then
-        local ok, mob = pcall(DAEMON.mobs.find_in_room, room_id, name)
+        local ok, mob, mob_why = pcall(DAEMON.mobs.find_in_room, room_id, name)
         if ok and mob then
             describe_mob(player, mob)
+            return true
+        end
+        if ok and mob_why then
+            player:send(mob_why)
             return true
         end
     end

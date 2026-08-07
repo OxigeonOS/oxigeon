@@ -25,6 +25,8 @@
 local Mobile  = require('lib.mobile')
 local persist = require('lib.persist')
 
+local matching = require('lib.matching')
+
 local M = {}
 
 local function log_error(message)
@@ -307,27 +309,43 @@ function M.in_room(room_id)
         local mob = r.instances[instance_id]
         if mob then out[#out + 1] = mob end
     end
-    table.sort(out, function(a, b) return a.id < b.id end)
+    -- **Numerically on the sequence**, not lexically on the whole id. The ids
+    -- are `mob:<n>`, so a string sort puts `mob:10` before `mob:2` and the
+    -- order stops being spawn order after nine of anything. That matters now
+    -- that `1.rat` means "the oldest rat here" — an order nobody can predict
+    -- makes the ordinal useless.
+    local function seq_of(mob)
+        return tonumber(tostring(mob.id):match("(%d+)$")) or 0
+    end
+    table.sort(out, function(a, b)
+        local sa, sb = seq_of(a), seq_of(b)
+        if sa ~= sb then return sa < sb end
+        return tostring(a.id) < tostring(b.id)
+    end)
     return out
 end
 
---- Find a mob in a room by name or keyword. Matches a prefix, so "attack rat"
---- finds "a grey rat".
+--- Find a mob in a room by name or keyword. Matches a substring, so
+--- `attack rat` finds "a grey rat", and understands `attack 2.rat`.
+---
+--- **Returns `nil, <listing>` when several match and no ordinal was given.**
+--- The second return is the same shape a caller already handles for "no such
+--- thing", so a call site cannot silently take the first of three rats — see
+--- `lib/matching.lua` for why that is worth refusing.
+--- @return table|nil mob, string|nil why
 function M.find_in_room(room_id, name)
-    if type(name) ~= "string" or #name == 0 then return nil end
-    local needle = name:lower()
-    for _, mob in ipairs(M.in_room(room_id)) do
-        local candidates = { mob.name, mob.short, mob.template_id }
-        for _, field in ipairs(candidates) do
-            if type(field) == "string" then
-                local haystack = field:lower()
-                if haystack == needle or haystack:find(needle, 1, true) then
-                    return mob
-                end
-            end
-        end
-    end
-    return nil
+    if type(name) ~= "string" or #name == 0 then return nil, nil end
+    return matching.choose(
+        M.in_room(room_id), name,
+        function(mob) return { mob.name, mob.short, mob.template_id } end,
+        -- **The short, whatever `display_name_prefers` says.** That key is
+        -- about prose voice — "you hit wisp" against "you hit a pale wisp" —
+        -- and a disambiguation list is not prose. Its whole job is to tell
+        -- three creatures apart, and under `prefers = "name"` it would print
+        -- `rat` three times and distinguish nothing.
+        function(mob)
+            return mob.short or mob.name or "something"
+        end)
 end
 
 --- Move a mob between rooms.

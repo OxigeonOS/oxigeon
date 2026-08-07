@@ -68,9 +68,9 @@ function M.execute(session_id, args_str, args)
         return
     end
 
-    local entry, item = Carry.find(player, what, { inventory = true, room = false })
+    local entry, item, _, why = Carry.find(player, what, { inventory = true, room = false })
     if not entry then
-        player:send("{red}You are not carrying a " .. what .. ".{/}")
+        player:send(why or ("{red}You are not carrying a " .. what .. ".{/}"))
         return
     end
 

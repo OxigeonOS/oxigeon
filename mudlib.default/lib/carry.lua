@@ -75,48 +75,96 @@ end
 --- one at your feet. Equipment is searched last, so `remove` finds a worn item
 --- but `drop` prefers the spare in your pack.
 ---
+--- ─── The ordinal spans the sources ──────────────────────────────────────────
+---
+--- Candidates from all three places are gathered **in that same order** and
+--- numbered once, so `2.sword` is the second sword you can reach rather than
+--- the second in whichever list happened to hold it. Numbering per source would
+--- mean `1.sword` named two different swords depending on which command asked.
+---
+--- Several matches and no ordinal is a refusal carrying the list, not a guess —
+--- see `lib/matching.lua`.
 --- @param player table
 --- @param name string
---- @param opts table|nil  { inventory = true, room = true, equipped = false }
---- @return table|nil entry, table|nil item, string|nil where
+--- @param opts table|nil  { inventory = true, room = true, equipped = false,
+---                          any = false }
+--- @return table|nil entry, table|nil item, string|nil where, string|nil why
 function M.find(player, name, opts)
     opts = opts or {}
     local want_inv    = opts.inventory ~= false
     local want_room   = opts.room ~= false
     local want_equip  = opts.equipped == true
 
-    if type(name) ~= "string" or #name == 0 then return nil, nil, nil end
-    if not (DAEMON and DAEMON.items) then return nil, nil, nil end
+    if type(name) ~= "string" or #name == 0 then return nil, nil, nil, nil end
+    if not (DAEMON and DAEMON.items) then return nil, nil, nil, nil end
 
-    if want_inv and player.inventory then
-        local _, item, index = DAEMON.items.find_by_name(name, player.inventory)
-        if item then
-            return player.inventory[index], item, "inventory"
+    -- Every reachable candidate, tagged with where it was found, in the order
+    -- above. `matching` numbers this list, so the tag rides along rather than
+    -- being worked out again afterwards.
+    local pool = {}
+
+    if want_inv and type(player.inventory) == "table" then
+        for _, entry in ipairs(player.inventory) do
+            pool[#pool + 1] = { entry = entry, where = "inventory" }
         end
     end
 
-    if want_room and DAEMON.world then
+    if want_room and DAEMON.world and player.char_id then
         local room_id = DAEMON.world.get_character_room(player.char_id)
         if room_id then
-            local entry, item = DAEMON.items.find_in_room(room_id, name)
-            if entry then return entry, item, "room" end
-        end
-    end
-
-    if want_equip and player.equipment then
-        for _, entry in pairs(player.equipment) do
-            if type(entry) == "table" then
-                local item = DAEMON.items.resolve(entry)
-                local short = item and item.short
-                if item and ((type(short) == "string" and short:lower():find(name:lower(), 1, true))
-                    or entry.template:lower():gsub("_", " "):find(name:lower(), 1, true)) then
-                    return entry, item, "equipment"
-                end
+            for _, entry in ipairs(DAEMON.items.in_room(room_id)) do
+                pool[#pool + 1] = { entry = entry, where = "room" }
             end
         end
     end
 
-    return nil, nil, nil
+    if want_equip and type(player.equipment) == "table" then
+        -- Sorted, because `pairs` over the slots would number worn items
+        -- differently from one command to the next.
+        local slots = {}
+        for slot in pairs(player.equipment) do slots[#slots + 1] = slot end
+        table.sort(slots)
+        for _, slot in ipairs(slots) do
+            local entry = player.equipment[slot]
+            if type(entry) == "table" then
+                pool[#pool + 1] = { entry = entry, where = "equipment" }
+            end
+        end
+    end
+
+    local matching = require('lib.matching')
+    local function keys(c)
+        local entry = c.entry
+        local template = type(entry) == "table" and entry.template or entry
+        local item = DAEMON.items.resolve(entry)
+        return { item and item.short, template }
+    end
+    local function label(c)
+        local item = DAEMON.items.resolve(c.entry)
+        return ((item and item.short) or (type(c.entry) == "table" and c.entry.template)
+            or "something") .. " {dim}(" .. c.where .. "){/}"
+    end
+
+    -- `any = true` is **code choosing, not a player choosing**. A quest taking
+    -- three marshroots named them itself and there is nobody to ask which one,
+    -- so ambiguity is not a question — it is the ordinary case. Every
+    -- player-facing caller leaves this alone and gets the refusal.
+    if opts.any then
+        local found = matching.candidates(pool, select(2, matching.parse(name)), keys)[1]
+        if not found then return nil, nil, nil, nil end
+        return found.entry, DAEMON.items.resolve(found.entry), found.where, nil
+    end
+
+    local function fungible(c)
+        local item = DAEMON.items.resolve(c.entry)
+        if not (item and item.stackable) then return nil end
+        return type(c.entry) == "table" and c.entry.template or c.entry
+    end
+
+    local chosen, why = matching.choose(pool, name, keys, label, fungible)
+    if not chosen then return nil, nil, nil, why end
+
+    return chosen.entry, DAEMON.items.resolve(chosen.entry), chosen.where, nil
 end
 
 --- Remove an entry from a player's inventory array by identity.

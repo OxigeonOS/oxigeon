@@ -332,6 +332,30 @@ later — with its own queue, its own gate and its own idea of a round.
   branch and never a desugar. A round is a derived trait the *game* defines; an
   absent one falls back and warns, because a silent zero is a wrong answer.
 
+## Which One Did They Mean Is One Question
+
+`lib/matching.lua` is the only thing that understands `2.rat`, and `mob_d`,
+`item_d` and `lib/carry.lua` all go through it. Two matchers disagreeing about
+which sword you meant is the same failure as two string-to-value converters.
+
+- **A bare keyword matching several things refuses, with the list.** Never take
+  the first and hope: guessing wrong on `attack` starts the wrong fight, and the
+  case where a player has no time to pick is served without a name at all —
+  `attack` and every hostile ability default to what you are already fighting.
+- **The ordinal is a position, recomputed per command**, not a number stored on
+  the thing. A stored id leaves *gaps* — `2.rat` gone, `3.rat` still there — and
+  a gap is more disorienting than a shift. `in_room` sorts on the instance
+  sequence numerically, so `1.rat` is the **oldest rat present**, which is a rule
+  that fits in a help file.
+- **A `stackable` item is never ambiguous.** Interchangeable is what stackable
+  *means*, so three roots are one question with no answer worth asking. Read off
+  the declared property, never a list of commands allowed to skip it.
+- **`any = true` is code choosing, not a player choosing.** A quest naming its
+  own objective has nobody to ask.
+- The disambiguation list prints **shorts regardless of
+  `game.display_name_prefers`**. That key is about prose voice; a list whose job
+  is to tell three creatures apart must not print `rat` three times.
+
 ## Today's Combat Formula Is the New Default, Not a Second Path
 
 `clamp(60 + (a_dex - d_dex) * 3, 5, 95)` is `clamp(BASE + (A - D) * STEP, FLOOR,
@@ -396,7 +420,7 @@ string, so a role and a colour tag would be indistinguishable in the source.
 
 ## Testing
 
-Run `cargo test` before committing. All tests must pass. Current count: 1242 on the default `lua55`, green on both it and `--no-default-features --features luajit`.
+Run `cargo test` before committing. All tests must pass. Current count: 1253 on the default `lua55`, green on both it and `--no-default-features --features luajit`.
 
 Do not pin a number that is really a property of the daemon roster. A logpoint
 test asserted `#ids == 2` on `ticker_d.list()`, which meant adding a heartbeat to

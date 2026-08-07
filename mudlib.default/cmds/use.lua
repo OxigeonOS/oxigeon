@@ -43,10 +43,10 @@ function M.execute(session_id, args_str, args)
 
     local what, target = split_on(args_str)
 
-    local entry, item = Carry.find(player, what,
+    local entry, item, _, why = Carry.find(player, what,
         { inventory = true, room = true, equipped = true })
     if not entry then
-        player:send("{red}You have no " .. what .. ".{/}")
+        player:send(why or ("{red}You have no " .. what .. ".{/}"))
         return
     end
 

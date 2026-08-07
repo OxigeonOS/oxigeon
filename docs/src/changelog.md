@@ -2,6 +2,43 @@
 
 ## Phase 4: Two Lua Runtimes
 
+### Which one did they mean
+
+- **Two identical creatures in a room were unreachable past the first.**
+  `attack rat` took the first match and there was no way to name the second;
+  same for two identical swords on the floor. `lib/matching.lua` understands
+  `2.rat`, and `mob_d`, `item_d` and `lib/carry.lua` all go through it — two
+  matchers disagreeing about which sword you meant is the same failure as two
+  string-to-value converters.
+- **A bare keyword matching several things refuses, with the list**, rather than
+  taking the first and hoping. Guessing wrong on `attack` starts the wrong
+  fight, and the player who has no time to pick is served without a name at all:
+  `attack` and every hostile ability aim at what you are already fighting.
+- The ordinal is a **position, recomputed per command**. A number stored on the
+  thing would leave gaps — `2.rat` gone, `3.rat` still there — and a gap is more
+  disorienting than a shift. `mob_d.in_room` now sorts the instance sequence
+  *numerically*; it compared the whole id as a string, so `mob:10` came before
+  `mob:2` and the order stopped being spawn order after nine of anything. With
+  that fixed, `1.rat` is the oldest rat present.
+- **A `stackable` item is never ambiguous**, because interchangeable is what
+  stackable means. Read off the declared property rather than from a list of
+  commands allowed to skip the question.
+- `Carry.find{ any = true }` is code choosing rather than a player choosing — a
+  quest taking three marshroots named them itself and has nobody to ask.
+- The disambiguation list prints **shorts regardless of
+  `game.display_name_prefers`**. That key is about prose voice; a list whose job
+  is to tell three creatures apart must not print `rat` three times.
+
+### Two smaller ones from the same session
+
+- **A hostile ability aims at your current fight without being told.**
+  `perf emberlance` answered "At what?" with a rat biting you. `cleave` declared
+  `default_target = "combat"` and nothing else did, so it is defaulted from the
+  declared *outcome* now — an ability that attacks or damages a creature aims at
+  your fight; one that heals does not. A list of ability ids would rot.
+- **`display_name_prefers` is `"short"`.** Three creatures all reporting as
+  `rat` is unreadable the moment a nest puts three of them in one room.
+
 ### Weapon speed, encumbrance, and a clock fine enough to tell them apart
 
 - **`speed` was authored on every weapon in the game and read by nothing but

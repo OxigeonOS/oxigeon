@@ -421,6 +421,23 @@ function M.normalise(spec)
     -- **Both together is refused here**, the mirror of the gauge rule for cost.
     -- An ability that is ambiguous about whether it can miss is worse discovered
     -- at runtime than at define time.
+    -- ─── A hostile ability defaults to what you are already fighting ────────
+    --
+    -- `perf emberlance` with no target used to answer "At what?" while a rat
+    -- was biting you. `cleave` declared `default_target = "combat"` and nothing
+    -- else did, so the mechanism existed and one ability used it.
+    --
+    -- Defaulted from the **declared outcome** rather than from a list of
+    -- ability ids or from the word "spell": an ability that attacks or damages
+    -- is aimed at an enemy, and an ability that heals is not. A list would need
+    -- editing every time somebody wrote a new one, which is the thing that
+    -- rots. An explicit `default_target` always wins, so an ability that means
+    -- something else says so.
+    if spec.default_target == nil and spec.target == "creature"
+        and (spec.attack ~= nil or spec.damage ~= nil) then
+        spec.default_target = "combat"
+    end
+
     if spec.attack ~= nil then
         if type(spec.attack) ~= "table" then
             return nil, "`attack` must be a table"

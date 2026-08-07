@@ -39,8 +39,9 @@ function M.find_here(player, name)
     if not (DAEMON and DAEMON.world and DAEMON.mobs) then return nil end
     local room_id = DAEMON.world.get_character_room(player.char_id)
     if not room_id then return nil end
-    local ok, mob = pcall(DAEMON.mobs.find_in_room, room_id, name)
-    return ok and mob or nil
+    local ok, mob, why = pcall(DAEMON.mobs.find_in_room, room_id, name)
+    if not ok then return nil, nil end
+    return mob, why
 end
 
 --- Ask one creature about one topic and say what came back.
@@ -49,9 +50,9 @@ end
 --- what if there is no answer" is one question and two copies of it drift.
 --- @param topic string|nil  nil means the default greeting
 function M.speak_to(player, name, topic)
-    local mob = M.find_here(player, name)
+    local mob, why = M.find_here(player, name)
     if not mob then
-        player:send("{red}" .. name .. " is not here.{/}")
+        player:send(why or ("{red}" .. name .. " is not here.{/}"))
         return
     end
 

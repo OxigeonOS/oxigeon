@@ -44,9 +44,10 @@ function M.execute(session_id, args_str, args)
         return
     end
 
-    local centry, citem = Carry.find(player, container_name, { inventory = true, room = true })
+    local centry, citem, _, cwhy = Carry.find(player, container_name,
+        { inventory = true, room = true })
     if not centry then
-        player:send("{red}You see no " .. container_name .. " here.{/}")
+        player:send(cwhy or ("{red}You see no " .. container_name .. " here.{/}"))
         return
     end
     if not Container.is(citem) then
@@ -93,9 +94,9 @@ function M.execute(session_id, args_str, args)
         return
     end
 
-    local entry, item = Carry.find(player, what, { inventory = true, room = true })
+    local entry, item, _, why = Carry.find(player, what, { inventory = true, room = true })
     if not entry then
-        player:send("{red}You have no " .. what .. ".{/}")
+        player:send(why or ("{red}You have no " .. what .. ".{/}"))
         return
     end
     put_one(entry, item)

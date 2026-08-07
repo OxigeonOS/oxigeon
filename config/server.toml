@@ -126,7 +126,7 @@ queue_stale_seconds = 30
 # Neither is more correct. Defaults to "name", which is what combat did before
 # this key existed; a game that reads as prose wants "short".
 # Falls back to the other field when the preferred one is absent.
-display_name_prefers = "name"
+display_name_prefers = "short"
 # The backstop that completes or cancels a cast whose timer never fired —
 # `ticker_d` holds its callbacks in memory, so one does not survive a hot reload
 # of ticker_d itself and a cast in flight across one would hang. Default: 2.

@@ -30,6 +30,7 @@ mod gmcp_inbound;
 mod gmcp_outbound;
 mod interleaving;
 mod lua_unit;
+mod matching;
 mod messaging;
 mod objdump_flags;
 mod olc_adopt;

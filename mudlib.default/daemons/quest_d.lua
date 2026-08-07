@@ -262,8 +262,10 @@ function M.complete(player, id)
         local Carry = require('lib.carry')
         local taken = 0
         for _ = 1, quest.objective.count do
+            -- `any`: the quest named the item, not the player, so there is
+            -- nobody to ask which of three identical roots they meant.
             local entry = select(1, Carry.find(player, quest.objective.target,
-                { inventory = true, room = false }))
+                { inventory = true, room = false, any = true }))
             if not entry then break end
             for i, e in ipairs(player.inventory) do
                 if e == entry then table.remove(player.inventory, i) break end

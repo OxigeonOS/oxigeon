@@ -526,7 +526,12 @@ local function resolve_target(user, spec, wanted)
 
     local room_id = DAEMON.world and user.char_id
         and DAEMON.world.get_character_room(user.char_id) or user.room_id
-    local ok, found = pcall(DAEMON.mobs.find_in_room, room_id or "", wanted)
+    -- The disambiguation list, when several creatures answer to that word. A
+    -- player naming a target gets asked which one rather than having one picked
+    -- for them — and the no-argument form above already covers "I am busy, hit
+    -- what I am fighting", so nothing is made harder by refusing here.
+    local ok, found, why = pcall(DAEMON.mobs.find_in_room, room_id or "", wanted)
+    if ok and not found and why then return nil, why end
     local target = ok and found or nil
     if not target then return nil, "There is no " .. tostring(wanted) .. " here." end
     return target, nil

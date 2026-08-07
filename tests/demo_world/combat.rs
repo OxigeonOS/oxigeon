@@ -59,10 +59,21 @@ fn the_game_layer_spawned_its_mobs() {
     // `attack rat` works whichever one the nest made. That is not incidental:
     // a spawner whose output could not be addressed by one noun would need the
     // player to know which kind they were looking at before they could hit it.
+    // A bare keyword matching three creatures resolves to nothing and hands
+    // back the list instead. An ordinal picks one.
+    let ambiguous = vm
+        .eval(
+            "local m, why = DAEMON.mobs.find_in_room('wizard_workshop.pantry', 'rat') \
+             return tostring(m) .. '|' .. tostring(why ~= nil)",
+        )
+        .unwrap();
+    assert_eq!(ambiguous, "nil|true", "three rats should be ambiguous: {ambiguous}");
+
     assert_eq!(
-        vm.eval("return DAEMON.mobs.find_in_room('wizard_workshop.pantry', 'rat').name").unwrap(),
+        vm.eval("return DAEMON.mobs.find_in_room('wizard_workshop.pantry', '1.rat').name")
+            .unwrap(),
         "rat",
-        "targeting by keyword is what `attack rat` depends on"
+        "targeting by keyword is what `attack 1.rat` depends on"
     );
 }
 
@@ -237,7 +248,19 @@ fn a_player_can_walk_in_look_and_attack() {
         "the room description does not mention the rats standing in it:\n{look}"
     );
 
-    let attack = vm.command("attack rat");
+    // Three rats in the pantry, so a bare `rat` is ambiguous and says so
+    // rather than picking one — see `mudlib/lib/matching.lua`.
+    let ambiguous = vm.command("attack rat");
+    assert!(
+        ambiguous.contains("rat matched 3"),
+        "a bare keyword matching three creatures should ask which:\n{ambiguous}"
+    );
+    assert!(
+        !ambiguous.contains("You attack"),
+        "it picked one anyway, which on `attack` can start the wrong fight:\n{ambiguous}"
+    );
+
+    let attack = vm.command("attack 1.rat");
     assert!(
         attack.contains("You attack"),
         "the attack command did not engage:\n{attack}"

@@ -30,9 +30,12 @@ function M.execute(session_id, args_str, args)
         return
     end
 
-    local target = DAEMON.mobs.find_in_room(room_id, args_str)
+    -- `why` is the disambiguation list when several creatures answer to that
+    -- word. Preferred over this command's own wording because "you do not see
+    -- rat here" is actively wrong when there are three of them.
+    local target, why = DAEMON.mobs.find_in_room(room_id, args_str)
     if not target then
-        player:send("You do not see " .. args_str .. " here.")
+        player:send(why or ("You do not see " .. args_str .. " here."))
         return
     end
 

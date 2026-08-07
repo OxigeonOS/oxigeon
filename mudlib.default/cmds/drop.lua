@@ -62,9 +62,9 @@ function M.execute(session_id, args_str, args)
 
     -- Inventory only: `drop lantern` must never mean the one already at your
     -- feet, however reasonable a prefix match makes that look.
-    local entry, item = Carry.find(player, args_str, { inventory = true, room = false })
+    local entry, item, _, why = Carry.find(player, args_str, { inventory = true, room = false })
     if not entry then
-        player:send("{red}You are not carrying a " .. args_str .. ".{/}")
+        player:send(why or ("{red}You are not carrying a " .. args_str .. ".{/}"))
         return
     end
     drop_one(player, entry, item)

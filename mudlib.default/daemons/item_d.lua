@@ -44,6 +44,8 @@
 --   DAEMON.items.contents(container_id) / find_in_container(container_id, name)
 --   DAEMON.items.count()
 
+local matching = require('lib.matching')
+
 local M = {}
 
 -- Registry: item_id → Item object (the template).
@@ -450,28 +452,32 @@ end
 --- @param name string
 --- @return table|nil instance, table|nil resolved item
 local function match_in(list, name)
-    if type(name) ~= "string" or #name == 0 then return nil, nil end
-    name = name:lower():gsub("_", " ")
+    if type(name) ~= "string" or #name == 0 then return nil, nil, nil end
 
-    for _, inst in ipairs(list) do
-        local item = M.resolve(inst)
-        if item then
-            local short = item.short
-            if type(short) == "string"
-                and short:lower():gsub("_", " "):find(name, 1, true) then
-                return inst, item
-            end
-            if inst.template:lower():gsub("_", " "):find(name, 1, true) then
-                return inst, item
-            end
-        end
-    end
-    return nil, nil
+    local inst, why = matching.choose(
+        list, name,
+        function(entry)
+            local item = M.resolve(entry)
+            return { item and item.short, entry.template }
+        end,
+        function(entry)
+            local item = M.resolve(entry)
+            return (item and item.short) or entry.template or "something"
+        end,
+        function(entry)
+            local item = M.resolve(entry)
+            return (item and item.stackable) and entry.template or nil
+        end)
+
+    if not inst then return nil, nil, why end
+    return inst, M.resolve(inst), nil
 end
 
+--- **Returns `nil, nil, <listing>` when several match** and no ordinal was
+--- given, which is the same failure shape as finding nothing.
 --- @param room_id string
 --- @param name string
---- @return table|nil instance, table|nil resolved item
+--- @return table|nil instance, table|nil resolved item, string|nil why
 function M.find_in_room(room_id, name)
     return match_in(M.in_room(room_id), name)
 end

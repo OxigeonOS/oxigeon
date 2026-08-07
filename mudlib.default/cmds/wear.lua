@@ -30,9 +30,9 @@ function M.perform(player, args_str, verb, expect)
         return
     end
 
-    local entry, item = Carry.find(player, args_str, { inventory = true, room = false })
+    local entry, item, _, why = Carry.find(player, args_str, { inventory = true, room = false })
     if not entry then
-        player:send("{red}You are not carrying a " .. args_str .. ".{/}")
+        player:send(why or ("{red}You are not carrying a " .. args_str .. ".{/}"))
         return
     end
 

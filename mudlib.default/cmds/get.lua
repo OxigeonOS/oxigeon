@@ -30,9 +30,9 @@ end
 --- The container they named, whether it is carried or on the floor.
 --- @return table|nil entry, table|nil item, string|nil why
 local function find_container(player, name)
-    local entry, item = Carry.find(player, name, { inventory = true, room = true })
+    local entry, item, _, why = Carry.find(player, name, { inventory = true, room = true })
     if not entry then
-        return nil, nil, "You see no " .. name .. " here."
+        return nil, nil, why or ("You see no " .. name .. " here.")
     end
     if not Container.is(item) then
         return nil, nil, "That is not a container."
@@ -133,9 +133,9 @@ function M.execute(session_id, args_str, args)
         return
     end
 
-    local entry, item = DAEMON.items.find_in_room(room_id, what)
+    local entry, item, why = DAEMON.items.find_in_room(room_id, what)
     if not entry then
-        player:send("{red}You see no " .. what .. " here.{/}")
+        player:send(why or ("{red}You see no " .. what .. " here.{/}"))
         return
     end
     take_one(player, entry, item, nil)
