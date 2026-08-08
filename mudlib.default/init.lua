@@ -233,6 +233,57 @@ function on_auth_result(session_id, kind, account, err)
     login.on_result(session_id, kind, account, err)
 end
 
+--- Which character a disconnecting session was playing.
+---
+--- `get_session` is the obvious answer and **cannot be relied on here**: the
+--- driver destroys the session record before it calls this hook — see
+--- `driver.rs`, where `handler.disconnect` runs and only then is
+--- `LuaCommand::OnDisconnect` queued — so by the time Lua asks, `get_session`
+--- returns nil. Every cleanup step below hung off that lookup, which meant that
+--- on an ordinary disconnect none of them ran: the character stayed loaded,
+--- stayed standing in the room, and kept a Player pointing at a session id that
+--- no longer existed.
+---
+--- The symptom is not local to the player who left. The next person to walk
+--- into that room announces their arrival to everyone in it, `send_to_room`
+--- resolves the ghost through `character_d.get`, and `player:send` calls the
+--- `send` efun with the dead id — so *their* movement command raises "Session
+--- not found" for a session they never had.
+---
+--- Nor is the ordering in the driver something to swap and be done with:
+--- `OnDisconnect` crosses a channel to the Lua thread, so sending it before the
+--- session is destroyed makes the race narrower rather than closing it. The
+--- fallback belongs here, where the answer is known for certain.
+---
+--- The Player already knows which session it belongs to: `session_id` is
+--- stamped on it when the character enters. That makes the loaded set an index
+--- we get for free rather than a second mapping to keep in step, and it is
+--- self-correcting — a Player that was never entered has no session id and
+--- cannot be matched by accident.
+---
+--- `get_session` is still tried first, and still through `pcall`: it *raises*
+--- on a malformed id rather than returning nil, and it remains the cheaper and
+--- more direct answer on any driver that keeps the record long enough.
+--- @param session_id string
+--- @return number|nil char_id
+local function disconnecting_character(session_id)
+    local got, session = pcall(get_session, session_id)
+    if got and type(session) == "table" and session.character_id then
+        return session.character_id
+    end
+
+    if not (DAEMON and DAEMON.character and DAEMON.character.all_loaded) then return nil end
+    local ok, loaded = pcall(DAEMON.character.all_loaded)
+    if not ok or type(loaded) ~= "table" then return nil end
+
+    for char_id, player in pairs(loaded) do
+        if type(player) == "table" and player.session_id == session_id then
+            return char_id
+        end
+    end
+    return nil
+end
+
 --- Called when a client disconnects
 function on_disconnect(session_id)
     log("debug", "Disconnected: " .. session_id)
@@ -240,19 +291,9 @@ function on_disconnect(session_id)
     -- Save and unload character data, then remove from world.
     -- Each step is individually protected so a failure in one doesn't
     -- prevent cleanup in subsequent steps.
-    --
-    -- Including this one. `get_session` *raises* on a malformed id rather than
-    -- returning nil, and an unprotected first line defeats the entire point of
-    -- protecting the rest: nothing after it would run.
-    local got, session = pcall(get_session, session_id)
-    if not got then
-        log("warn", "on_disconnect: could not look up session "
-            .. tostring(session_id) .. ": " .. tostring(session))
-        session = nil
-    end
+    local char_id = disconnecting_character(session_id)
 
-    if session and session.character_id then
-        local char_id = session.character_id
+    if char_id then
 
         -- The counterpart to `player.login`, emitted first so a listener sees
         -- the character while they still exist — after `character.unload` there

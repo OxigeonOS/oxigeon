@@ -113,7 +113,16 @@ fn the_areas_directory_is_permission_gated() {
 
     // The write was refused, so nothing was created — a test that leaves a file
     // in the repository it is testing is a test that passes on its own litter.
-    for stray in ["game/areas/probe_should_fail.lua", "mudlib/areas/probe_should_fail.lua"] {
+    //
+    // The shipped trees by name, because `boot_real_mudlib` hands the jail the
+    // real `game.example/` and `mudlib.default/` rather than a temp copy: a
+    // write that got through would land in tracked files. Naming `game/` and
+    // `mudlib/` here would still pass, and would be checking two directories
+    // nothing in this test can reach.
+    for stray in [
+        "game.example/areas/probe_should_fail.lua",
+        "mudlib.default/areas/probe_should_fail.lua",
+    ] {
         assert!(
             !std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(stray).exists(),
             "the refused write reached disk anyway: {stray}"

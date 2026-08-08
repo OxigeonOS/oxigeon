@@ -10,8 +10,14 @@ game_path = "./game"
 # Ordered list of subdirectories to search for commands.
 # Since game/ is first in package.path, game commands shadow mudlib commands.
 command_paths = ["cmds"]
-# Room ID where characters spawn on login
-start_room = "wizard_workshop.entrance"
+# Room ID where characters spawn on login.
+#
+# Names a room in `./game`, which is the game being developed — not the demo in
+# `game.example/`, whose entrance is `wizard_workshop.entrance`. Nothing in the
+# test suite reads this key: the demo's start room is `EXAMPLE_START_ROOM` in
+# `tests/common/mod.rs`, because a start room is a property of a world rather
+# than of whichever config happens to be on disk.
+start_room = "start.square"
 # Room ID where characters reappear after dying. Falls back to start_room.
 #
 # The driver has no opinion about this — it is a game decision, and it lives
@@ -19,7 +25,7 @@ start_room = "wizard_workshop.entrance"
 # same mudlib without editing it. Any other `[game]` key you add is readable
 # from Lua as config("game.<key>") with no Rust change; that is what the
 # generic reader is for.
-respawn_room = "wizard_workshop.entrance"
+respawn_room = "start.square"
 
 # How often areas reset in seconds (re-evaluates area Lua, clears object state).
 # Set to 0 to disable periodic resets. Default: 900 (15 minutes).

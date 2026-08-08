@@ -7,8 +7,8 @@ All tests live in the `tests/` directory and run via `cargo test`.
 
 **A test of the mudlib must not depend on this game.**
 
-`game/` is content — "this game, and policy the driver has no view on" — so
-anyone building their own world deletes it. A suite that then fails about rooms
+A game layer is content — "this game, and policy the driver has no view on" — so
+anyone building their own world replaces it. A suite that then fails about rooms
 they never wrote is a suite that has to be picked apart before it can be
 trusted. So:
 
@@ -16,13 +16,14 @@ trusted. So:
 |---|---|
 | `tests/driver/` | the engine: the stores, the sandbox, the debugger, the file jail, permissions. |
 | `tests/mudlib/` | the Lua system layer: OLC, schema, components, abilities, GMCP, the cache. |
-| `tests/demo_world/` | Thornhollow, the marsh, the mine, the workshop. **Deleted along with `game/`.** |
+| `tests/demo_world/` | Thornhollow, the marsh, the mine, the workshop. **Deleted along with `game.example/`.** |
 
 Three binaries rather than sixty, and the split between the first two answers
 one question:
 
-> **If you deleted `mudlib/` and wrote your own from scratch, would you keep this
-> test or rewrite it?** Keep it -> `tests/driver/`. Rewrite it -> `tests/mudlib/`.
+> **If you deleted `mudlib.default/` and wrote your own from scratch, would you
+> keep this test or rewrite it?** Keep it -> `tests/driver/`. Rewrite it ->
+> `tests/mudlib/`.
 
 That resolves the genuinely ambiguous ones without arguing. `staff` is a driver
 test although it drives the mudlib, because the RBAC efuns are Rust and the
@@ -46,28 +47,59 @@ definitions has no `hp` for anything to lose.
 
 `boot_fixture_with_probe` is the same world behind the probe dispatcher, for a
 test that needs `eval` against a wired `DAEMON` table rather than a player's
-view. Prefer it over `boot_real_mudlib_with_probe`, which puts the real `game/`
+view. Prefer it over `boot_real_mudlib_with_probe`, which puts the example world
 on `package.path`: anything that seeds a creature through *that* is quietly
-asserting that this game defines the traits.
+asserting that the demo defines the traits.
 
 The check that keeps this honest, and the only one that proves it:
 
 ```bash
 # `git stash push <path>` only reverts changes to tracked files — it leaves the
 # directory in place, so the version of this check that used it never removed
-# `game/` and never proved anything. Move them out of the tree.
-mkdir ../away && mv game ../away/ && mv tests/demo_world ../away/
+# the world and never proved anything. Move them out of the tree.
+mkdir ../away && mv game.example ../away/ && mv tests/demo_world ../away/
 cargo test --test driver --test mudlib --no-fail-fast
-mv ../away/game . && mv ../away/demo_world tests/ && rmdir ../away
+mv ../away/game.example . && mv ../away/demo_world tests/ && rmdir ../away
 ```
 
 That must be green. If a test you are writing fails it, ask whether it is really
 asserting an authored value — a room's prose, a mob's hit points, a quest id. If
 so it belongs in `tests/demo_world/`. If not, it wants the fixture.
 
-`tests/mudlib/fixture_world.rs` is the proof the fixture is a real world you can play
-in, and `boot_real_mudlib` now reads `start_room` out of `config/server.toml`
-rather than hardcoding one, so re-pointing the config re-points the harness.
+`tests/mudlib/fixture_world.rs` is the proof the fixture is a real world you can
+play in.
+
+## The suite tests what ships, not what you run
+
+Four directories, two pairs:
+
+| | tracked here | what it is |
+|---|---|---|
+| `mudlib.default/` | yes | the mudlib this repository ships |
+| `game.example/` | yes | the demo world — Thornhollow |
+| `mudlib/` | **no** | the creator's mudlib, from their own repo |
+| `game/` | **no** | the creator's game, from their own repo |
+
+`config/server.toml` points the *server* at `./mudlib` and `./game`, because that
+is what a creator plays. Every test harness points at the pair beside them.
+
+They are different questions. `mudlib/` and `game/` are gitignored, absent on a
+clean clone, and free to have diverged arbitrarily — a suite that booted them
+would assert an unpublished fork on the machine that has one and fail everywhere
+else. So `boot_real_mudlib`, `boot_with_fixture_world` and both probe variants
+resolve their roots through `default_mudlib_root()` and `example_game_root()` in
+`tests/common/mod.rs`, and no test names `mudlib/` or `game/` at all.
+
+The consequence worth stating outright: **a change meant for upstream is made in
+`mudlib.default/`.** It is the only copy the suite runs, the only copy a reviewer
+reads, and anything left solely in your `mudlib/` is unpublishable by
+construction — not by policy, but because nothing here can see it.
+
+This also means `boot_real_mudlib` no longer reads `start_room` from
+`config/server.toml`. That key describes the creator's world and would send the
+harness to a room `game.example/` does not contain, so the demo's entrance is a
+constant beside the fixture's — `EXAMPLE_START_ROOM`, next to
+`FIXTURE_START_ROOM`. A world's start room is a property of that world.
 
 ## Quick Start
 
@@ -109,7 +141,8 @@ which looks like a test run that hangs with no output.
 
 The Lua test file (`tests/mudlib/lua_unit.rs`) boots a **lightweight LuaJIT VM** that:
 
-1. Points `package.path` at the **real** `mudlib/` and `game/` directories
+1. Points `package.path` at the shipped `mudlib.default/` and `game.example/`
+   directories
 2. Stubs only the efuns that touch Rust state (networking, DB, sessions)
 3. `require()`s the actual module under test
 4. Asserts against Lua return values from Rust
@@ -124,8 +157,10 @@ The `make_test_lua()` function sets up a ready-to-use VM:
 fn make_test_lua() -> Lua {
     let lua = Lua::new();
 
-    // Point require() at the real mudlib/ and game/ directories
-    // (package.path is set relative to CARGO_MANIFEST_DIR)
+    // Point require() at the shipped mudlib.default/ and game.example/ dirs.
+    // (package.path is set relative to CARGO_MANIFEST_DIR.) The game root
+    // shadows the mudlib on package.path, so naming the live `game/` here
+    // would let a creator's module silently replace one under test.
 
     // Stub efuns that would normally be provided by the Rust driver:
     // log(), send(), send_prompt(), get_session(), get_character(),

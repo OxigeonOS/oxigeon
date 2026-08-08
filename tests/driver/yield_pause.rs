@@ -49,7 +49,11 @@ const LATE_TIMER_SECS: f64 = 1.0;
 /// line event *anywhere* — including the tail of the dispatch before it, which
 /// runs on after its reply has been sent. That race made this test stop the
 /// wrong dispatch roughly one run in seven.
-const BREAK_FILE: &str = "mudlib/daemons/ticker_d.lua";
+/// `mudlib.default/` rather than `mudlib/`: the harness boots the mudlib this
+/// repository ships, not the creator's own working copy. A breakpoint path that
+/// names the wrong root simply never binds, and the test hangs to its deadline
+/// rather than failing at the line that is wrong.
+const BREAK_FILE: &str = "mudlib.default/daemons/ticker_d.lua";
 const BREAK_LINE: u32 = 181;
 
 /// A debug state with the freeze policy set explicitly.
@@ -385,7 +389,7 @@ fn a_resumed_dispatch_still_has_its_arguments() {
 
     // Line 114, `if n % 1 == 0 then`: past the guards, before the return, with
     // `n` read on both sides.
-    set_breakpoint(&dbg, "mudlib/lib/strings.lua", 114, BreakpointSpec::default());
+    set_breakpoint(&dbg, "mudlib.default/lib/strings.lua", 114, BreakpointSpec::default());
     assert_eq!(vm.eval("return 'armed'").unwrap(), "armed");
 
     vm.send_eval("return require('lib.strings').number(1234)");

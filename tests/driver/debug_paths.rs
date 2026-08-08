@@ -16,20 +16,30 @@ fn project_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+/// A real file under a real directory.
+///
+/// `mudlib/` will not do, and not only because it is gitignored: a creator may
+/// have it as a junction or symlink into their own repository, and
+/// `abs_lua_path` canonicalizes — so the chunk name comes back rooted at the
+/// link *target* while the path handed in is rooted at the link, and
+/// `client_path_and_chunk_name_agree` fails on a difference that is nothing to
+/// do with the code it is testing.
+const REAL_LUA_FILE: &str = "mudlib.default/cmds/who.lua";
+
 #[test]
 fn chunk_name_is_absolute_forward_slashed_and_at_prefixed() {
-    let p = project_root().join("mudlib/cmds/who.lua");
+    let p = project_root().join(REAL_LUA_FILE);
     let name = paths::chunk_name(&p);
 
     assert!(name.starts_with('@'), "chunk name must be @-prefixed: {name}");
     assert!(!name.contains('\\'), "chunk name must use forward slashes: {name}");
     assert!(!name.contains("//?/"), "verbatim prefix must be stripped: {name}");
-    assert!(name.ends_with("mudlib/cmds/who.lua"), "unexpected chunk name: {name}");
+    assert!(name.ends_with(REAL_LUA_FILE), "unexpected chunk name: {name}");
 }
 
 #[test]
 fn client_path_and_chunk_name_agree() {
-    let p = project_root().join("mudlib/cmds/who.lua");
+    let p = project_root().join(REAL_LUA_FILE);
     let from_chunk = paths::chunk_key(&paths::chunk_name(&p)).expect("file chunk");
 
     // What a debug client sends: native separators, and on Windows often a
@@ -85,8 +95,8 @@ fn required_module_chunk_name_matches_the_file_on_disk() {
     let root = project_root();
     let lua = Lua::new();
 
-    let mudlib = paths::abs_lua_path(&root.join("mudlib"));
-    let game = paths::abs_lua_path(&root.join("game"));
+    let mudlib = paths::abs_lua_path(&root.join("mudlib.default"));
+    let game = paths::abs_lua_path(&root.join("game.example"));
     lua.load(format!(
         "package.path = \"{game}/?.lua;{game}/?/init.lua;{mudlib}/?.lua;{mudlib}/?/init.lua;\" .. package.path"
     ))
@@ -110,8 +120,10 @@ fn required_module_chunk_name_matches_the_file_on_disk() {
     lua.load("require('lib.strings')").exec().unwrap();
     lua.remove_hook();
 
-    let expected = paths::chunk_key(&paths::chunk_name(&root.join("mudlib/lib/strings.lua")))
-        .expect("file chunk");
+    let expected = paths::chunk_key(&paths::chunk_name(
+        &root.join("mudlib.default/lib/strings.lua"),
+    ))
+    .expect("file chunk");
     let observed: Vec<String> = seen.borrow().iter().filter_map(|s| paths::chunk_key(s)).collect();
 
     assert!(

@@ -14,14 +14,20 @@ fn project_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// Create a Lua VM wired to require() from the real mudlib/ and game/ dirs,
-/// with lightweight efun stubs so modules can load without crashing.
+/// Create a Lua VM wired to require() from the shipped mudlib.default/ and
+/// game.example/ dirs, with lightweight efun stubs so modules can load without
+/// crashing.
+///
+/// The shipped pair rather than the live `mudlib/` and `game/`: those are the
+/// creator's own trees, untracked and absent on a clean clone, and since the
+/// game root *shadows* the mudlib on `package.path` a module under test here
+/// could otherwise be silently replaced by one nobody in this repo wrote.
 fn make_test_lua() -> Lua {
     let lua = Lua::new();
     let root = project_root();
 
-    let mudlib = root.join("mudlib");
-    let game   = root.join("game");
+    let mudlib = root.join("mudlib.default");
+    let game   = root.join("game.example");
 
     // Canonical, forward-slash paths for Lua's package.path
     let mudlib_s = mudlib.to_string_lossy().replace('\\', "/");

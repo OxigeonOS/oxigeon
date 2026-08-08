@@ -76,25 +76,19 @@ fn every_exit_has_a_way_back() {
 #[test]
 fn every_area_is_reachable_from_the_start_room() {
     // The probe harness does not set a start room — it never logs anybody in —
-    // so the *shipped* one is passed explicitly. Reading it from `server.toml`
-    // rather than hardcoding it means moving the start room re-points this
-    // test rather than silently exempting it.
-    let start = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/server.toml"),
-    )
-    .expect("read server.toml")
-    .lines()
-    .find_map(|l| {
-        l.trim()
-            .strip_prefix("start_room")?
-            .split('"')
-            .nth(1)
-            .map(str::to_string)
-    })
-    .expect("server.toml declares no start_room");
+    // so the example world's own entrance is passed explicitly.
+    //
+    // This used to read `start_room` out of `config/server.toml`, on the
+    // argument that moving the start room should re-point the test rather than
+    // silently exempt it. That was right while the config described the world
+    // under test. It no longer does: `server.toml` points at `game/`, the game
+    // being developed, so reading it sent this flood fill at a room
+    // `game.example/` has never contained and the whole graph came back
+    // unreachable.
+    let start = crate::common::EXAMPLE_START_ROOM;
 
     let mut vm = RealVm::boot_real_mudlib_with_probe_opts(crate::common::TestCtx {
-        start_room: Some(start.clone()),
+        start_room: Some(start.to_string()),
         ..Default::default()
     });
 

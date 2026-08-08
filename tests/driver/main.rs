@@ -2,8 +2,9 @@
 //!
 //! The rule that decides what lives here:
 //!
-//! > If you deleted `mudlib/` and wrote your own from scratch, would you keep
-//! > this test or rewrite it? **Keep it → here.** Rewrite it → `tests/mudlib/`.
+//! > If you deleted `mudlib.default/` and wrote your own from scratch, would
+//! > you keep this test or rewrite it? **Keep it → here.** Rewrite it →
+//! > `tests/mudlib/`.
 //!
 //! So this covers the Lua VM and its sandbox, the instruction budget, the efun
 //! surface, the two-root file jail, the database layer, telnet/GMCP framing,
@@ -14,9 +15,14 @@
 //! This directory must stay green with the mudlib deleted:
 //!
 //! ```bash
-//! mkdir ../away && mv game tests/demo_world mudlib tests/mudlib ../away/
+//! mkdir ../away
+//! mv game.example tests/demo_world mudlib.default tests/mudlib ../away/
 //! cargo test --test driver
 //! ```
+//!
+//! Note the *shipped* trees by name. `game/` and `mudlib/` are the creator's
+//! own working copies — gitignored, absent on a clean clone — and nothing in
+//! the suite loads them; moving those aside would prove nothing.
 
 #[path = "../common/mod.rs"]
 mod common;

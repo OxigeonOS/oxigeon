@@ -244,7 +244,26 @@ pub struct DebugView {
 }
 
 impl DebugView {
+    /// The view a running TUI gets: the tree is whatever `.lua` files are on
+    /// disk under the roots the server loads.
     pub fn new() -> Self {
+        Self::with_files(discover_lua_files())
+    }
+
+    /// As [`DebugView::new`], over an explicit file list.
+    ///
+    /// This exists for tests. [`discover_lua_files`] reads `mudlib/` and
+    /// `game/` — the *live* trees, which are gitignored and so are absent from
+    /// a fresh clone. A tree test that went through `new()` therefore asserted
+    /// the shape of whatever happened to be checked out, and on a clean clone
+    /// asserted nothing at all: both roots missing, the list empty, and every
+    /// expand/collapse assertion failing for a reason that has nothing to do
+    /// with the tree.
+    ///
+    /// Pointing them at `mudlib.default/` instead would only trade one
+    /// filesystem dependency for another. What these tests are about is
+    /// building rows from paths, so they should be given paths.
+    pub fn with_files(files: Vec<PathBuf>) -> Self {
         let mut this = Self {
             attached: false,
             stopped: false,
@@ -281,7 +300,7 @@ impl DebugView {
             search: String::new(),
             highlight: true,
         };
-        this.files = discover_lua_files();
+        this.files = files;
         // The roots open, everything under them closed — the same first
         // impression NERDTree gives, and a screen you can read at a glance.
         for root in this.files.iter().filter_map(|f| f.components().next()) {
@@ -1233,6 +1252,36 @@ fn discover_lua_files() -> Vec<PathBuf> {
     found
 }
 
+/// A file list shaped like a real one, for tests of the tree.
+///
+/// Two roots, nested directories under each, and more leaves than the collapsed
+/// tree has rows — which is the property `the_tree_starts_at_the_roots…`
+/// checks. `mudlib/cmds/who.lua` is here because most of these tests open it.
+///
+/// Fixed rather than discovered, so the assertions describe the tree-building
+/// code and not the contents of somebody's checkout.
+#[cfg(test)]
+pub(crate) fn fixture_files() -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = [
+        "mudlib/cmds/who.lua",
+        "mudlib/cmds/look.lua",
+        "mudlib/cmds/say.lua",
+        "mudlib/daemons/ticker_d.lua",
+        "mudlib/daemons/room_d.lua",
+        "mudlib/lib/strings.lua",
+        "mudlib/lib/color.lua",
+        "game/areas/thornhollow/rooms.lua",
+        "game/areas/thornhollow/mobs.lua",
+        "game/init.lua",
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .collect();
+    // `discover_lua_files` sorts, and `build_rows` walks the list in order.
+    files.sort();
+    files
+}
+
 fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -1255,7 +1304,7 @@ mod tests {
 
     fn view() -> (DebugView, UnboundedSender<Action>, UnboundedReceiver<Action>) {
         let (tx, rx) = mpsc::unbounded_channel();
-        (DebugView::new(), tx, rx)
+        (DebugView::with_files(fixture_files()), tx, rx)
     }
 
     fn key(code: KeyCode) -> KeyEvent {

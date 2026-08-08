@@ -10,6 +10,32 @@ Oxigeon is a MUD (Multi-User Dungeon) game driver. Rust handles the infrastructu
 
 **Daemons** are singleton services registered in the global `DAEMON` table. Convention: files are named `*_d.lua` (e.g. `room_d.lua`, `character_d.lua`).
 
+## What Ships and What Runs Are Different Directories
+
+Four directories, two pairs. `mudlib.default/` and `game.example/` are tracked
+here and are what this repository ships. `mudlib/` and `game/` are the live
+trees the server loads — a creator's own, brought in from their own repo,
+gitignored and absent on a clean clone.
+
+- **Every change meant for upstream is made in `mudlib.default/`.** It is the
+  only copy the test suite boots and the only copy a reviewer reads. Something
+  left solely in `mudlib/` is unpublishable by construction — not by policy, but
+  because nothing here can see it.
+- **No test may name `mudlib/` or `game/`.** The harness resolves its roots
+  through `default_mudlib_root()` and `example_game_root()` in
+  `tests/common/mod.rs`; a suite that booted the live trees would assert an
+  unpublished fork on the one machine that has it and fail on every other.
+  `config/server.toml`'s `mudlib_path`/`game_path` still point at `./mudlib` and
+  `./game`, because that is what a creator plays — the server and the suite are
+  asking different questions.
+- **They are not symlinked and nothing mirrors them.** A test used to assert
+  `game/` and `game.example/` were byte-identical, which is what a mirror costs
+  when the tested tree and the shipped tree are different directories. Pointing
+  the suite at the shipped tree dissolved that; do not reintroduce it.
+- `boot_real_mudlib` does not read `start_room` from `config/server.toml` — that
+  key describes the creator's world. The demo's entrance is `EXAMPLE_START_ROOM`,
+  beside `FIXTURE_START_ROOM`, because a start room is a property of a world.
+
 ## Error Handling — Mandatory Practices
 
 ### 1. Never Silently Swallow Errors
@@ -420,7 +446,12 @@ string, so a role and a colour tag would be indistinguishable in the source.
 
 ## Testing
 
-Run `cargo test` before committing. All tests must pass. Current count: 1253 on the default `lua55`, green on both it and `--no-default-features --features luajit`.
+Run `cargo test` before committing. All tests must pass. Current count: 1255 on the default `lua55`, green on both it and `--no-default-features --features luajit`.
+
+The suite must also be green with `game/` and `mudlib/` **absent**, which is the
+state of a fresh clone — both are gitignored. Rename them aside and run it; that
+check is what caught ten TUI tests reading the live trees off disk, all of which
+had been failing on any fresh clone for as long as they had existed.
 
 Do not pin a number that is really a property of the daemon roster. A logpoint
 test asserted `#ids == 2` on `ticker_d.list()`, which meant adding a heartbeat to
@@ -437,26 +468,26 @@ enjoy finding.
 |---|---|
 | `tests/driver/` | the engine: stores, sandbox, debugger, file jail, permissions |
 | `tests/mudlib/` | the Lua system layer: OLC, schema, components, abilities, GMCP, cache |
-| `tests/demo_world/` | the shipped content. **Deleted along with `game/`.** |
+| `tests/demo_world/` | the shipped content. **Deleted along with `game.example/`.** |
 
-The driver/mudlib line is one question: **if you deleted `mudlib/` and wrote
-your own, would you keep this test or rewrite it?** Keep → driver. Rewrite →
-mudlib. That decides the awkward ones without argument — `staff` is a driver
+The driver/mudlib line is one question: **if you deleted `mudlib.default/` and
+wrote your own, would you keep this test or rewrite it?** Keep → driver. Rewrite
+→ mudlib. That decides the awkward ones without argument — `staff` is a driver
 test although the mudlib is its vehicle, because the RBAC efuns are Rust;
 `fs_shell` is a mudlib test although it exercises the jail, because `ls` and
 `cd` are mudlib commands.
 
 If it needs a world, use `RealVm::boot_with_fixture_world` or
 `boot_fixture_with_probe`, never Thornhollow. `boot_real_mudlib_with_probe`
-copies the real `game/` in, so anything using it is asserting shipped content
+copies `game.example/` in, so anything using it is asserting shipped content
 and belongs in `demo_world`. The check:
 
 ```bash
 # `git stash push <path>` only reverts changes — it does not remove the
 # directory, so it never tested anything. Move them out of the tree instead.
-mkdir ../away && mv game ../away/ && mv tests/demo_world ../away/
+mkdir ../away && mv game.example ../away/ && mv tests/demo_world ../away/
 cargo test --test driver --test mudlib --no-fail-fast
-mv ../away/game . && mv ../away/demo_world tests/ && rmdir ../away
+mv ../away/game.example . && mv ../away/demo_world tests/ && rmdir ../away
 ```
 
 `--test` names the **binary**, not the file: `tests/schema.rs` is now

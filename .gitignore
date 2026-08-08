@@ -1,7 +1,13 @@
 # Build output
 /target
 
-# Game and Mudlib dirs
+# The live trees the server loads — a creator's own game and mudlib, brought in
+# from their own repo and deliberately invisible to this one.
+#
+# What this repository ships and tests is the pair beside them, `game.example/`
+# and `mudlib.default/`, which are tracked. So a change meant for upstream is
+# made *there*: it is the only copy the test suite or a reviewer ever sees, and
+# anything left only in `mudlib/` is unpublishable by construction.
 game/
 mudlib/
 

@@ -21,7 +21,14 @@ const SIZES: [(u16, u16); 4] = [(160, 50), (120, 40), (80, 24), (40, 12)];
 
 fn app() -> (App, UnboundedReceiver<Action>) {
     let (tx, rx) = mpsc::unbounded_channel();
-    (App::new(tx), rx)
+    let mut app = App::new(tx);
+    // `App::new` builds a `DebugView` from the `.lua` files on disk under
+    // `mudlib/` and `game/`. Both are gitignored, so on a clean clone they are
+    // absent and the file pane renders empty — which every tree assertion below
+    // would then fail on, for a reason that is not about rendering. Give it a
+    // fixed tree instead. See `dap::fixture_files`.
+    app.dbg = crate::dap::DebugView::with_files(crate::dap::fixture_files());
+    (app, rx)
 }
 
 /// Draw and return the screen as text, one line per row.
@@ -90,6 +97,12 @@ fn paused() -> (App, UnboundedReceiver<Action>) {
         line: 19,
     }];
     app.dbg.open_file(std::path::Path::new("mudlib/cmds/who.lua"));
+    // `open_file` reads the file from disk, and `mudlib/` is gitignored — so on
+    // a clean clone the pane holds a single `<cannot read …>` line, and the
+    // gutter assertions have no line 19 to mark. What is under test is the
+    // rendering, so hand it a source rather than a filename.
+    app.dbg.source = (1..=40).map(|n| format!("-- line {n}")).collect();
+    app.dbg.blocks = vec![None; app.dbg.source.len()];
     app.dbg.cursor = 18;
     (app, rx)
 }

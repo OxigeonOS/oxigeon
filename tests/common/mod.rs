@@ -187,8 +187,40 @@ pub struct RealVm {
 ///
 /// `on_shutdown` is *wrapped* rather than replaced, so the mudlib's real one
 /// still runs and the probe only observes that it did.
-/// Where the fixture world starts. Not a room in `game/`.
+/// Where the fixture world starts. Not a room in `game.example/`.
 pub const FIXTURE_START_ROOM: &str = "fixture.hall";
+
+/// Where the example world starts.
+///
+/// A constant rather than a read of `config/server.toml`, because that config
+/// points at the game being developed in `game/` and has nothing to say about
+/// `game.example/`. The demo's entrance is a property of the demo, in the same
+/// way [`FIXTURE_START_ROOM`] is a property of the fixture.
+pub const EXAMPLE_START_ROOM: &str = "wizard_workshop.entrance";
+
+/// The mudlib this repository ships and this suite tests.
+///
+/// **`mudlib.default/`, never `mudlib/`.** The two live side by side and hold
+/// different things: `mudlib.default/` is tracked here and is what a fresh
+/// checkout gets, while `mudlib/` is the working copy a creator brings in from
+/// their own private repo — untracked, absent on a clean clone, and free to
+/// have diverged arbitrarily. A suite that booted `mudlib/` would be testing
+/// somebody's unpublished fork and would fail on a machine that has none.
+///
+/// It follows that a fix meant for upstream is made *here*, in
+/// `mudlib.default/`, which is the only copy any test or reviewer sees.
+pub fn default_mudlib_root() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("mudlib.default")
+}
+
+/// The world this repository ships and this suite tests.
+///
+/// **`game.example/`, never `game/`**, for the reason spelled out on
+/// [`default_mudlib_root`]. `game/` is the creator's own game; the demo world
+/// the `tests/demo_world/` bucket asserts against is this one.
+pub fn example_game_root() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("game.example")
+}
 
 /// A complete, self-contained game layer in one file.
 ///
@@ -534,28 +566,6 @@ function on_shutdown()
 end
 "#;
 
-/// The start room the shipped `config/server.toml` declares.
-///
-/// Read rather than hardcoded, because a harness that hardcodes
-/// `wizard_workshop.entrance` silently assumes *this* game: point the config at
-/// another world and every `boot_real_mudlib` test fails at login, for a reason
-/// that has nothing to do with what it was testing.
-pub fn configured_start_room() -> String {
-    std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/server.toml"),
-    )
-    .expect("read config/server.toml")
-    .lines()
-    .find_map(|l| {
-        l.trim()
-            .strip_prefix("start_room")?
-            .split('"')
-            .nth(1)
-            .map(str::to_string)
-    })
-    .expect("config/server.toml declares no start_room")
-}
-
 impl RealVm {
     /// Boot the way `config/server.toml` ships: no instruction limit, so the
     /// LuaJIT compiler stays on.
@@ -737,26 +747,31 @@ impl RealVm {
         Self::boot_inner(instruction_limit, PermissionConfig::default())
     }
 
-    /// Boot against the repository's real `mudlib/` and `game/`.
+    /// Boot against the mudlib and world this repository ships —
+    /// `mudlib.default/` and `game.example/`.
     ///
     /// Every other constructor writes a throwaway mudlib that answers probes
-    /// directly. This one runs the actual game — daemon load, command
+    /// directly. This one runs an actual game — daemon load, command
     /// dispatch, rooms, the prompt — which is what a benchmark has to measure
     /// and what no synthetic workload can stand in for. The session comes back
     /// logged in and playing, via the real login flow.
     ///
+    /// Not the `mudlib/` and `game/` the server actually loads: those are the
+    /// creator's own, untracked and absent on a clean clone. See
+    /// [`default_mudlib_root`]. Pointing at the shipped pair is also what makes
+    /// a benchmark comparable between runs.
+    ///
     /// The database and the log directory are still temporary; only the Lua is
     /// real.
     pub fn boot_real_mudlib(instruction_limit: u64) -> Self {
-        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let logs = TempDir::new().unwrap();
         let mut vm = Self::boot_inner_at(
             None,
-            root.join("mudlib"),
+            default_mudlib_root(),
             TestCtx {
                 instruction_limit,
-                game_path: Some(root.join("game")),
-                start_room: Some(configured_start_room()),
+                game_path: Some(example_game_root()),
+                start_room: Some(EXAMPLE_START_ROOM.to_string()),
                 log_dir: Some(logs.path().to_path_buf()),
                 ..Default::default()
             },
@@ -766,21 +781,20 @@ impl RealVm {
         vm
     }
 
-    /// Boot the real `mudlib/` against a **small self-contained world** written
-    /// into a temp directory, instead of the `game/` this repository ships.
+    /// Boot the shipped `mudlib.default/` against a **small self-contained
+    /// world** written into a temp directory, instead of `game.example/`.
     ///
-    /// The reason this exists: `game/` is content — "this game, and policy the
-    /// driver has no view on" — and somebody who deletes it to build their own
-    /// world should not inherit a broken test suite. Anything asserting mudlib
+    /// The reason this exists: a game layer is content — "this game, and policy
+    /// the driver has no view on" — and somebody who brings their own world
+    /// should not inherit a broken test suite. Anything asserting mudlib
     /// *mechanics* should be able to say "given a world" without meaning "given
     /// Thornhollow". Tests that genuinely assert the shipped content live in
-    /// `tests/demo_world/` and are deleted along with `game/`.
+    /// `tests/demo_world/` and are deleted along with `game.example/`.
     ///
     /// The fixture is deliberately tiny — three rooms, one mob, one item, and
     /// the trait definitions a creature needs to exist. Traits are game-layer by
     /// design, so a world without them has no `hp` for anything to lose.
     pub fn boot_with_fixture_world(instruction_limit: u64) -> Self {
-        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let logs = TempDir::new().unwrap();
         let game = TempDir::new().unwrap();
         std::fs::write(game.path().join("init.lua"), FIXTURE_WORLD).unwrap();
@@ -792,7 +806,7 @@ impl RealVm {
 
         let mut vm = Self::boot_inner_at(
             None,
-            root.join("mudlib"),
+            default_mudlib_root(),
             TestCtx {
                 instruction_limit,
                 game_path: Some(game.path().to_path_buf()),
@@ -807,7 +821,7 @@ impl RealVm {
         vm
     }
 
-    /// Boot the repository's real `mudlib/` behind a probe `on_input`.
+    /// Boot the shipped `mudlib.default/` behind a probe `on_input`.
     ///
     /// [`RealVm::boot_real_mudlib`] can only send commands, because the real
     /// mudlib's `on_input` *is* the command dispatcher. That makes anything
@@ -825,12 +839,12 @@ impl RealVm {
     /// `boot_real_mudlib` already covers that. Use this to ask what mudlib code
     /// does; use that one to ask what a player experiences.
     ///
-    /// The real `game/` content *is* loaded: `PROBE_GAME_LAYER` puts it on
+    /// The `game.example/` content *is* loaded: `PROBE_GAME_LAYER` puts it on
     /// `package.path` and `require`s `init`, so areas, mobs, items, traits,
     /// effects and quests are all registered. (This comment used to claim
     /// otherwise, which is why several tests assert on shipped content through
     /// a boot that supposedly had none.) The `require` is inside a `pcall` that
-    /// only logs, so a missing `game/` does not fail the boot — it fails the
+    /// only logs, so a missing world does not fail the boot — it fails the
     /// assertions that name content, which is the right place for it to hurt.
     pub fn boot_real_mudlib_with_probe() -> Self {
         Self::boot_real_mudlib_with_probe_opts(TestCtx::default())
@@ -840,11 +854,10 @@ impl RealVm {
     /// the periodic subsystems actually registered. `game_path` and `log_dir`
     /// are overwritten; everything else is honoured.
     pub fn boot_real_mudlib_with_probe_opts(mut opts: TestCtx) -> Self {
-        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let logs = TempDir::new().unwrap();
         let game = TempDir::new().unwrap();
 
-        // The real `game/` is **copied** into the temp root rather than being
+        // `game.example/` is **copied** into the temp root rather than being
         // reached through `package.path`.
         //
         // It used to be the latter: the temp directory held one `init.lua` that
@@ -857,7 +870,7 @@ impl RealVm {
         // Copying is ~20 small files and makes both halves agree: what `require`
         // resolves and what `list_dir` reports are the same tree. The copy is
         // also what makes it safe for a test to write into the game root.
-        copy_dir(&root.join("game"), game.path());
+        copy_dir(&example_game_root(), game.path());
         // The game's own entry point, moved aside so the probe can be the one
         // the engine loads and still hand off to it.
         std::fs::rename(game.path().join("init.lua"), game.path().join("real_init.lua")).unwrap();
@@ -870,19 +883,20 @@ impl RealVm {
         opts.game_path = Some(game.path().to_path_buf());
         opts.log_dir = Some(logs.path().to_path_buf());
 
-        let mut vm = Self::boot_inner_at(None, root.join("mudlib"), opts);
+        let mut vm = Self::boot_inner_at(None, default_mudlib_root(), opts);
         vm._logs = Some(logs);
         vm._game = Some(game);
         assert_eq!(vm.eval("return 'ready'").unwrap(), "ready");
         vm
     }
 
-    /// The probe dispatcher over the **fixture world** rather than `game/`.
+    /// The probe dispatcher over the **fixture world** rather than
+    /// `game.example/`.
     ///
     /// [`RealVm::boot_real_mudlib_with_probe`] gives you `eval` against a fully
     /// wired `DAEMON` table — and Thornhollow with it, so any test that seeds a
-    /// creature through it is quietly asserting that *this* game defines the
-    /// traits. Delete `game/` and it fails, which is exactly what
+    /// creature through it is quietly asserting that *the demo* defines the
+    /// traits. Delete `game.example/` and it fails, which is exactly what
     /// `docs/src/testing.md` says a mudlib test must not do.
     ///
     /// This is the same probe over [`FIXTURE_WORLD`]: the smallest world in
@@ -895,7 +909,6 @@ impl RealVm {
     /// As above, with control over the config. `game_path` and `log_dir` are
     /// overwritten; everything else is honoured.
     pub fn boot_fixture_with_probe_opts(mut opts: TestCtx) -> Self {
-        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let logs = TempDir::new().unwrap();
         let game = TempDir::new().unwrap();
         std::fs::write(
@@ -908,7 +921,7 @@ impl RealVm {
         opts.game_path = Some(game.path().to_path_buf());
         opts.log_dir = Some(logs.path().to_path_buf());
 
-        let mut vm = Self::boot_inner_at(None, root.join("mudlib"), opts);
+        let mut vm = Self::boot_inner_at(None, default_mudlib_root(), opts);
         vm._logs = Some(logs);
         vm._game = Some(game);
         assert_eq!(vm.eval("return 'ready'").unwrap(), "ready");
