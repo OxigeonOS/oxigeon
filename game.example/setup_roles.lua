@@ -7,10 +7,14 @@
 -- and nothing in the game could put anything into it.
 --
 -- This is what puts something into it. Run from `game/init.lua` on every boot,
--- and idempotent by construction: `create_role` on a role that exists is a
--- no-op, and so is `grant_permission` on a grant that exists. That is what
--- makes "declare the roles in a file" work at all — the alternative is a
--- migration nobody remembers to run.
+-- and idempotent — which is what makes "declare the roles in a file" work at
+-- all, the alternative being a migration nobody remembers to run.
+--
+-- Idempotent by *arrangement* rather than by construction, and the distinction
+-- cost four warnings on every boot: `grant_permission` on a grant that already
+-- exists really is a no-op, but `create_role` on a role that already exists is
+-- an error the driver logs before returning. `M.apply` asks `list_roles` what
+-- is there and creates only the rest. See the note on it.
 --
 -- ─── Why the game layer ──────────────────────────────────────────────────────
 --
@@ -148,11 +152,46 @@ local function log_error(message)
     if DAEMON and DAEMON.journal then pcall(DAEMON.journal.error, message) end
 end
 
+--- Which roles the database already has, as a set of names.
+---
+--- Nil — rather than an empty table — when the question cannot be asked, so the
+--- caller can tell "no roles exist" from "no way to find out" and fall back
+--- accordingly.
+--- @return table|nil  { [name] = true }
+local function existing_roles()
+    if type(list_roles) ~= "function" then return nil end
+
+    local ok, roles = pcall(list_roles)
+    if not ok or type(roles) ~= "table" then return nil end
+
+    local set = {}
+    for _, entry in ipairs(roles) do
+        -- `list_roles` answers with RoleInfo records; tolerate a bare string
+        -- in case a driver ever simplifies it.
+        local name = type(entry) == "table" and entry.name or entry
+        if type(name) == "string" then set[name] = true end
+    end
+    return set
+end
+
 --- Create every role and grant every permission.
 ---
 --- Idempotent, and it has to be: this runs on every boot, and a version that
 --- only worked on an empty database would be a version nobody could trust
 --- after the first day.
+---
+--- ─── Ask first; do not create and swallow ───────────────────────────────────
+---
+--- Creating a role that exists is **not** a no-op, whatever this file used to
+--- claim. The driver attempts the insert, hits `UNIQUE constraint failed:
+--- roles.name`, and logs a warning of its own *before* returning — so the
+--- `pcall` here caught the failure but could do nothing about four alarming
+--- lines already in the log. Every server with a database older than its first
+--- boot greeted its owner with them.
+---
+--- `list_roles` is the fix: check what exists, create only what does not. The
+--- fallback for a driver without it is the old behaviour, because a noisy boot
+--- is better than no roles.
 --- @return number roles, number grants
 function M.apply()
     if type(create_role) ~= "function" then
@@ -160,15 +199,21 @@ function M.apply()
         return 0, 0
     end
 
+    local present = existing_roles()
+
     local roles, grants = 0, 0
     for _, spec in ipairs(M.ROLES) do
-        -- `create_role` returns nil for a role that already exists, which is
-        -- the answer rather than a failure — there is nothing to do.
-        local ok = pcall(create_role, spec.name)
-        if not ok then
-            log_error("SETUP_ROLES: could not create role '" .. spec.name .. "'")
-        else
+        if present and present[spec.name] then
+            -- Already there. Its grants are still reconciled below, because a
+            -- role can outlive the permissions this file says it should carry.
             roles = roles + 1
+        else
+            local ok = pcall(create_role, spec.name)
+            if not ok then
+                log_error("SETUP_ROLES: could not create role '" .. spec.name .. "'")
+            else
+                roles = roles + 1
+            end
         end
 
         for _, perm in ipairs(spec.permissions) do

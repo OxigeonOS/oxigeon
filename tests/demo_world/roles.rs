@@ -55,6 +55,66 @@ fn the_game_declares_its_roles_on_every_boot() {
     );
 }
 
+/// A re-run does not even *attempt* to create a role that exists.
+///
+/// The distinction the test above cannot see. `create_role` on an existing role
+/// is not a no-op: the driver attempts the insert, hits `UNIQUE constraint
+/// failed: roles.name`, and logs a warning of its own **before** returning the
+/// error. `setup_roles.apply` caught that with `pcall` and the role count stayed
+/// right, so every assertion about state passed — while every server with a
+/// database older than its first boot greeted its owner with four warnings.
+///
+/// So this counts calls rather than rows. The fix is `list_roles` first, create
+/// only what is missing; the failure it guards against is invisible in the
+/// database and visible only in the log.
+#[test]
+fn a_second_run_does_not_re_create_roles_that_exist() {
+    let mut vm = RealVm::boot_real_mudlib_with_probe();
+
+    // Boot already applied it, so every declared role is present by now.
+    let attempts: i64 = vm
+        .eval(
+            "local calls = 0 \
+             local real = create_role \
+             create_role = function(...) calls = calls + 1 return real(...) end \
+             local ok, err = pcall(function() require('setup_roles').apply() end) \
+             create_role = real \
+             if not ok then return 'apply failed: ' .. tostring(err) end \
+             return tostring(calls)",
+        )
+        .unwrap()
+        .parse()
+        .unwrap_or_else(|_| panic!("apply() did not run cleanly under the counting stub"));
+
+    assert_eq!(
+        attempts, 0,
+        "apply() tried to create {attempts} role(s) that already existed — each \
+         one is a `UNIQUE constraint failed` the driver logs before the pcall \
+         here can swallow it"
+    );
+
+    // And the fallback is still wired: a driver with no `list_roles` must fall
+    // back to create-and-swallow rather than skipping role setup entirely.
+    let created: i64 = vm
+        .eval(
+            "local calls = 0 \
+             local real_create, real_list = create_role, list_roles \
+             create_role = function(...) calls = calls + 1 return real_create(...) end \
+             list_roles = nil \
+             pcall(function() require('setup_roles').apply() end) \
+             create_role, list_roles = real_create, real_list \
+             return tostring(calls)",
+        )
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    assert_eq!(
+        created, 4,
+        "without `list_roles` the file must still try to create all four roles"
+    );
+}
+
 /// Assigning a role to somebody who is online takes effect *now*.
 #[test]
 fn the_role_command_grants_and_the_change_lands_immediately() {

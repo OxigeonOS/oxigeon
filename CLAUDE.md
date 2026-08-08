@@ -476,7 +476,7 @@ string, so a role and a colour tag would be indistinguishable in the source.
 
 ## Testing
 
-Run `cargo test` before committing. All tests must pass. Current count: 1296 on the default `lua55`, green on both it and `--no-default-features --features luajit`.
+Run `cargo test` before committing. All tests must pass. Current count: 1297 on the default `lua55`, green on both it and `--no-default-features --features luajit`.
 
 The suite must also be green with `game/` and `mudlib/` **absent**, which is the
 state of a fresh clone — both are gitignored. Rename them aside and run it; that
