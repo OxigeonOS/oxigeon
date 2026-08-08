@@ -109,6 +109,9 @@ fn the_game_layer_is_still_found_alongside_the_mudlib() {
     // should keep meaning something for somebody who deleted the demo game.
     let mut vm = RealVm::boot_with_fixture_world(0);
 
+    // Unpaged: `help all` is longer than a screen, and a verb below the fold
+    // would look undiscovered rather than merely unread.
+    vm.command("pagesize 0");
     let out = vm.command("help all");
     assert!(
         out.contains("fixturecmd"),
@@ -232,6 +235,7 @@ fn help_lists_the_categories_a_new_player_needs_first() {
     // so navigation fell into the alphabetical overflow and printed after the
     // admin block.
     let mut vm = RealVm::boot_with_fixture_world(0);
+    vm.command("pagesize 0");
     let out = vm.command("help");
 
     let nav = out.find("navigation").or_else(|| out.find("Navigation"));
@@ -242,7 +246,12 @@ fn help_lists_the_categories_a_new_player_needs_first() {
         nav < items,
         "navigation should come before items:\n{out}"
     );
-    assert!(out.contains("north"), "the directions should be listed:\n{out}");
+
+    // Bare `help` is the category index now, so the verbs are one level down.
+    // That the directions land in `navigation` rather than in the overflow is
+    // the whole point of the ordering above.
+    let nav_page = vm.command("help navigation");
+    assert!(nav_page.contains("north"), "the directions should be listed:\n{nav_page}");
 }
 
 #[test]

@@ -99,6 +99,27 @@ fn wait_for_running(dbg: &oxigeon::core::scripting::debugger::SharedDebugState, 
     }
 }
 
+/// The 1-based line holding `needle`, or fail naming what was not found.
+///
+/// A breakpoint test pins a *statement*; the number it happens to sit on is a
+/// property of everything written above it, and editing an unrelated function
+/// in the same file must not turn into "the debugger cannot stop".
+fn line_of(file: &str, needle: &str) -> u32 {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file);
+    let src = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+
+    let mut hits = src
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| l.trim() == needle)
+        .map(|(i, _)| i as u32 + 1);
+
+    let line = hits.next().unwrap_or_else(|| panic!("no line {needle:?} in {file}"));
+    assert!(hits.next().is_none(), "{needle:?} is not unique in {file}");
+    line
+}
+
 /// Set one breakpoint and attach, the way a client's `setBreakpoints` does.
 fn set_breakpoint(
     dbg: &oxigeon::core::scripting::debugger::SharedDebugState,
@@ -387,9 +408,16 @@ fn a_resumed_dispatch_still_has_its_arguments() {
         ..Default::default()
     });
 
-    // Line 114, `if n % 1 == 0 then`: past the guards, before the return, with
-    // `n` read on both sides.
-    set_breakpoint(&dbg, "mudlib.default/lib/strings.lua", 114, BreakpointSpec::default());
+    // `if n % 1 == 0 then` in `strings.number`: past the guards, before the
+    // return, with `n` read on both sides.
+    //
+    // Looked up rather than written down. This was line 114 until a function
+    // was added above it, and then the breakpoint armed on a line inside a
+    // different function that the probe never reaches — so the test failed
+    // saying the debugger could not stop, which is not what had happened. What
+    // it is really pinning is a *statement*, so it asks for one.
+    let line = line_of("mudlib.default/lib/strings.lua", "if n % 1 == 0 then");
+    set_breakpoint(&dbg, "mudlib.default/lib/strings.lua", line, BreakpointSpec::default());
     assert_eq!(vm.eval("return 'armed'").unwrap(), "armed");
 
     vm.send_eval("return require('lib.strings').number(1234)");

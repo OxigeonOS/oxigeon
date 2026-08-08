@@ -112,9 +112,15 @@ fn a_missing_directory_is_nil_and_an_empty_one_is_a_table() {
 fn command_discovery_still_loads_every_command() {
     let mut vm = RealVm::boot_real_mudlib(0);
 
-    // `help` generates its listing from the registry, so a discovery failure
-    // shows up here as a short list rather than as a crash.
-    let out = vm.command("help");
+    // `help all` generates its listing from the registry, so a discovery
+    // failure shows up here as a short list rather than as a crash.
+    //
+    // `all` and not bare `help`, which lists *categories* now — a category
+    // index would keep printing nine headings with every command missing, so
+    // this needs the view that names the verbs. And unpaged, or the answer is
+    // the first screen of it and the verbs below the fold look undiscovered.
+    vm.command("pagesize 0");
+    let out = vm.command("help all");
     for verb in ["look", "score", "skills", "traits", "inventory", "say", "quit"] {
         assert!(
             out.contains(verb),

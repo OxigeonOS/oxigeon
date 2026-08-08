@@ -402,6 +402,36 @@ rejected because it silently rebalances a shipped game.
   roll consumed choosing one**, and `ev.hit_slot` nil — so the per-slot armour
   guard is skipped, which is every call the game makes today.
 
+## Help Is Two Levels, and a Category Has Two Sources
+
+`help` prints the categories; `help <category>` prints what is in one. A
+category comes from a command's `M.category` or from a directory under
+`game/docs/`, and the two **merge by name** — `game/docs/combat/stances.md` sits
+beside `attack` under one heading, and the player is never shown which half came
+from where. Files in that directory are topics; one level, so a file loose in
+`docs/` is unreachable and says so once to `journal_d`.
+
+- **The `game:` prefix is the whole rule.** `list_dir("docs")` unprefixed
+  searches both roots game-first, so it would sweep a creator's `mudlib/docs/`
+   — the system layer's own documentation — into the player's help. A functional
+  test cannot see the difference without a second mudlib on disk, so
+  `tests/mudlib/help.rs` asserts the source names `game:docs`.
+- **A command wins a name clash and points at the page.** `help attack` has to
+  keep describing the verb you would type; the page is `See also:` away. A bare
+  topic name in two categories **refuses with the list**, the `lib/matching.lua`
+  rule, because guessing wrong costs the player their next command.
+- **`lib/markdown.lua` handles `#`, `##`, `###`, `-` and the blank line, and
+  eats nothing else.** Code fences and links arrive as visible text — the
+  `$token` rule again. `{colour}` in a page is *content* and is rendered, which
+  is the opposite of `cat`'s `literal` because that is showing code.
+- **Everything leaves through `Player:send_paged`,** which is what makes colour
+  and `pagesize` free. It does not wrap, so help fits its own lines first —
+  with `strings.wrap_tagged`, not `wrap`, since a `{tag}` costs no columns. Rows
+  wrap only their right-hand column: padding a row and then wrapping it collapses
+  the padding, and `pad_right` truncates, which ate an alias.
+
+See `docs/src/help-and-docs.md`.
+
 ## A Line Is Authored Once and Read Per Viewer
 
 `"$Actor $actor.v(draw) a line of fire at $target."` renders three ways. `$` was
@@ -446,7 +476,7 @@ string, so a role and a colour tag would be indistinguishable in the source.
 
 ## Testing
 
-Run `cargo test` before committing. All tests must pass. Current count: 1255 on the default `lua55`, green on both it and `--no-default-features --features luajit`.
+Run `cargo test` before committing. All tests must pass. Current count: 1296 on the default `lua55`, green on both it and `--no-default-features --features luajit`.
 
 The suite must also be green with `game/` and `mudlib/` **absent**, which is the
 state of a fresh clone — both are gitignored. Rename them aside and run it; that

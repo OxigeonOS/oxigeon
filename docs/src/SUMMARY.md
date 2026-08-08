@@ -32,6 +32,7 @@
   - [Event Hooks](./lua-api/events.md)
   - [File & System Access](./lua-api/file-access.md)
   - [Interface — Prompt, Colour, Pager, Channels](./lua-api/interface.md)
+  - [Help & Authored Documentation](./help-and-docs.md)
   - [Observability & Logging](./lua-api/observability.md)
   - [Debugging & Tracing](./lua-api/debugging.md)
   - [OLC — Building In-Game](./lua-api/olc.md)

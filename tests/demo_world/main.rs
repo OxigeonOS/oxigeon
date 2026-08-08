@@ -40,6 +40,7 @@ mod authored_mob_health;
 mod authoring;
 mod board;
 mod gmcp_game;
+mod help_docs;
 mod combat;
 mod combat_mitigation;
 mod defence_channels;

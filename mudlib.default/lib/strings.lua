@@ -95,6 +95,78 @@ function M.wrap(text, width)
     return table.concat(output, "\r\n")
 end
 
+--- The width `text` occupies on a terminal, with `{colour}` tags costing zero.
+--- @param text string
+--- @return number
+function M.visible_width(text)
+    if type(text) ~= "string" then return 0 end
+    return #(text:gsub("{.-}", ""))
+end
+
+--- Word-wrap text whose `{colour}` tags do not occupy screen columns.
+---
+--- `wrap` above counts every character, tags included, because it wraps before
+--- anything colourises and has no view on which runs are invisible. Every
+--- caller that puts a tag at the *start* of a line lives with that, and the
+--- error is small there. It is not small for generated layout: a line carrying
+--- `{bold}{white}…{/}` loses seventeen columns, so a heading and the paragraph
+--- under it wrap at different widths and stop lining up.
+---
+--- Two other differences from `wrap`, both for lists:
+---   * leading whitespace is preserved rather than eaten, so an indented line
+---     stays indented;
+---   * continuation lines are indented by `indent` columns, which is what makes
+---     a wrapped bullet hang under its own text instead of under the dash.
+---
+--- `wrap` is deliberately untouched — this is an addition, not a replacement.
+--- @param text   string
+--- @param width  number   maximum visible columns (default 80)
+--- @param indent number|nil  columns to indent continuation lines (default 0)
+--- @return string
+function M.wrap_tagged(text, width, indent)
+    width  = width or 80
+    indent = indent or 0
+    if text == nil or text == "" then return text end
+    if type(text) ~= "string" then text = tostring(text) end
+
+    text = text:gsub("\r\n", "\n")
+
+    local output = {}
+    for line in (text .. "\n"):gmatch("([^\n]*)\n") do
+        if line:match("^%s*$") then
+            output[#output + 1] = ""
+        elseif M.visible_width(line) <= width then
+            -- Verbatim, spacing and all. Re-joining the words of a line that
+            -- already fits would collapse `  a  |  b` to `a | b` — and a table
+            -- or an ASCII diagram is exactly the thing somebody hands to a
+            -- wrapper hoping it will be left alone. `wrap` has the same fast
+            -- path for the same reason.
+            output[#output + 1] = line
+        else
+            local lead = line:match("^(%s*)") or ""
+            local current, used = nil, 0
+            for word in line:gmatch("%S+") do
+                local w = M.visible_width(word)
+                if current == nil then
+                    current, used = lead .. word, #lead + w
+                elseif used + 1 + w > width then
+                    output[#output + 1] = current
+                    current, used = string.rep(" ", indent) .. word, indent + w
+                else
+                    current, used = current .. " " .. word, used + 1 + w
+                end
+            end
+            if current then output[#output + 1] = current end
+        end
+    end
+
+    if #output > 0 and output[#output] == "" and not text:match("\n$") then
+        output[#output] = nil
+    end
+
+    return table.concat(output, "\r\n")
+end
+
 --- Render a number for a player, identically on every Lua.
 ---
 --- `tostring(6.0)` is `"6"` on LuaJIT — where every number is a double — and

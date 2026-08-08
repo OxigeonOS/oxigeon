@@ -15,7 +15,10 @@ local M = {}
 
 M.name       = "abilities"
 M.aliases    = { "abils" }
-M.category   = "info"
+-- `information`, spelled out: `info` is not a category anything else uses, so
+-- this command fell into `help`'s alphabetical overflow and printed under its
+-- own heading below the admin block. The same typo `navigation` was fixed for.
+M.category   = "information"
 M.summary    = "Everything you can do, with its cost and whether it is ready."
 M.usage      = {
     "abilities            everything",

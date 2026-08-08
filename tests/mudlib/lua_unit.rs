@@ -22,7 +22,7 @@ fn project_root() -> PathBuf {
 /// creator's own trees, untracked and absent on a clean clone, and since the
 /// game root *shadows* the mudlib on `package.path` a module under test here
 /// could otherwise be silently replaced by one nobody in this repo wrote.
-fn make_test_lua() -> Lua {
+pub(crate) fn make_test_lua() -> Lua {
     let lua = Lua::new();
     let root = project_root();
 
