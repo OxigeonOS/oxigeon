@@ -638,6 +638,41 @@ pub fn register_io_file_efuns(
         globals.set("os_time", f)?;
     }
 
+    // os_time_precise() -> number  (game time, fractional seconds)
+    //
+    // `os_time` with the floor taken off. Same clock and the same subtraction of
+    // frozen time, so a breakpoint still does not expire anything — the only
+    // difference is that it keeps the fraction.
+    //
+    // It exists because "nothing in the mudlib wants sub-second game time",
+    // asserted immediately above, stopped being true. A movement track charges a
+    // roundtime per room and a city street costs half a second; against an
+    // integer clock, `os_time() + 0.5` and `os_time() + 1.0` expire on the same
+    // tick, so every terrain under a second was the same terrain and a
+    // 7%-per-rank discount was invisible unless it happened to cross a whole
+    // second.
+    //
+    // Deliberately **not** a change to `os_time`. Every stored timestamp in the
+    // game goes through that one — save files, journal entries, cooldown
+    // documents — and on 5.3+ making it a float renders all of them as
+    // `1712345678.0`. A caller that needs the fraction asks for it; everything
+    // else keeps the integer it was written against.
+    //
+    // Not `os_clock` either: that is the raw wall clock with no subtraction, so
+    // anything measured against it keeps ticking down while the world is stopped
+    // at a breakpoint.
+    {
+        let st = debug_state.clone();
+        let f = lua.create_function(move |_, ()| {
+            let secs = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64();
+            Ok(secs - st.paused_secs())
+        })?;
+        globals.set("os_time_precise", f)?;
+    }
+
     // os_clock() -> number  (wall-clock seconds; std doesn't expose CPU clock portably)
     {
         let f = lua.create_function(|_, ()| {
