@@ -58,6 +58,18 @@ default = ["lua55"]
 luajit = ["mlua/luajit", "oxigeon-lua/luajit"]
 lua55 = ["mlua/lua55", "oxigeon-lua/lua55"]
 
+# ─── The test harness, published ─────────────────────────────────────────────
+#
+# `oxigeon::testkit` boots a real `ScriptEngine` over a caller-supplied pair of
+# jail roots. Off by default, so a release build compiles none of it; a game
+# repository turns it on as a dev-dependency to test its own content:
+#
+#   oxigeon = { path = "../oxigeon", features = ["testkit"] }
+#
+# `tempfile` is the only thing the harness needs that the server does not, so it
+# is optional and pulled in here rather than carried in every release build.
+testkit = ["dep:tempfile"]
+
 [dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -107,9 +119,16 @@ tracing-appender = "0.2.5"
 # `ratatui::crossterm` rather than depended on directly, so the two cannot skew.
 ratatui = "0.30"
 
+# Temporary mudlibs, game roots, databases and log directories for the test
+# harness. Optional and enabled by `testkit`; a server build never sees it.
+tempfile = { version = "3", optional = true }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
-tempfile = "3"
+# The suite in `tests/` is the testkit's first caller, so it turns the feature
+# on for itself. A dev-dependency on your own crate is how a feature that only
+# tests need gets enabled without leaking into a release build.
+oxigeon = { path = ".", features = ["testkit"] }
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 
 # Measures LuaJIT on vs off through the real mudlib. See docs/src/lua-api/performance.md.

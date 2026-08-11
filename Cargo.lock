@@ -1293,6 +1293,7 @@ dependencies = [
  "futures-util",
  "libsqlite3-sys",
  "mlua",
+ "oxigeon",
  "oxigeon-lua",
  "rand_core",
  "ratatui",
