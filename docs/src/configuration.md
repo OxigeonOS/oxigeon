@@ -48,6 +48,82 @@ bind = "0.0.0.0"
 port = 4000
 ```
 
+### `[servers.telnet_tls]`
+
+`telnets://` — the same protocol inside TLS, which is what a MUD client means by
+"secure connection". Same keys as `[servers.telnet]`, plus:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `cert_path` | string | (none) | PEM certificate chain |
+| `key_path` | string | (none) | PEM private key (PKCS#8, PKCS#1 or SEC1) |
+| `cert_reload_seconds` | integer | `300` | How often to check for a renewed certificate (`0` = read once at startup) |
+
+```toml
+[servers.telnet_tls]
+enabled = true
+bind = "0.0.0.0"
+port = 4443
+cert_path = "certs/server.crt"
+key_path = "certs/server.key"
+```
+
+A *second* listener rather than a flag on the first, so existing players keep
+the plaintext port. See [TLS](./protocols/tls.md).
+
+A server needs **at least one** listener. Enabling none is a startup error, not
+a quiet no-op — and a listener that was asked for and failed to start is fatal
+too, rather than a warning about a port the operator believes is open.
+
+### `[servers.websocket]`
+
+Optional — omit the section entirely to disable, which is the default. See
+[WebSocket](./protocols/websocket.md) for the wire format, which is a JSON
+envelope rather than a raw text stream.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Enable/disable the WebSocket server |
+| `bind` | string | `"127.0.0.1"` | Bind address. Loopback by default — there is no TLS here |
+| `port` | integer | `4001` | Listen port |
+| `max_frame_bytes` | integer | `65536` | Largest client message accepted |
+| `ping_interval_secs` | integer | `30` | Server keepalive interval (`0` = disabled) |
+| `missed_pongs` | integer | `3` | Unanswered pings tolerated before closing |
+
+```toml
+[servers.websocket]
+enabled = true
+bind = "127.0.0.1"
+port = 4001
+```
+
+### `[servers.websocket_tls]`
+
+`wss://`. The same keys as `[servers.websocket]`, plus `cert_path`,
+`key_path` and `cert_reload_seconds` as above.
+
+Both WebSocket blocks also take:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `allowed_origins` | string[] | `[]` | Browser origins permitted to connect. Empty accepts any. Matched exactly |
+
+```toml
+[servers.websocket_tls]
+enabled = true
+bind = "0.0.0.0"
+port = 4444
+cert_path = "certs/server.crt"
+key_path = "certs/server.key"
+```
+
+> A browser on an `https://` page **may not** open a `ws://` socket — it is
+> blocked as mixed content — so a hosted client needs this listener or a proxy
+> in front. Note also that Origin is not checked: any page can open a socket
+> here from a visitor's browser. That matters less than for a cookie-based API —
+> there is no ambient credential and login is in-band — but it is worth knowing
+> before binding this to a public interface.
+
 ### `[servers.debug]`
 
 Optional — omit the section entirely to disable, which is the default. Enables

@@ -2,27 +2,29 @@
 //!
 //! The rule that decides what lives here:
 //!
-//! > If you deleted `mudlib.default/` and wrote your own from scratch, would
-//! > you keep this test or rewrite it? **Keep it → here.** Rewrite it →
-//! > `tests/mudlib/`.
+//! > If you threw the Lua layer away and wrote your own from scratch, would you
+//! > keep this test or rewrite it? **Keep it → here.** Rewrite it → nowhere,
+//! > now: the suite that held those went with `mudlib.default/`.
 //!
 //! So this covers the Lua VM and its sandbox, the instruction budget, the efun
 //! surface, the two-root file jail, the database layer, telnet/GMCP framing,
 //! sessions, permission *enforcement*, the debugger and the compute workers.
-//! Several of these boot the real mudlib — but only as a vehicle, because the
+//! Several of these boot a mudlib — but only as a **vehicle**, because the
 //! assertion is about Rust behaviour underneath it.
 //!
-//! This directory must stay green with the mudlib deleted:
+//! That vehicle is `tests/fixture/`, and it used to be `mudlib.default/` and
+//! `game.example/` at the repository root. Nothing develops them, the one game
+//! built on this engine forked the mudlib long ago, and the two suites that
+//! asserted their *content* — `tests/mudlib/` and `tests/demo_world/` — are
+//! gone. What survived is the only job they still do: booting.
 //!
-//! ```bash
-//! mkdir ../away
-//! mv game.example tests/demo_world mudlib.default tests/mudlib ../away/
-//! cargo test --test driver
-//! ```
+//! It follows that a failure here is **never** a complaint about the fixture's
+//! content. If a test in this directory can be made to pass by editing Lua
+//! under `tests/fixture/`, it was asking the wrong question and belongs
+//! rewritten or deleted rather than accommodated.
 //!
-//! Note the *shipped* trees by name. `game/` and `mudlib/` are the creator's
-//! own working copies — gitignored, absent on a clean clone — and nothing in
-//! the suite loads them; moving those aside would prove nothing.
+//! Never `game/` or `mudlib/`: those are the creator's own working copies —
+//! gitignored, absent on a clean clone — and nothing in this suite loads them.
 
 #[path = "../common/mod.rs"]
 mod common;
@@ -55,5 +57,7 @@ mod permissions;
 mod sandbox;
 mod sandbox_reality_check;
 mod staff;
+mod telnet_tls;
 mod timer_identity;
+mod websocket_relay;
 mod yield_pause;

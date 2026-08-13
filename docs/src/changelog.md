@@ -777,6 +777,10 @@ Everything added in the previous phase was wired and inert. `game/` now feeds it
 ### Known Limitations / Upcoming
 - MCCP2 zlib compression negotiated but not yet applied to the write stream
 - PostgreSQL backend declared in config but not fully wired (requires libpq)
-- WebSocket and TLS listeners not yet implemented
+- No `permessage-deflate` on the WebSocket listener: no Rust crate implements
+  RFC 7692. See docs/src/protocols/websocket.md for the evidence and what
+  supporting it would cost
+- TLS has no ACME, no client certificates and no SNI. Certificates *are*
+  re-read when they change on disk, so renewal needs no restart
 - `set_persistent()`/`get_persistent()` live in VM memory only — not persisted across server restarts
 - Object state (`set_object_state`) lives in VM memory only — not persisted across server restarts

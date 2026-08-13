@@ -55,6 +55,8 @@
 - [Testing](./testing.md)
 - [Protocol Details](./protocols/README.md)
   - [Telnet (RFC 854)](./protocols/telnet.md)
+  - [WebSocket](./protocols/websocket.md)
+  - [TLS (telnets / wss)](./protocols/tls.md)
   - [GMCP](./protocols/gmcp.md)
   - [MCCP2 Compression](./protocols/mccp.md)
   - [ECHO (Password Masking)](./protocols/echo.md)

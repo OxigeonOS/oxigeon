@@ -77,6 +77,31 @@ tokio-util = { version = "0.7", features = ["codec"] }
 # Sink/Stream extension traits for the DAP Framed transport
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 
+# WebSocket listener. Server side only: `handshake` is what `accept_async` needs,
+# and dropping the default `connect` feature keeps the client half out of the
+# build. TLS is *not* taken from this crate — see the rustls block below.
+#
+# Telnet, GMCP and the DAP framing are all hand-written in this codebase, and
+# this is deliberately not. Those are byte-stream state machines with no
+# security-relevant framing; RFC 6455 is client-to-server masking, continuation
+# frames, control frames interleaved mid-message, UTF-8 validation and a close
+# handshake — several hundred lines of fuzz surface on a public port, against
+# about sixty lines of glue. This is the `flate2` decision, not the telnet one.
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
+
+# TLS, for `wss://` and `telnets://`.
+#
+# Used directly rather than through tokio-tungstenite's TLS features: the
+# handshake finishes before the stream ever reaches tungstenite, so **one
+# acceptor serves both transports** and the WebSocket crate keeps its client
+# half — and the whole `connect` feature — out of a server build.
+#
+# `ring` rather than `aws-lc-rs`, which is rustls' own default: aws-lc-rs wants
+# cmake and nasm present at build time, and this is built on Windows.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+rustls-pemfile = "2"
+
 # Lua scripting, vendored build. Which runtime is a build-time choice — see
 # [features] below. mlua permits exactly one Lua version per crate instance.
 mlua = { version = "0.11", features = ["vendored"], default-features = false }
@@ -130,6 +155,16 @@ tokio = { version = "1", features = ["full", "test-util"] }
 # tests need gets enabled without leaking into a release build.
 oxigeon = { path = ".", features = ["testkit"] }
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+# `tests/driver/websocket_relay.rs` drives a real client against the real
+# listener, which is the only thing here that needs `connect`. Dev-dependency
+# features are not unified into `cargo build`, so a release binary still has no
+# client code and no TLS — `cargo tree -e features -p tokio-tungstenite` is the
+# check if that is ever in doubt.
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["handshake", "connect"] }
+# Self-signed certificates for the TLS tests, generated per run. A checked-in
+# fixture certificate would expire, and a suite that starts failing on a date
+# nobody chose is worse than one that generates what it needs.
+rcgen = "0.13"
 
 # Measures LuaJIT on vs off through the real mudlib. See docs/src/lua-api/performance.md.
 [[bench]]

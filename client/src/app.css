@@ -1,0 +1,55 @@
+:root {
+  --ox-bg: #12141a;
+  --ox-fg: #d4d7de;
+  --ox-dim: #7c8494;
+  --ox-panel: #191c24;
+  --ox-line: #262b36;
+  --ox-accent: #6ea8fe;
+  --ox-bad: #ff7b72;
+  --ox-good: #67d99b;
+  --ox-mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--ox-bg);
+  color: var(--ox-fg);
+  font-family: var(--ox-mono);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+@keyframes ox-blink {
+  50% { opacity: 0; }
+}
+
+button {
+  font: inherit;
+  color: var(--ox-fg);
+  background: var(--ox-panel);
+  border: 1px solid var(--ox-line);
+  border-radius: 5px;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: var(--ox-accent); }
+button:disabled { opacity: 0.45; cursor: default; }
+
+input {
+  font: inherit;
+  color: var(--ox-fg);
+  background: var(--ox-bg);
+  border: 1px solid var(--ox-line);
+  border-radius: 5px;
+  padding: 6px 10px;
+}
+input:focus {
+  outline: none;
+  border-color: var(--ox-accent);
+}

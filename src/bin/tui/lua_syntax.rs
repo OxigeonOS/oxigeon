@@ -368,14 +368,14 @@ mod tests {
     /// losing a character. Cheap, and it is the only way to be sure about a
     /// hand-rolled scanner.
     ///
-    /// `mudlib.default/` rather than `mudlib/`: the live tree is gitignored and
+    /// `tests/fixture/mudlib/` rather than `mudlib/`: the live tree is gitignored and
     /// absent on a clean clone, where `walk` would return nothing and the whole
     /// test would reduce to the `checked > 1000` guard below — which is exactly
     /// what that guard is for.
     #[test]
     fn every_line_of_the_mudlib_round_trips() {
         let mut checked = 0;
-        for entry in walk("mudlib.default") {
+        for entry in walk("tests/fixture/mudlib") {
             let Ok(text) = std::fs::read_to_string(&entry) else { continue };
             let lines: Vec<String> = text.lines().map(str::to_string).collect();
             let state = block_state(&lines);

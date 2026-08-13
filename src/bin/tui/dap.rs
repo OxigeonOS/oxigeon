@@ -260,7 +260,7 @@ impl DebugView {
     /// expand/collapse assertion failing for a reason that has nothing to do
     /// with the tree.
     ///
-    /// Pointing them at `mudlib.default/` instead would only trade one
+    /// Pointing them at `tests/fixture/mudlib/` instead would only trade one
     /// filesystem dependency for another. What these tests are about is
     /// building rows from paths, so they should be given paths.
     pub fn with_files(files: Vec<PathBuf>) -> Self {

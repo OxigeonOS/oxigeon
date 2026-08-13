@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 use serde_json::Value as JsonValue;
 
-use crate::core::network::telnet::ClientCapabilities;
+use super::capabilities::ClientCapabilities;
 
 /// Unique session identifier (UUID-based, globally unique)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -84,6 +84,15 @@ impl SessionState {
 #[derive(Debug)]
 pub enum SessionOutput {
     Text(String),
+    /// **A prompt.** The name describes the telnet implementation — raw bytes,
+    /// no CRLF appended — rather than the meaning, and there are now two
+    /// transports that have to know which one is true.
+    ///
+    /// It really is only ever a prompt: this variant is constructed in exactly
+    /// one place in the crate, inside the `send_prompt` efun, and both the
+    /// testkit and the WebSocket envelope already read it that way. Renaming it
+    /// to `Prompt(String)` would touch four sites and be strictly clearer;
+    /// until then, this comment is the contract.
     Raw(Vec<u8>),
     Gmcp { package: String, data: JsonValue },
     StartEcho,

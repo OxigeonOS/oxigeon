@@ -3,55 +3,115 @@ pub mod parser;
 pub mod option;
 pub mod codec;
 pub mod connection;
+pub mod relay;
 
 pub use constants::*;
 pub use parser::{TelnetParser, TelnetEvent};
 pub use option::{OptionNegotiator, NegotiationCommand, QState};
 pub use codec::TelnetCodec;
-pub use connection::{TelnetConnection, ConnectionId, ClientCapabilities};
+pub use connection::{TelnetConnection, ConnectionId};
+/// Compatibility re-export. The struct moved to `core::session`, where it
+/// belongs — it is a `Session` field and two transports fill it in — but
+/// `telnet::ClientCapabilities` had callers and there is no reason to break
+/// them.
+pub use crate::core::session::ClientCapabilities;
 
 use std::net::SocketAddr;
+use std::sync::{Arc, RwLock};
+
 use tokio::net::TcpListener;
+use tokio::sync::mpsc;
+
 use crate::config::driver_config::TelnetServerConfig;
+use crate::core::network::tls;
+use crate::core::{LuaCommand, SessionHandler};
 use crate::error::{OxigeonError, Result};
 
-/// TCP listener that accepts Telnet connections.
-pub struct TelnetListener {
-    config: TelnetServerConfig,
-    listener: Option<TcpListener>,
+/// What a telnet connection task needs from the driver.
+///
+/// The same shape as `websocket::WsDeps`, and for the same reason: everything
+/// in it is independently clonable, so a listener needs no reference to the
+/// `Driver` that started it.
+#[derive(Clone)]
+pub struct TelnetDeps {
+    pub session_handler: Arc<RwLock<SessionHandler>>,
+    pub cmd_tx: mpsc::UnboundedSender<LuaCommand>,
+    /// `None` in the test harness, which has no address tally to forget.
+    pub auth_worker: Option<crate::core::auth::AuthWorker>,
+    pub input_buffer_bytes: usize,
 }
 
-impl TelnetListener {
-    pub fn new(config: TelnetServerConfig) -> Self {
-        TelnetListener {
-            config,
-            listener: None,
+/// Bind a telnet listener and serve clients until the process ends.
+///
+/// `telnet://` or `telnets://` depending on whether the config names a
+/// certificate. Nothing below this line knows which: a finished TLS handshake
+/// leaves an ordinary `AsyncRead + AsyncWrite`, and the IAC parser has never
+/// cared what carried the bytes.
+///
+/// Returns the address actually bound, so callers — and tests, which bind port
+/// 0 — know where it landed. Same shape as `websocket::serve` and
+/// `debugger::dap::serve`; `Driver::run` starts listeners and does not own
+/// their accept loops.
+pub async fn serve(
+    cfg: &TelnetServerConfig,
+    section: &str,
+    deps: TelnetDeps,
+) -> Result<SocketAddr> {
+    // Before binding: a certificate that does not load is a startup error, not
+    // a port that quietly serves plaintext under a secure-sounding name.
+    let acceptor = match crate::config::driver_config::tls_files(
+        &cfg.cert_path,
+        &cfg.key_path,
+        section,
+    )
+    .map_err(OxigeonError::Config)?
+    {
+        Some((cert, key)) => Some(Arc::new(tls::acceptor_from_files(&cert, &key, cfg.cert_reload_seconds)?)),
+        None => None,
+    };
+
+    let listener = TcpListener::bind((cfg.bind.as_str(), cfg.port)).await?;
+    let addr = listener.local_addr()?;
+
+    tokio::spawn(async move {
+        loop {
+            match listener.accept().await {
+                Ok((stream, peer)) => {
+                    let deps = deps.clone();
+                    let acceptor = acceptor.clone();
+                    tokio::spawn(async move {
+                        // On the connection's own task, so a peer that opens a
+                        // socket to the TLS port and then stalls does not hold
+                        // up everyone else's accept.
+                        let stream = match tls::wrap(
+                            stream,
+                            acceptor.as_deref(),
+                            tls::HANDSHAKE_TIMEOUT,
+                        )
+                        .await
+                        {
+                            Ok(s) => s,
+                            Err(e) => {
+                                tracing::debug!("TLS handshake from {} failed: {}", peer, e);
+                                return;
+                            }
+                        };
+                        // `tokio::io::split` rather than `TcpStream::into_split`:
+                        // it works on the TLS stream too, and one code path is
+                        // worth a `BiLock` on a connection that is already
+                        // dominated by syscalls.
+                        let (reader, writer) = tokio::io::split(stream);
+                        let conn = TelnetConnection::new(writer, peer);
+                        relay::run(conn, reader, peer, deps).await;
+                    });
+                }
+                Err(e) => {
+                    tracing::error!("Telnet accept failed: {}", e);
+                    return;
+                }
+            }
         }
-    }
+    });
 
-    pub async fn start(&mut self) -> Result<()> {
-        let addr = format!("{}:{}", self.config.bind, self.config.port);
-        self.listener = Some(TcpListener::bind(&addr).await?);
-        tracing::info!("Telnet server listening on {}", addr);
-        Ok(())
-    }
-
-    pub async fn accept(&mut self) -> Result<(TelnetConnection, tokio::net::tcp::OwnedReadHalf, SocketAddr)> {
-        let listener = self.listener.as_ref()
-            .ok_or_else(|| OxigeonError::Internal("Listener not started".into()))?;
-        let (stream, addr) = listener.accept().await?;
-        let (reader, writer) = stream.into_split();
-        let conn = TelnetConnection::new(writer, addr);
-        Ok((conn, reader, addr))
-    }
-
-    pub fn name(&self) -> &str { "Telnet" }
-
-    pub fn addr(&self) -> String {
-        format!("{}:{}", self.config.bind, self.config.port)
-    }
-
-    pub fn is_started(&self) -> bool {
-        self.listener.is_some()
-    }
+    Ok(addr)
 }

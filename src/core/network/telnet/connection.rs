@@ -1,13 +1,15 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
-use tokio::net::tcp::OwnedWriteHalf;
+use tokio::io::WriteHalf;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use super::codec::TelnetCodec;
 use super::constants::*;
 use super::option::OptionNegotiator;
+use crate::core::network::MaybeTls;
+use crate::core::session::ClientCapabilities;
 use crate::error::Result;
 
 /// Unique connection identifier
@@ -32,29 +34,23 @@ impl Default for ConnectionId {
     }
 }
 
-/// Client capabilities discovered via negotiation
-#[derive(Debug, Clone, Default)]
-pub struct ClientCapabilities {
-    pub terminal_type: Option<String>,
-    pub window_width: Option<u16>,
-    pub window_height: Option<u16>,
-    pub mccp2_supported: bool,
-    pub mccp2_active: bool,
-    pub gmcp_supported: bool,
-    pub gmcp_packages: Vec<String>,
-}
-
-/// A Telnet connection wrapping a TCP stream.
+/// A Telnet connection wrapping a stream that may or may not be encrypted.
+///
+/// `WriteHalf<MaybeTls>` rather than `OwnedWriteHalf`: `telnets://` is the same
+/// protocol inside TLS, and a `TlsStream` cannot be `into_split()` the way a
+/// `TcpStream` can. `tokio::io::split` works on anything that reads and writes,
+/// at the cost of a `BiLock` the owned halves do not need — which is a real but
+/// very small price for having one code path instead of two.
 pub struct TelnetConnection {
     pub id: ConnectionId,
     pub address: SocketAddr,
-    writer: Arc<Mutex<OwnedWriteHalf>>,
+    writer: Arc<Mutex<WriteHalf<MaybeTls>>>,
     pub negotiator: OptionNegotiator,
     pub capabilities: ClientCapabilities,
 }
 
 impl TelnetConnection {
-    pub fn new(writer: OwnedWriteHalf, address: SocketAddr) -> Self {
+    pub fn new(writer: WriteHalf<MaybeTls>, address: SocketAddr) -> Self {
         TelnetConnection {
             id: ConnectionId::new(),
             address,
