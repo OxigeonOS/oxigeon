@@ -1,0 +1,5 @@
+# Not committed, unlike `client/` — which has 645 packages of `node_modules/`
+# and a built `dist/` in git, and none of the source that produced them.
+node_modules/
+dist/
+.vite/

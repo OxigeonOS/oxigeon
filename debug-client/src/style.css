@@ -1,0 +1,197 @@
+/* The cockpit reads as a terminal because that is what it is showing. One dark
+   palette, no theme switch: the game's own ANSI colours are chosen against a
+   dark ground and would be unreadable on a light one. */
+
+:root {
+  --bg: #0e1116;
+  --bg-raised: #151a21;
+  --bg-sunken: #0a0d11;
+  --border: #232b36;
+  --border-focus: #2f81f7;
+  --fg: #c9d1d9;
+  --fg-dim: #6e7681;
+  --fg-faint: #484f58;
+  --accent: #39c5cf;
+  --red: #f85149;
+  --yellow: #d29922;
+  --green: #3fb950;
+  --cyan: #39c5cf;
+  --magenta: #bc8cff;
+  --mono: ui-monospace, 'Cascadia Code', 'JetBrains Mono', Consolas, 'Courier New', monospace;
+  --row: 1.35em;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.35 var(--mono);
+  overflow: hidden;
+}
+
+#app {
+  height: 100vh;
+}
+
+@keyframes ansi-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* ─── panes ──────────────────────────────────────────────────────────────── */
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-raised);
+}
+
+.pane.focused {
+  border-color: var(--border-focus);
+}
+
+.pane > header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-dim);
+  font-size: 11px;
+  text-transform: lowercase;
+  letter-spacing: 0.04em;
+  flex: 0 0 auto;
+}
+
+.pane.focused > header {
+  color: var(--accent);
+}
+
+.pane > .body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 2px 0;
+}
+
+.pane > footer {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-top: 1px solid var(--border);
+  color: var(--fg-faint);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ─── rows ───────────────────────────────────────────────────────────────── */
+
+.row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 0 8px;
+  white-space: pre;
+  cursor: default;
+  line-height: var(--row);
+}
+
+.row:hover {
+  background: #ffffff08;
+}
+
+.row.selected {
+  background: #2f81f733;
+}
+
+.pane.focused .row.selected {
+  background: #2f81f755;
+  outline: 1px solid #2f81f788;
+  outline-offset: -1px;
+}
+
+.spacer {
+  flex: 1 1 auto;
+}
+
+.dim {
+  color: var(--fg-dim);
+}
+.faint {
+  color: var(--fg-faint);
+}
+.warn {
+  color: var(--yellow);
+}
+.bad {
+  color: var(--red);
+}
+.good {
+  color: var(--green);
+}
+
+button {
+  font: inherit;
+  color: var(--fg-dim);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 7px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--fg-dim);
+}
+
+button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+input {
+  font: inherit;
+  color: var(--fg);
+  background: transparent;
+  border: 0;
+  outline: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+kbd {
+  font: inherit;
+  color: var(--fg-dim);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 3px;
+  padding: 0 4px;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #2b3441;
+  border-radius: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
