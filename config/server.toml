@@ -11,20 +11,8 @@ game_path = "./game"
 # Since game/ is first in package.path, game commands shadow mudlib commands.
 command_paths = ["cmds"]
 # Room ID where characters spawn on login.
-#
-# Names a room in `./game`, which is the game being developed — not the demo in
-# `game.example/`, whose entrance is `wizard_workshop.entrance`. Nothing in the
-# test suite reads this key: the demo's start room is `EXAMPLE_START_ROOM` in
-# `tests/common/mod.rs`, because a start room is a property of a world rather
-# than of whichever config happens to be on disk.
 start_room = "start.square"
 # Room ID where characters reappear after dying. Falls back to start_room.
-#
-# The driver has no opinion about this — it is a game decision, and it lives
-# here rather than as a constant in death_d.lua so a second game can use the
-# same mudlib without editing it. Any other `[game]` key you add is readable
-# from Lua as config("game.<key>") with no Rust change; that is what the
-# generic reader is for.
 respawn_room = "start.square"
 
 # How often areas reset in seconds (re-evaluates area Lua, clears object state).
@@ -46,9 +34,6 @@ cache_flush_seconds = 5
 # Scopes one tick may write before deferring the rest. Bounds the hitch when
 # many go dirty at once (32 x ~101us ~= 3.2ms). Default: 32.
 cache_flush_budget = 32
-# How long an unowned, clean scope may sit untouched before leaving memory.
-# 0 disables idle eviction. Default: 900.
-cache_evict_seconds = 900
 # Cooldowns at least this long are stored durably; shorter ones live in memory
 # and are forgotten on restart. Under a minute is a game mechanic, over a
 # minute is a promise to the player. Default: 60.
@@ -59,9 +44,6 @@ cooldown_durable_seconds = 60
 # read the room and turn round is the difference between a threat and an
 # ambush. Default: 3.
 aggro_delay_seconds = 3
-# Levels above a creature at which it stops caring. A rat that suicides into a
-# passing archmage is comedy the first time and tedium the second. Default: 8.
-aggro_ignore_level_gap = 8
 
 # ─── Effects and combat ──────────────────────────────────────────────────────
 # How often expired effects are swept, so on_expire fires and its message is
@@ -69,32 +51,28 @@ aggro_ignore_level_gap = 8
 effect_sweep_seconds = 5
 # Drives effects that tick — regeneration, damage over time. Default: 3.
 effect_heartbeat_seconds = 3
-# The fallback length of one combat round, in seconds.
+# Two meanings, and for THIS game only the first is live:
 #
-# It used to be the scheduler interval; it is now the *round length* a game
-# falls back to when it defines no `round_length` derived trait. Define one in
-# the game layer and agility, encumbrance and the wielded weapon all reach
-# roundtime through the trait graph. 0 still means combat is off. Default: 3.
+#   * 0 turns the combat ticker off entirely. That is what the test harness
+#     sets, and it is the only reason this key is still here.
+#   * Otherwise it is the round length a game falls back to when it defines no
+#     `round_length` derived trait. Nwyfre defines one, so nothing reaches it —
+#     agility, strength and encumbrance decide a round through the trait graph
+#     and `game/lib/pace.lua` states the baseline in the game layer.
+#
+# **Do not treat this as the pace of the game.** `lib/pace.lua` read it as the
+# base of the trait for a while and the result was that the 3 below rescaled
+# every coefficient in `traits/core.lua` and every worked example beside them,
+# while the harness — which sets 0 — ran the suite at 7.5. Both were green and
+# they were measuring different games. The pace is a source edit now.
 combat_round_seconds = 3
 
-# The hit contest: clamp(base + (accuracy - defence) * step, floor, ceiling).
-#
-# These four reproduce the one-line formula combat used before there was a
-# pipeline to configure, so a game that changes nothing gets what it had. The
-# prettier ratio form was rejected for exactly that reason — it would silently
-# rebalance a shipped game to buy what these give.
-combat_base_hit_chance = 60
-combat_hit_step = 3
-combat_hit_floor = 5
-combat_hit_ceiling = 95
 # The most one piece of armour may absorb proportionally, 0..1. Flat reduction
 # is uncapped; a fraction is not, or heavy enough plate becomes immunity.
 combat_absorb_cap = 0.75
-# How far past their own height somebody reaches before the weapon is counted,
-# as a multiple. Only consulted when both fighters have a `height` trait.
-combat_reach_ratio = 1.15
 # A body layout for anything that names none. Unset by default, and unset means
-# no hit locations at all — which is the backwards-compatible path.
+# no hit locations at all — which is the backwards-compatible path. Nwyfre's
+# creatures name their own, so this stays unset.
 # combat_default_body = "humanoid"
 
 # How often the action queue is looked at, in seconds. 0 disables it.
@@ -240,7 +218,7 @@ queue_depth = 16
 # still running at that point has its worker process KILLED and replaced — with
 # the compiler on there is nothing inside the VM that could stop it.
 default_deadline_ms = 5000
-max_deadline_ms = 60000
+max_deadline_ms = 100000
 
 # Instructions one job may execute. As on the game thread, enforcing this
 # disables the LuaJIT compiler for the worker VM.

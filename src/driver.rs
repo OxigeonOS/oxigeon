@@ -1,22 +1,18 @@
-use std::net::SocketAddr;
+// Nothing about a wire protocol is imported here any more. The telnet parser,
+// the codec and the option constants left with `handle_connection`, which is in
+// `network::telnet::relay` where it always belonged — see that module's header.
+// A driver that knows what an IAC byte is has a listener living in the wrong
+// file.
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
-use tokio::io::AsyncReadExt;
-use tokio::sync::mpsc;
 use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
 use crate::core::lock::RwLockExt;
 
 use crate::config::{DriverConfig, ServerConfig};
 use crate::config::driver_config::DatabaseBackend;
 use crate::config::PermissionConfig;
-use crate::core::{
-    TelnetListener,
-    Session, SessionId, SessionOutput, SessionHandler,
-    ScriptEngine, LuaCommand, EfunContext,
-};
+use crate::core::{SessionHandler, ScriptEngine, EfunContext};
 use crate::core::logging::{GameLogger, utc_now};
-use crate::core::network::telnet::{TelnetParser, TelnetEvent, TelnetCodec};
-use crate::core::network::telnet::constants::*;
 use crate::domain::db::connection::AnyPool;
 use crate::domain::models::{DieselAccountStore, DieselCharacterStore};
 use crate::domain::models::role::DieselRoleStore;
@@ -172,18 +168,14 @@ impl Driver {
         })
     }
 
-    /// Main server loop — accept connections and dispatch events
+    /// Start every configured listener, then wait for Ctrl+C.
+    ///
+    /// Each listener owns its own accept loop — the shape `dap::serve`
+    /// established and every transport now follows — so this function starts
+    /// things and then has exactly one job left, which is to notice a shutdown
+    /// and flush the mudlib.
     pub async fn run(&self) -> Result<()> {
-        let telnet_config = self.driver_config.servers.telnet.clone()
-            .ok_or_else(|| OxigeonError::Config("No telnet server configured".into()))?;
-
-        if !telnet_config.enabled {
-            tracing::warn!("Telnet server is disabled in config");
-            return Ok(());
-        }
-
-        // Debug adapter, if configured. Started before the accept loop so an
-        // editor can attach while the game is still idle.
+        // Debug adapter first, so an editor can attach while the game is idle.
         if let Some(dbg) = self.driver_config.servers.debug.as_ref().filter(|d| d.enabled) {
             match crate::core::scripting::debugger::dap::serve(
                 &dbg.bind,
@@ -196,8 +188,7 @@ impl Driver {
                     tracing::info!("Lua debug adapter listening on {}", addr);
                     if !addr.ip().is_loopback() {
                         tracing::warn!(
-                            "debug adapter bound to {} — it grants unauthenticated control \
-                             of the game VM and must not be reachable off-host",
+                            "debug adapter bound to {} — it grants unauthenticated control                              of the game VM and must not be reachable off-host",
                             addr.ip()
                         );
                     }
@@ -206,41 +197,94 @@ impl Driver {
             }
         }
 
-        let mut listener = TelnetListener::new(telnet_config);
-        listener.start().await?;
+        let mut listeners = 0usize;
 
-        tracing::info!("Oxigeon v{} started — accepting connections on {}",
-            env!("CARGO_PKG_VERSION"), listener.addr());
+        // ── Telnet, plaintext and TLS ─────────────────────────
+        for (section, cfg) in [
+            ("telnet", self.driver_config.servers.telnet.as_ref()),
+            ("telnet_tls", self.driver_config.servers.telnet_tls.as_ref()),
+        ] {
+            let Some(cfg) = cfg.filter(|c| c.enabled) else { continue };
+            let deps = crate::core::network::telnet::TelnetDeps {
+                session_handler: self.session_handler.clone(),
+                cmd_tx: self.script_engine.cmd_tx.clone(),
+                auth_worker: Some(self.auth_worker.clone()),
+                input_buffer_bytes: self.server_config.limits.input_buffer_bytes,
+            };
+            match crate::core::network::telnet::serve(cfg, section, deps).await {
+                Ok(addr) => {
+                    listeners += 1;
+                    let scheme = if cfg.cert_path.is_some() { "telnets" } else { "telnet" };
+                    tracing::info!("Telnet server listening on {}://{}", scheme, addr);
+                }
+                // Fatal rather than logged: a `[servers.*]` block that was
+                // asked for and did not come up is a port the operator
+                // believes is open. Starting anyway is how you discover at
+                // 3am that nobody could connect.
+                Err(e) => {
+                    return Err(OxigeonError::Config(format!(
+                        "[servers.{section}] failed to start: {e}"
+                    )))
+                }
+            }
+        }
+
+        // ── WebSocket, plaintext and TLS ──────────────────────
+        for (section, cfg) in [
+            ("websocket", self.driver_config.servers.websocket.as_ref()),
+            ("websocket_tls", self.driver_config.servers.websocket_tls.as_ref()),
+        ] {
+            let Some(cfg) = cfg.filter(|c| c.enabled) else { continue };
+            let deps = crate::core::network::websocket::WsDeps {
+                session_handler: self.session_handler.clone(),
+                cmd_tx: self.script_engine.cmd_tx.clone(),
+                auth_worker: Some(self.auth_worker.clone()),
+                input_buffer_bytes: self.server_config.limits.input_buffer_bytes,
+            };
+            match crate::core::network::websocket::serve(cfg, deps).await {
+                Ok(addr) => {
+                    listeners += 1;
+                    let scheme = if cfg.cert_path.is_some() { "wss" } else { "ws" };
+                    tracing::info!("WebSocket server listening on {}://{}", scheme, addr);
+                }
+                Err(e) => {
+                    return Err(OxigeonError::Config(format!(
+                        "[servers.{section}] failed to start: {e}"
+                    )))
+                }
+            }
+        }
+
+        // A server with no listener accepts nothing. Disabling telnet used to
+        // `return Ok(())` here, which `main` reports as a clean exit — so the
+        // operator saw a successful startup banner and a dead port, and
+        // `shutdown_lua` never ran either, so the mudlib was never asked to
+        // flush on the way out.
+        if listeners == 0 {
+            return Err(OxigeonError::Config(
+                "no listener is enabled — enable one of [servers.telnet],                  [servers.telnet_tls], [servers.websocket] or [servers.websocket_tls]"
+                    .into(),
+            ));
+        }
+
+        tracing::info!(
+            "Oxigeon v{} started — {} listener{} up",
+            env!("CARGO_PKG_VERSION"),
+            listeners,
+            if listeners == 1 { "" } else { "s" }
+        );
 
         // Compute deadlines are watched by a thread the bridge owns, not from
         // here — see `ComputeBridge::spawn_watchdog`.
-        loop {
-            tokio::select! {
-                result = listener.accept() => {
-                    match result {
-                        Ok((conn, reader, addr)) => {
-                            let sh = self.session_handler.clone();
-                            let cmd_tx = self.script_engine.cmd_tx.clone();
-                            let max_buf = self.server_config.limits.input_buffer_bytes;
-                            let auth = self.auth_worker.clone();
-                            tokio::spawn(async move {
-                                handle_connection(conn, reader, addr, sh, cmd_tx, max_buf, auth).await;
-                            });
-                        }
-                        Err(e) => {
-                            tracing::error!("Accept error: {}", e);
-                        }
-                    }
-                }
-                _ = tokio::signal::ctrl_c() => {
-                    tracing::info!("Shutdown signal received");
-                    {
-                        let handler = self.session_handler.read_recover();
-                        handler.broadcast("\r\nServer shutting down. Goodbye!\r\n");
-                    }
-                    break;
-                }
-            }
+        tokio::signal::ctrl_c().await.ok();
+        tracing::info!("Shutdown signal received");
+        {
+            let handler = self.session_handler.read_recover();
+            handler.broadcast("
+
+Server shutting down. Goodbye!
+
+");
         }
 
         self.shutdown_lua();
@@ -268,278 +312,5 @@ impl Driver {
                 timeout
             );
         }
-    }
-}
-
-/// Handle a single client connection for its entire lifetime.
-/// Implements the full bidirectional relay loop:
-///   TCP read → Telnet parse → Lua on_input
-///   Lua send → SessionOutput → TCP write
-async fn handle_connection(
-    mut conn: crate::core::network::telnet::TelnetConnection,
-    mut reader: tokio::net::tcp::OwnedReadHalf,
-    addr: SocketAddr,
-    session_handler: Arc<RwLock<SessionHandler>>,
-    cmd_tx: tokio::sync::mpsc::UnboundedSender<LuaCommand>,
-    max_buf: usize,
-    auth_worker: crate::core::auth::AuthWorker,
-) {
-    // Create output channel for this session
-    let (output_tx, mut output_rx) = mpsc::channel::<SessionOutput>(64);
-
-    // Create session
-    let session = Session::new("telnet".to_string(), addr, output_tx);
-    let session_id = session.id;
-    let session_id_str = session_id.to_string();
-
-    // Register with handler — drop the guard before awaiting
-    let connect_result = {
-        let mut handler = session_handler.write_recover();
-        handler.connect(session)
-    };
-
-    if let Err(e) = connect_result {
-        tracing::warn!("Cannot register session from {}: {}", addr, e);
-        let _ = conn.send_text("\r\nServer is full. Try again later.\r\n").await;
-        return;
-    }
-
-    tracing::info!("Connection accepted: {} ({})", session_id_str, addr);
-
-    // Send initial telnet negotiations
-    if let Err(e) = conn.send_initial_negotiations().await {
-        tracing::warn!("Negotiation error for {}: {}", session_id_str, e);
-    }
-
-    // Notify Lua on_connect
-    let _ = cmd_tx.send(LuaCommand::OnConnect {
-        session_id: session_id_str.clone(),
-    });
-
-    // ── Full bidirectional relay loop ──────────────────────────
-    // Reads from TCP, parses Telnet, dispatches on_input.
-    // Reads from output_rx, encodes, writes to TCP.
-    let mut parser = TelnetParser::new();
-    let mut buf = vec![0u8; max_buf.max(4096)];
-    let mut line_buf = String::new();
-
-    loop {
-        tokio::select! {
-            // ── Read from TCP ──────────────────────
-            result = reader.read(&mut buf) => {
-                match result {
-                    Ok(0) => {
-                        // Client closed connection
-                        break;
-                    }
-                    Ok(n) => {
-                        // Feed bytes to Telnet parser
-                        for &byte in &buf[..n] {
-                            if let Some(event) = parser.feed(byte) {
-                                match event {
-                                    TelnetEvent::Data(bytes) => {
-                                        let text = TelnetCodec::decode_line(&bytes);
-                                        line_buf.push_str(&text);
-                                    }
-                                    TelnetEvent::Negotiate { verb, option } => {
-                                        handle_negotiation(&mut conn, &session_id_str, verb, option, &cmd_tx).await;
-                                        publish_capabilities(&session_handler, session_id, &conn.capabilities);
-                                    }
-                                    TelnetEvent::Subnegotiation { option, data } => {
-                                        handle_subnegotiation(&mut conn, &session_id_str, option, &data, &cmd_tx).await;
-                                        publish_capabilities(&session_handler, session_id, &conn.capabilities);
-                                    }
-                                    TelnetEvent::Command(_) => {}
-                                }
-                            }
-                        }
-                        // Flush remaining data
-                        if let Some(event) = parser.flush() {
-                            if let TelnetEvent::Data(bytes) = event {
-                                let text = TelnetCodec::decode_line(&bytes);
-                                line_buf.push_str(&text);
-                            }
-                        }
-
-                        // Check for complete lines (terminated by \n)
-                        while let Some(nl_pos) = line_buf.find('\n') {
-                            let line: String = line_buf.drain(..=nl_pos).collect();
-                            let line = line.trim_end_matches(|c| c == '\r' || c == '\n').to_string();
-
-                            let _ = cmd_tx.send(LuaCommand::OnInput {
-                                session_id: session_id_str.clone(),
-                                text: line,
-                            });
-                        }
-                    }
-                    Err(e) => {
-                        tracing::debug!("Read error for {}: {}", session_id_str, e);
-                        break;
-                    }
-                }
-            }
-
-            // ── Process output from Lua ──────────────
-            msg = output_rx.recv() => {
-                match msg {
-                    Some(SessionOutput::Text(text)) => {
-                        let _ = conn.send_text(&text).await;
-                    }
-                    Some(SessionOutput::Raw(bytes)) => {
-                        let _ = conn.send_raw(&bytes).await;
-                    }
-                    Some(SessionOutput::Gmcp { package, data }) => {
-                        let json = data.to_string();
-                        let _ = conn.send_gmcp(&package, Some(&json)).await;
-                    }
-                    Some(SessionOutput::StartEcho) => {
-                        let _ = conn.start_echo().await;
-                    }
-                    Some(SessionOutput::StopEcho) => {
-                        let _ = conn.stop_echo().await;
-                    }
-                    Some(SessionOutput::Disconnect) | None => {
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    // ── Cleanup ───────────────────────────────────────────
-    {
-        let mut handler = session_handler.write_recover();
-        handler.disconnect(&session_id);
-    }
-
-    let _ = cmd_tx.send(LuaCommand::OnDisconnect {
-        session_id: session_id_str.clone(),
-    });
-
-    // Drop this address's failed-login tally, unless it is actually locked
-    // out — otherwise reconnecting would be a free reset.
-    auth_worker.forget(Some(addr.ip()));
-
-    let _ = conn.close().await;
-    tracing::info!("Connection closed: {} ({})", session_id_str, addr);
-}
-
-/// Copy what negotiation discovered onto the **Session**.
-///
-/// Negotiation writes to `TelnetConnection.capabilities`; the mudlib reads
-/// `Session.capabilities`, through `get_session`. They are two structs on two
-/// objects and nothing joined them, so `Session.capabilities` sat at
-/// `Default::default()` for the life of every session that has ever connected.
-///
-/// The consequences were all silent. `gmcp_d` guards every one of its four
-/// senders on `sess.gmcp_supported`, so **no GMCP was ever pushed to any
-/// client** — the TUI's Room.Info, Char.Vitals and Effects panes could not
-/// populate, and the `Core.Hello` a client does receive comes straight from
-/// `handle_negotiation` and never touches Lua, which is what made the link look
-/// healthy. `window_width` was nil too, so output was wrapped to a default
-/// regardless of the terminal's real size.
-///
-/// Called after every negotiation and subnegotiation rather than once at the
-/// end: NAWS arrives again on every resize, and TTYPE can arrive well after the
-/// first GMCP message.
-fn publish_capabilities(
-    session_handler: &Arc<RwLock<SessionHandler>>,
-    session_id: SessionId,
-    caps: &crate::core::network::telnet::ClientCapabilities,
-) {
-    let mut handler = session_handler.write_recover();
-    if let Some(session) = handler.get_mut(&session_id) {
-        session.capabilities = caps.clone();
-    }
-}
-
-/// Handle a Telnet negotiation event.
-async fn handle_negotiation(
-    conn: &mut crate::core::network::telnet::TelnetConnection,
-    _session_id: &str,
-    verb: u8,
-    option: u8,
-    _cmd_tx: &tokio::sync::mpsc::UnboundedSender<LuaCommand>,
-) {
-    let response = match verb {
-        WILL => {
-            let (cmd, _) = conn.negotiator.receive_will(option);
-            cmd
-        }
-        WONT => {
-            let (cmd, _) = conn.negotiator.receive_wont(option);
-            cmd
-        }
-        DO => {
-            let (cmd, _) = conn.negotiator.receive_do(option);
-            cmd
-        }
-        DONT => {
-            let (cmd, _) = conn.negotiator.receive_dont(option);
-            cmd
-        }
-        _ => None,
-    };
-
-    if let Some(cmd) = response {
-        let _ = conn.send_raw(&cmd.to_bytes()).await;
-    }
-
-    // Note GMCP negotiation
-    if option == OPT_GMCP && (verb == DO || verb == WILL) {
-        conn.capabilities.gmcp_supported = true;
-        // Send server identification via GMCP
-        let _ = conn.send_gmcp("Core.Hello", Some(r#"{"client":"Oxigeon","version":"0.1.0"}"#)).await;
-    }
-
-    // Note MCCP2 negotiation
-    if option == OPT_MCCP2 && verb == DO {
-        conn.capabilities.mccp2_supported = true;
-    }
-}
-
-/// Handle a Telnet subnegotiation event.
-async fn handle_subnegotiation(
-    conn: &mut crate::core::network::telnet::TelnetConnection,
-    session_id: &str,
-    option: u8,
-    data: &[u8],
-    cmd_tx: &tokio::sync::mpsc::UnboundedSender<LuaCommand>,
-) {
-    match option {
-        OPT_TTYPE => {
-            // Terminal type report: SEND = 0x01 comes first, then IS = 0x00 + type string
-            if data.first() == Some(&0x00) {
-                // IS prefix
-                let ttype = String::from_utf8_lossy(&data[1..]).to_string();
-                conn.capabilities.terminal_type = Some(ttype);
-                tracing::debug!("Terminal type for {}: {:?}", session_id, conn.capabilities.terminal_type);
-            }
-        }
-        OPT_NAWS => {
-            // Window size: 4 bytes — width (2 bytes big-endian) + height (2 bytes big-endian)
-            if data.len() >= 4 {
-                let width = u16::from_be_bytes([data[0], data[1]]);
-                let height = u16::from_be_bytes([data[2], data[3]]);
-                conn.capabilities.window_width = Some(width);
-                conn.capabilities.window_height = Some(height);
-                tracing::debug!("NAWS for {}: {}x{}", session_id, width, height);
-            }
-        }
-        OPT_GMCP => {
-            // GMCP message: "Package.Name" [space json]
-            if let Some((package, json_opt)) = TelnetCodec::parse_gmcp(data) {
-                let json_val: serde_json::Value = json_opt
-                    .and_then(|j| serde_json::from_str(&j).ok())
-                    .unwrap_or(serde_json::Value::Null);
-
-                let _ = cmd_tx.send(LuaCommand::OnGmcp {
-                    session_id: session_id.to_string(),
-                    package,
-                    data: json_val,
-                });
-            }
-        }
-        _ => {}
     }
 }

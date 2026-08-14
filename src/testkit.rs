@@ -187,39 +187,42 @@ pub struct RealVm {
 ///
 /// `on_shutdown` is *wrapped* rather than replaced, so the mudlib's real one
 /// still runs and the probe only observes that it did.
-/// Where the fixture world starts. Not a room in `game.example/`.
+/// Where the fixture world starts. Not a room in `tests/fixture/game/`.
 pub const FIXTURE_START_ROOM: &str = "fixture.hall";
 
-/// Where the example world starts.
+/// Where the fixture world starts.
 ///
 /// A constant rather than a read of `config/server.toml`, because that config
 /// points at the game being developed in `game/` and has nothing to say about
-/// `game.example/`. The demo's entrance is a property of the demo, in the same
-/// way [`FIXTURE_START_ROOM`] is a property of the fixture.
+/// the fixture. Its entrance is a property of it, in the same way
+/// [`FIXTURE_START_ROOM`] is a property of the one-file fixture.
 pub const EXAMPLE_START_ROOM: &str = "wizard_workshop.entrance";
 
-/// The mudlib this repository ships and this suite tests.
+/// The mudlib the driver suite boots as a **vehicle**.
 ///
-/// **`mudlib.default/`, never `mudlib/`.** The two live side by side and hold
-/// different things: `mudlib.default/` is tracked here and is what a fresh
-/// checkout gets, while `mudlib/` is the working copy a creator brings in from
-/// their own private repo — untracked, absent on a clean clone, and free to
-/// have diverged arbitrarily. A suite that booted `mudlib/` would be testing
-/// somebody's unpublished fork and would fail on a machine that has none.
+/// It was `tests/fixture/mudlib/` at the repository root — the tree a fresh checkout
+/// was meant to start a game from — and it is not that any more. Nothing
+/// develops it, the one game built on this engine forked it long ago, and the
+/// suite that asserted its *content* (`tests/mudlib/`) went with it. What is
+/// left is the job it still does well: a complete, working Lua layer for a
+/// driver test to boot when the thing under test is Rust. So it lives under
+/// `tests/` now, named for what it is.
 ///
-/// It follows that a fix meant for upstream is made *here*, in
-/// `mudlib.default/`, which is the only copy any test or reviewer sees.
-pub fn default_mudlib_root() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("mudlib.default")
+/// **Never `mudlib/`.** That is the working copy a creator brings in from their
+/// own repository — gitignored, absent on a clean clone, free to have diverged
+/// arbitrarily. A suite that booted it would be testing somebody's unpublished
+/// fork and would fail on a machine that has none.
+pub fn fixture_mudlib_root() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixture/mudlib")
 }
 
-/// The world this repository ships and this suite tests.
+/// The world that boots on top of it, for the same reason and with the same
+/// history: it was `tests/fixture/game/`, and it is a vehicle now.
 ///
-/// **`game.example/`, never `game/`**, for the reason spelled out on
-/// [`default_mudlib_root`]. `game/` is the creator's own game; the demo world
-/// the `tests/demo_world/` bucket asserts against is this one.
-pub fn example_game_root() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("game.example")
+/// **Never `game/`**, which is the creator's own game, for the reason spelled
+/// out on [`fixture_mudlib_root`].
+pub fn fixture_game_root() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixture/game")
 }
 
 /// A complete, self-contained game layer in one file.
@@ -275,14 +278,13 @@ DAEMON.trait.define_all({
     --
     -- A fixture world needs a round length, or `queue_d` falls back to the flat
     -- `game.combat_round_seconds` and every test of pacing passes by measuring
-    -- a constant. That is not hypothetical: the first version of
-    -- `tests/mudlib/swing_rate.rs` asserted a 3.0s baseline and got it from the
-    -- fallback, in a world with no such trait.
+    -- a constant. That is not hypothetical: a since-deleted `swing_rate` test
+    -- asserted a 3.0s baseline and got it from the fallback, in a world with no
+    -- such trait.
     --
-    -- Deliberately **not** the shipped game's formula. This one is coarser, so
-    -- nobody mistakes it for a statement about balance — the mudlib tests assert
-    -- that encumbrance and strength move the number, and `demo_world` asserts
-    -- what this game's numbers actually are.
+    -- Deliberately **not** any real game's formula. This one is coarser, so
+    -- nobody mistakes it for a statement about balance: what a round is worth
+    -- is a game decision, and this fixture is a vehicle rather than a game.
     { id = "encumbrance", label = "Encumbrance", kind = "attribute",
       group = "derived", default = 0, min = 0, hidden = true },
     { id = "round_length", label = "Round Length", kind = "derived",
@@ -615,6 +617,17 @@ impl RealVm {
         self.pool.clone()
     }
 
+    /// The session registry the engine holds.
+    ///
+    /// For a test that stands a **real listener** up in front of this VM rather
+    /// than speaking to the engine directly: the listener has to register its
+    /// sessions in the same handler the efuns resolve through, or `send` cannot
+    /// find them. [`RealVm::negotiate_gmcp`] reaches the same field for the
+    /// narrower case of faking one capability.
+    pub fn session_handler(&self) -> Arc<RwLock<SessionHandler>> {
+        self.session_handler.clone()
+    }
+
     /// Run Lua through the **real command dispatcher**, on a playing session.
     ///
     /// Only for boots that carry the fixture game layer
@@ -748,7 +761,7 @@ impl RealVm {
     }
 
     /// Boot against the mudlib and world this repository ships —
-    /// `mudlib.default/` and `game.example/`.
+    /// `tests/fixture/mudlib/` and `tests/fixture/game/`.
     ///
     /// Every other constructor writes a throwaway mudlib that answers probes
     /// directly. This one runs an actual game — daemon load, command
@@ -758,7 +771,7 @@ impl RealVm {
     ///
     /// Not the `mudlib/` and `game/` the server actually loads: those are the
     /// creator's own, untracked and absent on a clean clone. See
-    /// [`default_mudlib_root`]. Pointing at the shipped pair is also what makes
+    /// [`fixture_mudlib_root`]. Pointing at the shipped pair is also what makes
     /// a benchmark comparable between runs.
     ///
     /// The database and the log directory are still temporary; only the Lua is
@@ -767,10 +780,10 @@ impl RealVm {
         let logs = TempDir::new().unwrap();
         let mut vm = Self::boot_inner_at(
             None,
-            default_mudlib_root(),
+            fixture_mudlib_root(),
             TestCtx {
                 instruction_limit,
-                game_path: Some(example_game_root()),
+                game_path: Some(fixture_game_root()),
                 start_room: Some(EXAMPLE_START_ROOM.to_string()),
                 log_dir: Some(logs.path().to_path_buf()),
                 ..Default::default()
@@ -781,15 +794,13 @@ impl RealVm {
         vm
     }
 
-    /// Boot the shipped `mudlib.default/` against a **small self-contained
-    /// world** written into a temp directory, instead of `game.example/`.
+    /// Boot the shipped `tests/fixture/mudlib/` against a **small self-contained
+    /// world** written into a temp directory, instead of `tests/fixture/game/`.
     ///
     /// The reason this exists: a game layer is content — "this game, and policy
-    /// the driver has no view on" — and somebody who brings their own world
-    /// should not inherit a broken test suite. Anything asserting mudlib
-    /// *mechanics* should be able to say "given a world" without meaning "given
-    /// Thornhollow". Tests that genuinely assert the shipped content live in
-    /// `tests/demo_world/` and are deleted along with `game.example/`.
+    /// the driver has no view on" — and a driver test should be able to say
+    /// "given a world" without meaning "given Thornhollow". This is the
+    /// smallest thing that counts as one.
     ///
     /// The fixture is deliberately tiny — three rooms, one mob, one item, and
     /// the trait definitions a creature needs to exist. Traits are game-layer by
@@ -806,7 +817,7 @@ impl RealVm {
 
         let mut vm = Self::boot_inner_at(
             None,
-            default_mudlib_root(),
+            fixture_mudlib_root(),
             TestCtx {
                 instruction_limit,
                 game_path: Some(game.path().to_path_buf()),
@@ -821,7 +832,7 @@ impl RealVm {
         vm
     }
 
-    /// Boot the shipped `mudlib.default/` behind a probe `on_input`.
+    /// Boot the shipped `tests/fixture/mudlib/` behind a probe `on_input`.
     ///
     /// [`RealVm::boot_real_mudlib`] can only send commands, because the real
     /// mudlib's `on_input` *is* the command dispatcher. That makes anything
@@ -839,7 +850,7 @@ impl RealVm {
     /// `boot_real_mudlib` already covers that. Use this to ask what mudlib code
     /// does; use that one to ask what a player experiences.
     ///
-    /// The `game.example/` content *is* loaded: `PROBE_GAME_LAYER` puts it on
+    /// The `tests/fixture/game/` content *is* loaded: `PROBE_GAME_LAYER` puts it on
     /// `package.path` and `require`s `init`, so areas, mobs, items, traits,
     /// effects and quests are all registered. (This comment used to claim
     /// otherwise, which is why several tests assert on shipped content through
@@ -857,7 +868,7 @@ impl RealVm {
         let logs = TempDir::new().unwrap();
         let game = TempDir::new().unwrap();
 
-        // `game.example/` is **copied** into the temp root rather than being
+        // `tests/fixture/game/` is **copied** into the temp root rather than being
         // reached through `package.path`.
         //
         // It used to be the latter: the temp directory held one `init.lua` that
@@ -870,7 +881,7 @@ impl RealVm {
         // Copying is ~20 small files and makes both halves agree: what `require`
         // resolves and what `list_dir` reports are the same tree. The copy is
         // also what makes it safe for a test to write into the game root.
-        copy_dir(&example_game_root(), game.path());
+        copy_dir(&fixture_game_root(), game.path());
         // The game's own entry point, moved aside so the probe can be the one
         // the engine loads and still hand off to it.
         std::fs::rename(game.path().join("init.lua"), game.path().join("real_init.lua")).unwrap();
@@ -883,7 +894,7 @@ impl RealVm {
         opts.game_path = Some(game.path().to_path_buf());
         opts.log_dir = Some(logs.path().to_path_buf());
 
-        let mut vm = Self::boot_inner_at(None, default_mudlib_root(), opts);
+        let mut vm = Self::boot_inner_at(None, fixture_mudlib_root(), opts);
         vm._logs = Some(logs);
         vm._game = Some(game);
         assert_eq!(vm.eval("return 'ready'").unwrap(), "ready");
@@ -893,7 +904,7 @@ impl RealVm {
     /// The probe dispatcher over a **caller-supplied pair of roots**.
     ///
     /// The constructor a game repository uses. Every other one here assumes
-    /// this repository's own `mudlib.default/` and `game.example/`; this takes
+    /// this repository's own `tests/fixture/mudlib/` and `tests/fixture/game/`; this takes
     /// both, so a game that lives somewhere else entirely can boot its real
     /// content inside a real engine and ask what its rules do.
     ///
@@ -981,12 +992,12 @@ impl RealVm {
     }
 
     /// The probe dispatcher over the **fixture world** rather than
-    /// `game.example/`.
+    /// `tests/fixture/game/`.
     ///
     /// [`RealVm::boot_real_mudlib_with_probe`] gives you `eval` against a fully
     /// wired `DAEMON` table — and Thornhollow with it, so any test that seeds a
     /// creature through it is quietly asserting that *the demo* defines the
-    /// traits. Delete `game.example/` and it fails, which is exactly what
+    /// traits. Delete `tests/fixture/game/` and it fails, which is exactly what
     /// `docs/src/testing.md` says a mudlib test must not do.
     ///
     /// This is the same probe over [`FIXTURE_WORLD`]: the smallest world in
@@ -1011,7 +1022,7 @@ impl RealVm {
         opts.game_path = Some(game.path().to_path_buf());
         opts.log_dir = Some(logs.path().to_path_buf());
 
-        let mut vm = Self::boot_inner_at(None, default_mudlib_root(), opts);
+        let mut vm = Self::boot_inner_at(None, fixture_mudlib_root(), opts);
         vm._logs = Some(logs);
         vm._game = Some(game);
         assert_eq!(vm.eval("return 'ready'").unwrap(), "ready");

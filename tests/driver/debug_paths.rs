@@ -24,7 +24,7 @@ fn project_root() -> PathBuf {
 /// link *target* while the path handed in is rooted at the link, and
 /// `client_path_and_chunk_name_agree` fails on a difference that is nothing to
 /// do with the code it is testing.
-const REAL_LUA_FILE: &str = "mudlib.default/cmds/who.lua";
+const REAL_LUA_FILE: &str = "tests/fixture/mudlib/cmds/who.lua";
 
 #[test]
 fn chunk_name_is_absolute_forward_slashed_and_at_prefixed() {
@@ -95,8 +95,8 @@ fn required_module_chunk_name_matches_the_file_on_disk() {
     let root = project_root();
     let lua = Lua::new();
 
-    let mudlib = paths::abs_lua_path(&root.join("mudlib.default"));
-    let game = paths::abs_lua_path(&root.join("game.example"));
+    let mudlib = paths::abs_lua_path(&root.join("tests/fixture/mudlib"));
+    let game = paths::abs_lua_path(&root.join("tests/fixture/game"));
     lua.load(format!(
         "package.path = \"{game}/?.lua;{game}/?/init.lua;{mudlib}/?.lua;{mudlib}/?/init.lua;\" .. package.path"
     ))
@@ -121,7 +121,7 @@ fn required_module_chunk_name_matches_the_file_on_disk() {
     lua.remove_hook();
 
     let expected = paths::chunk_key(&paths::chunk_name(
-        &root.join("mudlib.default/lib/strings.lua"),
+        &root.join("tests/fixture/mudlib/lib/strings.lua"),
     ))
     .expect("file chunk");
     let observed: Vec<String> = seen.borrow().iter().filter_map(|s| paths::chunk_key(s)).collect();

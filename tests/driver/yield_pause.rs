@@ -49,11 +49,11 @@ const LATE_TIMER_SECS: f64 = 1.0;
 /// line event *anywhere* — including the tail of the dispatch before it, which
 /// runs on after its reply has been sent. That race made this test stop the
 /// wrong dispatch roughly one run in seven.
-/// `mudlib.default/` rather than `mudlib/`: the harness boots the mudlib this
+/// `tests/fixture/mudlib/` rather than `mudlib/`: the harness boots the mudlib this
 /// repository ships, not the creator's own working copy. A breakpoint path that
 /// names the wrong root simply never binds, and the test hangs to its deadline
 /// rather than failing at the line that is wrong.
-const BREAK_FILE: &str = "mudlib.default/daemons/ticker_d.lua";
+const BREAK_FILE: &str = "tests/fixture/mudlib/daemons/ticker_d.lua";
 const BREAK_LINE: u32 = 181;
 
 /// A debug state with the freeze policy set explicitly.
@@ -416,8 +416,8 @@ fn a_resumed_dispatch_still_has_its_arguments() {
     // different function that the probe never reaches — so the test failed
     // saying the debugger could not stop, which is not what had happened. What
     // it is really pinning is a *statement*, so it asks for one.
-    let line = line_of("mudlib.default/lib/strings.lua", "if n % 1 == 0 then");
-    set_breakpoint(&dbg, "mudlib.default/lib/strings.lua", line, BreakpointSpec::default());
+    let line = line_of("tests/fixture/mudlib/lib/strings.lua", "if n % 1 == 0 then");
+    set_breakpoint(&dbg, "tests/fixture/mudlib/lib/strings.lua", line, BreakpointSpec::default());
     assert_eq!(vm.eval("return 'armed'").unwrap(), "armed");
 
     vm.send_eval("return require('lib.strings').number(1234)");

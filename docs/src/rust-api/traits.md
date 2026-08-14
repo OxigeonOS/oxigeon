@@ -145,11 +145,31 @@ To add a new backend:
 
 ## Adding a New Network Protocol
 
-To add WebSocket support:
-1. Create `src/core/network/websocket/mod.rs` with a `WebSocketListener` struct
-2. Implement the same accept/connection pattern as `TelnetListener`
-3. Sessions created from WebSocket connections use the same `Session` type — protocol is noted in `session.protocol`
-4. Add a `[servers.websocket]` section to `driver.toml`
+WebSocket already exists — see [WebSocket](../protocols/websocket.md) and
+`src/core/network/websocket/`. It is the worked example, and its shape is the one
+to copy:
+
+1. A module under `src/core/network/` with a
+   `pub async fn serve(cfg, deps) -> io::Result<SocketAddr>` that binds, spawns
+   its **own** accept loop, and returns the bound address.
+   `debugger::dap::serve` established this and the WebSocket listener follows it.
+   Do not add an arm to `Driver::run`'s `select!`: that ties the new listener's
+   lifetime to the telnet one and grows the loop with every transport.
+2. A `Deps` struct carrying what a connection task needs — the
+   `Arc<RwLock<SessionHandler>>`, the engine's `cmd_tx`, the `AuthWorker`. All
+   of them are independently clonable, so none of it needs `&Driver`.
+3. Sessions use the same `Session` type; name the transport in `session.protocol`.
+4. **Set `Session.capabilities` yourself**, through
+   `core::session::publish_capabilities`. Nothing else joins what a transport
+   discovers to what the mudlib reads, and forgetting it makes `gmcp_d` silent
+   with no other symptom. That function's doc comment is the record of it
+   happening.
+5. Add a `[servers.<name>]` section to `driver.toml` **and a struct for it** on
+   `ServersConfig`. There is no `deny_unknown_fields`, so a stanza with no struct
+   behind it is parsed and discarded in silence.
+6. Keep the relay in the new module, not in `driver.rs`. `handle_connection`
+   living there is why the driver imports the telnet parser and owns negotiation
+   policy, and it is not a pattern worth repeating.
 
 ## Adding New Efuns
 

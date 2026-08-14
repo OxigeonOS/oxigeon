@@ -18,17 +18,53 @@ enabled = true
 bind = "0.0.0.0"
 port = 4000
 
+# `telnets://` — the same protocol inside TLS, which is what a MUD client means
+# by "secure connection". A *second* listener rather than a flag on the one
+# above, so existing players keep the plaintext port. 992 is the convention;
+# binding it needs privileges on Unix, so 4443 is the usual practical choice.
 # [servers.telnet_tls]
-# enabled = false
+# enabled = true
 # bind = "0.0.0.0"
 # port = 4443
 # cert_path = "certs/server.crt"
 # key_path = "certs/server.key"
+# cert_reload_seconds = 300   # notice a renewal without a restart; 0 = read once
 
-# [servers.websocket]
-# enabled = false
+# ---- WebSocket ----
+# Plaintext `ws://`. Loopback by default: anything reachable off-host should be
+# the TLS listener below, or behind a proxy. The wire format is a JSON envelope,
+# not a raw text stream — see docs/src/protocols/websocket.md.
+[servers.websocket]
+enabled = true
+bind = "127.0.0.1"
+port = 4001
+max_frame_bytes = 65536     # largest client message accepted
+ping_interval_secs = 30     # server keepalive; 0 disables
+missed_pongs = 3            # unanswered pings tolerated (~90s at 30s)
+
+# `wss://`. Same keys as above plus the certificate. A browser will refuse a
+# `ws://` connection from an `https://` page, so a hosted client needs this one.
+# [servers.websocket_tls]
+# enabled = true
 # bind = "0.0.0.0"
-# port = 4001
+# port = 4444
+# cert_path = "certs/server.crt"
+# key_path = "certs/server.key"
+# cert_reload_seconds = 300
+# Browser origins allowed to open a socket. Empty (the default) accepts any;
+# matched exactly, so scheme and port count. A request with no Origin header —
+# anything that is not a browser — is always allowed.
+# allowed_origins = ["https://play.example.com"]
+
+# Generating a certificate for local development — a browser will warn once and
+# let you continue, and Mudlet has a "verify certificate" toggle:
+#
+#   mkdir -p certs && openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+#     -keyout certs/server.key -out certs/server.crt -subj "/CN=localhost"
+#
+# The files are re-read when they change, so `certbot` renewal needs no restart —
+# see cert_reload_seconds above. A reverse proxy is still the better answer once
+# you want OCSP stapling, SNI across several names, or HTTP on the same port.
 
 # ---- Lua Debug Adapter (VS Code) ----
 # Omit this section, or leave enabled = false, to keep the VM exactly as it is

@@ -1,37 +1,36 @@
 # Testing
 
-Oxigeon uses **Rust integration tests** to verify both the driver and the Lua mudlib.
-All tests live in the `tests/` directory and run via `cargo test`.
+Oxigeon uses **Rust integration tests** to verify the driver. All tests live in
+the `tests/` directory and run via `cargo test`.
 
 ## The one rule about layout
 
-**A test of the mudlib must not depend on this game.**
+**Every test here is about Rust.**
 
-A game layer is content — "this game, and policy the driver has no view on" — so
-anyone building their own world replaces it. A suite that then fails about rooms
-they never wrote is a suite that has to be picked apart before it can be
-trusted. So:
+It used to be three buckets, because this repository shipped a Lua layer for a
+game to start from — `mudlib.default/` and `game.example/` — with suites
+asserting their content. It ships neither now. Nothing developed them, the one
+game built on this engine forked the mudlib long ago and never took a change
+back, and a shipped layer nobody ships is a second copy of every decision,
+drifting quietly from the first.
 
 | | |
 |---|---|
-| `tests/driver/` | the engine: the stores, the sandbox, the debugger, the file jail, permissions. |
-| `tests/mudlib/` | the Lua system layer: OLC, schema, components, abilities, GMCP, the cache. |
-| `tests/demo_world/` | Thornhollow, the marsh, the mine, the workshop. **Deleted along with `game.example/`.** |
+| `tests/driver/` | the engine: the stores, the sandbox, the debugger, the file jail, permissions, telnet/GMCP, websockets, compute. |
 
-Three binaries rather than sixty, and the split between the first two answers
-one question:
+So the admission question is no longer which bucket. It is:
 
-> **If you deleted `mudlib.default/` and wrote your own from scratch, would you
-> keep this test or rewrite it?** Keep it -> `tests/driver/`. Rewrite it ->
-> `tests/mudlib/`.
+> **Would this test survive somebody throwing the whole Lua layer away and
+> writing their own?** Yes -> it belongs here. No -> it belongs in that game's
+> own repository, against that game's own trees.
 
 That resolves the genuinely ambiguous ones without arguing. `staff` is a driver
-test although it drives the mudlib, because the RBAC efuns are Rust and the
-mudlib is only the vehicle. `fs_shell` is a mudlib test although it exercises
-the jail, because `ls` and `cd` are mudlib commands and a new mudlib would write
-its own.
+test although it drives a mudlib, because the RBAC efuns are Rust and the mudlib
+is only the vehicle. Something like the old `fs_shell` — `ls` and `cd` as mudlib
+commands — has no home here at all now, because a new mudlib would write its
+own. That is not a gap; it is the line being drawn where it belongs.
 
-`tests/compute_wedge.rs` is deliberately **not** in either, and the reason is in
+`tests/compute_wedge.rs` is deliberately its own binary, and the reason is in
 its own header: every test in it spins a core in `while true do end` for the
 whole of its deadline, so as a neighbour it starves whatever it shares a binary
 with. Folded into `tests/driver/` it made the pool-recovery test fail
@@ -41,64 +40,45 @@ that comes back.
 
 `boot_with_fixture_world` writes a small self-contained game layer into a temp
 directory — three rooms, one creature, one item, a trait set, a role, and one
-game-layer command — and boots the real mudlib against it. Traits and roles are
-in there because both are game-layer by design: a world with no trait
+game-layer command — and boots the fixture mudlib against it. Traits and roles
+are in there because both are game-layer by design: a world with no trait
 definitions has no `hp` for anything to lose.
 
 `boot_fixture_with_probe` is the same world behind the probe dispatcher, for a
 test that needs `eval` against a wired `DAEMON` table rather than a player's
-view. Prefer it over `boot_real_mudlib_with_probe`, which puts the example world
-on `package.path`: anything that seeds a creature through *that* is quietly
-asserting that the demo defines the traits.
+view. `boot_real_mudlib_with_probe` is the heavier option, copying the whole
+fixture world in; prefer the small one when the size of the world is not the
+point.
 
-The check that keeps this honest, and the only one that proves it:
-
-```bash
-# `git stash push <path>` only reverts changes to tracked files — it leaves the
-# directory in place, so the version of this check that used it never removed
-# the world and never proved anything. Move them out of the tree.
-mkdir ../away && mv game.example ../away/ && mv tests/demo_world ../away/
-cargo test --test driver --test mudlib --no-fail-fast
-mv ../away/game.example . && mv ../away/demo_world tests/ && rmdir ../away
-```
-
-That must be green. If a test you are writing fails it, ask whether it is really
-asserting an authored value — a room's prose, a mob's hit points, a quest id. If
-so it belongs in `tests/demo_world/`. If not, it wants the fixture.
-
-`tests/mudlib/fixture_world.rs` is the proof the fixture is a real world you can
-play in.
-
-## The suite tests what ships, not what you run
-
-Four directories, two pairs:
+## The Lua the suite boots is a vehicle, not a subject
 
 | | tracked here | what it is |
 |---|---|---|
-| `mudlib.default/` | yes | the mudlib this repository ships |
-| `game.example/` | yes | the demo world — Thornhollow |
+| `tests/fixture/mudlib` | yes | a working Lua system layer, for a driver test to boot |
+| `tests/fixture/game` | yes | a world to boot it against |
 | `mudlib/` | **no** | the creator's mudlib, from their own repo |
 | `game/` | **no** | the creator's game, from their own repo |
 
 `config/server.toml` points the *server* at `./mudlib` and `./game`, because that
-is what a creator plays. Every test harness points at the pair beside them.
+is what a creator plays. Every test harness points at the fixture.
 
 They are different questions. `mudlib/` and `game/` are gitignored, absent on a
 clean clone, and free to have diverged arbitrarily — a suite that booted them
 would assert an unpublished fork on the machine that has one and fail everywhere
 else. So `boot_real_mudlib`, `boot_with_fixture_world` and both probe variants
-resolve their roots through `default_mudlib_root()` and `example_game_root()` in
-`tests/common/mod.rs`, and no test names `mudlib/` or `game/` at all.
+resolve their roots through `fixture_mudlib_root()` and `fixture_game_root()` in
+`testkit`, and no test names `mudlib/` or `game/` at all.
 
-The consequence worth stating outright: **a change meant for upstream is made in
-`mudlib.default/`.** It is the only copy the suite runs, the only copy a reviewer
-reads, and anything left solely in your `mudlib/` is unpublishable by
-construction — not by policy, but because nothing here can see it.
+The consequence worth stating outright: **a failure here is never a complaint
+about the fixture's content.** If a test can be made to pass by editing Lua under
+`tests/fixture/`, it was asking the wrong question — it is asserting something
+about a Lua layer, and no Lua layer here is anybody's product. Rewrite it against
+the Rust, or delete it and let the game that cares assert it.
 
-This also means `boot_real_mudlib` no longer reads `start_room` from
+This also means `boot_real_mudlib` does not read `start_room` from
 `config/server.toml`. That key describes the creator's world and would send the
-harness to a room `game.example/` does not contain, so the demo's entrance is a
-constant beside the fixture's — `EXAMPLE_START_ROOM`, next to
+harness to a room the fixture does not contain, so the fixture's entrance is a
+constant beside the small world's — `EXAMPLE_START_ROOM`, next to
 `FIXTURE_START_ROOM`. A world's start room is a property of that world.
 
 ## Quick Start
@@ -107,26 +87,23 @@ constant beside the fixture's — `EXAMPLE_START_ROOM`, next to
 # Run the entire test suite
 cargo test
 
-# Run one bucket
+# Run the driver suite
 cargo test --test driver
-cargo test --test mudlib
-cargo test --test demo_world
 
 # Run one file's worth, by module name
-cargo test --test mudlib lua_unit
+cargo test --test driver sandbox
 
 # Run a single test by name
-cargo test --test mudlib test_mobile_take_damage
+cargo test --test driver a_websocket_client_reaches_the_login_banner
 ```
 
-The `--test` argument is the *binary* now, not the file. What used to be
-`tests/mudlib/schema.rs` is `tests/mudlib/schema.rs` and a module inside one binary, so
-`cargo test --test schema` no longer resolves -- use
-`cargo test --test mudlib schema`, which filters by module path.
+The `--test` argument is the *binary*, not the file. Everything is a module of
+`tests/driver/main.rs`, so `cargo test --test sandbox` does not resolve — use
+`cargo test --test driver sandbox`, which filters by module path.
 
-All tests should pass before committing — 1253 at the time of writing, green on
-the default Lua 5.5 build and on `--no-default-features --features luajit`. The
-Lua unit tests alone run in ~20ms.
+All tests should pass before committing — 299 in the driver suite at the time of
+writing, green on the default Lua 5.5 build and on
+`--no-default-features --features luajit`.
 
 `cargo test` does not build `oxigeon-compute`. It is a separate workspace member
 that links LuaJIT unconditionally, and cargo unifies features across a single
@@ -137,265 +114,71 @@ which looks like a test run that hangs with no output.
 
 ---
 
-## How Lua Tests Work
+## Writing a new test
 
-The Lua test file (`tests/mudlib/lua_unit.rs`) boots a **lightweight LuaJIT VM** that:
+There used to be a second harness here — a lightweight LuaJIT VM with stubbed
+efuns (`lua_unit.rs`), for asserting against Lua modules in isolation — and a
+long section on how to write for it. Both went with the Lua layer they tested.
+A stub-backed VM is the right tool for testing a *mudlib*, and testing a mudlib
+is no longer this repository's job.
 
-1. Points `package.path` at the shipped `mudlib.default/` and `game.example/`
-   directories
-2. Stubs only the efuns that touch Rust state (networking, DB, sessions)
-3. `require()`s the actual module under test
-4. Asserts against Lua return values from Rust
-
-This means tests exercise real production code — no copies, no mocks of Lua logic.
-
-### The Test Harness
-
-The `make_test_lua()` function sets up a ready-to-use VM:
+What is left is the real thing, and it is the only thing:
 
 ```rust
-fn make_test_lua() -> Lua {
-    let lua = Lua::new();
-
-    // Point require() at the shipped mudlib.default/ and game.example/ dirs.
-    // (package.path is set relative to CARGO_MANIFEST_DIR.) The game root
-    // shadows the mudlib on package.path, so naming the live `game/` here
-    // would let a creator's module silently replace one under test.
-
-    // Stub efuns that would normally be provided by the Rust driver:
-    // log(), send(), send_prompt(), get_session(), get_character(),
-    // set_object_state(), get_object_state(), has_permission(),
-    // config(), write_file(), read_file()
-
-    // Initialize empty DAEMON table
-    lua.load("DAEMON = {}").exec().unwrap();
-
-    lua
-}
+let mut vm = RealVm::boot_real_mudlib_with_probe();
+assert_eq!(vm.eval("return 2 + 2").unwrap(), "4");
 ```
 
-The stubs are intentionally minimal:
+A real `ScriptEngine`, the real efuns, the real sandbox, a temporary database,
+and `tests/fixture/` loaded on top as a vehicle. `eval` runs Lua inside it;
+`command` sends a line as a logged-in player and returns what the game said.
+See `src/testkit.rs` for the boot variants — the small fixture world, the whole
+fixture pair, and `boot_roots_*` for a caller supplying its own trees.
 
-| Stub | Behavior | Why |
-|------|----------|-----|
-| `log(level, msg)` | No-op | Prevents errors when modules log at load time |
-| `send(sid, text)` | No-op | Modules can call send without crashing |
-| `send_prompt(sid, text)` | No-op | Same |
-| `get_session(sid)` | Returns `nil` | No real sessions in unit tests |
-| `get_character(id)` | Returns `nil` | No real DB |
-| `set_object_state` / `get_object_state` | Backed by a Lua table | Object state works correctly without Rust |
-| `has_permission(sid, perm)` | Always `true` | Permissions aren't the thing being tested |
-| `config(key)` | Returns `nil` | No server config in tests |
-| `write_file` / `read_file` | No-op / `nil` | Filesystem not needed for most tests |
+Two rules carry over from the harness that is gone, and matter more here:
 
-### Rust Helper Functions
-
-Four helper functions eliminate boilerplate:
-
-```rust
-fn eval_bool(lua: &Lua, code: &str) -> bool   // Lua → bool
-fn eval_str(lua: &Lua, code: &str) -> String   // Lua → String
-fn eval_int(lua: &Lua, code: &str) -> i64      // Lua → integer
-fn eval_num(lua: &Lua, code: &str) -> f64      // Lua → float
-```
-
----
-
-## Writing a New Test
-
-### 1. Simple Value Test
-
-Test that a module returns the expected value:
-
-```rust
-#[test]
-fn test_item_default_weight() {
-    let lua = make_test_lua();
-    lua.load("Item = require('lib.item')").exec().unwrap();
-    lua.load(r#"item = Item:new({ id = "test.gem" })"#).exec().unwrap();
-
-    assert_eq!(eval_int(&lua, "return item.weight"), 1);
-}
-```
-
-### 2. Method Behavior Test
-
-Test that a method produces the correct side effect:
-
-```rust
-#[test]
-fn test_mobile_take_damage_clamps_to_zero() {
-    let lua = make_test_lua();
-    lua.load("Mobile = require('lib.mobile')").exec().unwrap();
-    lua.load(r#"mob = Mobile:new({ id = "t", stats = { hp = 10, max_hp = 10 } })"#).exec().unwrap();
-
-    // Partial damage
-    assert_eq!(eval_int(&lua, "return mob:take_damage(5)"), 5);
-    // Overkill clamps to 0
-    assert_eq!(eval_int(&lua, "return mob:take_damage(100)"), 0);
-    // Dead
-    assert!(!eval_bool(&lua, "return mob:is_alive()"));
-}
-```
-
-### 3. Roundtrip / Serialization Test
-
-Test that data survives a save/load cycle:
-
-```rust
-#[test]
-fn test_player_to_save_roundtrip() {
-    let lua = make_test_lua();
-    lua.load("Player = require('lib.player')").exec().unwrap();
-    lua.load(r#"
-        local saved = {
-            stats = { hp = 75, max_hp = 100 },
-            gold = 100,
-            skills = { archery = 7 },
-        }
-        player = Player:from_save(1, { id = 1, name = "Archer", account_id = 1 }, saved)
-        exported = player:to_save()
-    "#).exec().unwrap();
-
-    assert_eq!(eval_int(&lua, "return exported.stats.hp"), 75);
-    assert_eq!(eval_int(&lua, "return exported.gold"), 100);
-    assert_eq!(eval_int(&lua, "return exported.skills.archery"), 7);
-}
-```
-
-### 4. Lfun / Dynamic Property Test
-
-Test that lfun resolution works (functions-as-properties):
-
-```rust
-#[test]
-fn test_mobile_dialogue_with_lfun() {
-    let lua = make_test_lua();
-    lua.load("Mobile = require('lib.mobile')").exec().unwrap();
-    lua.load(r#"mob = Mobile:new({
-        id = "t",
-        dialogue = {
-            greet = "Hello!",
-            quest = function(self) return "Level " .. self.stats.level .. " quest" end,
-        }
-    })"#).exec().unwrap();
-
-    // Static string
-    assert_eq!(eval_str(&lua, r#"return mob:get_dialogue("greet")"#), "Hello!");
-    // Dynamic lfun
-    assert_eq!(eval_str(&lua, r#"return mob:get_dialogue("quest")"#), "Level 1 quest");
-    // Missing key
-    assert!(eval_bool(&lua, r#"return mob:get_dialogue("unknown") == nil"#));
-}
-```
-
-### 5. Inheritance Chain Test
-
-Verify that a subclass has access to its parent's methods:
-
-```rust
-#[test]
-fn test_player_inherits_mobile_methods() {
-    let lua = make_test_lua();
-    lua.load("Player = require('lib.player')").exec().unwrap();
-    lua.load(r#"
-        player = Player:from_save(1, { id = 1, name = "X", account_id = 1 }, {})
-    "#).exec().unwrap();
-
-    // Mobile methods are available on Player
-    assert!(eval_bool(&lua, "return player:is_alive()"));
-    assert_eq!(eval_int(&lua, "return player:take_damage(30)"), 70);
-
-    // Object methods are also available
-    assert!(eval_bool(&lua, "return player.get_state ~= nil"));
-}
-```
-
-### 6. Testing with Custom Stubs
-
-If your test needs a specific daemon to be available, set it up in Lua before running assertions:
-
-```rust
-#[test]
-fn test_room_d_load_area_with_world_daemon() {
-    let lua = make_test_lua();
-    lua.load("ROOM_D = require('daemons.room_d')").exec().unwrap();
-
-    // Provide a stub DAEMON.world so load_area can call set_area_meta
-    lua.load(r#"
-        DAEMON.world = { set_area_meta = function() end }
-    "#).exec().unwrap();
-
-    lua.load(r#"
-        local area = {
-            _meta = { name = "test", title = "Test" },
-            { id = "test.r1", short = "Room 1" },
-        }
-        rooms = ROOM_D.load_area(area)
-    "#).exec().unwrap();
-
-    assert_eq!(eval_int(&lua, "return #rooms"), 1);
-}
-```
-
----
+- **Stub the boundary, never the subject.** Seeding state, pinning a clock and
+  making a write refuse are all fair. Reimplementing what you are asking about
+  is how a test comes to agree with the bug.
+- **A test that a Lua module behaves is not a driver test.** If it passes or
+  fails on what `tests/fixture/` says, it is asserting content, and it belongs
+  in the repository whose content it is.
 
 ## What's Currently Tested
 
-**687 tests.** The table below is the *integration* suite — the files that boot
-a real `ScriptEngine` and ask what game code can actually do. `tests/mudlib/lua_unit.rs`
-is a further 160-odd unit tests over the Lua libraries in isolation.
+**299 tests** in `tests/driver`, plus `tests/compute_wedge.rs` on its own. Every
+one of them is a claim about Rust; where a Lua layer appears it is
+`tests/fixture/` being driven, never the thing under test.
 
 ### The security and boundary suites
 
-Anything touching a security or persistence boundary goes through
-`tests/common/mod.rs`'s real engine, per the rule at the top of this page.
-
-| File | Covers |
+| Module | Covers |
 |---|---|
-| `sandbox_reality_check.rs` | `io`, `os.execute`, `debug`, `jit`, bytecode and path traversal, refused **through the engine's own VM** |
-| `list_dir_jail.rs` | D1 — the second, unjailed `list_dir` that overwrote the jailed one |
+| `sandbox.rs`, `sandbox_reality_check.rs` | `io`, `os.execute`, `debug`, `jit`, bytecode and path traversal, refused **through the engine's own VM** |
+| `list_dir_jail.rs` | the second, unjailed `list_dir` that overwrote the jailed one |
+| `file_jail_two_roots.rs` | which root a path resolves against, and which one a write defaults to |
 | `instruction_limit.rs` | the budget is armed and enforced, not merely parsed |
 | `permission_config.rs`, `permissions.rs` | RBAC storage and the session cache |
-| `permission_refresh.rs` | D4 — a role change reaching a player who is already online |
-| `state_retention.rs` | L1/L2 — object state on despawn, virtual rooms on eviction, and the heap counters |
+| `permission_refresh.rs` | a role change reaching a player who is already online |
+| `staff.rs` | roles declared in a file, granted in-game, and a gated command actually gated |
 
-### The game systems
+### The engine
 
-| File | Covers |
-|---|---|
-| `traits_effects.rs` | traits and effects as a player meets them; presence, seeding, learning |
-| `trait_sparsity.rs` | `all()` filtering, `category` as a lens, and the O(entity) recompute counted rather than timed |
-| `traits_breadth.rs` | derived-of-derived, every `round` mode, `hidden`, offline regeneration, the broken-trait fixture, and spells |
-| `items_ground.rs` | instances, `get`/`drop`/`put`/`give`, containment cycles, hooks and events |
-| `equipment.rs` | slots, requirements, two-handed displacement, `equip:` sources applied and removed |
-| `combat_mitigation.rs` | phase ordering with real armour; damage type meeting a resist table |
-| `shop.rs` | prices, the gold sink, restocking, the ledger over `db_*` |
-| `board.rs` | every document-store filter operator, `db_incr`, `db_update` as a merge, `db_unset` |
-| `quests.rs` | all three persistence tiers, and a daily gate surviving an area reset |
-| `thornhollow.rs` | the multi-file area, dialogue, factions, echoes, tags, room-action precedence |
-| `marsh.rs` | weather-driven lfun descriptions, poison on the heartbeat, conditions, `survives_death` |
-| `mine.rs` | dark rooms and light sources, a locked door, the lever puzzle, the boss's corpse |
-| `virtual_rooms.rs` | generation, the exit graph, `still_connected`, and `compute()` pathfinding end to end |
-| `staff.rs` | roles declared in a file, granted in-game, and `/areas` actually gated |
-| `gmcp_inbound.rs` | `Core.Supports.Set` read and gating what is pushed; a custom package |
-| `lifecycle.rs` | container contents through save and load, and the disconnect ordering |
-
-### The driver
-
-| File | Covers |
+| Module | Covers |
 |---|---|
 | `account_store.rs`, `character_store.rs` | persistence |
 | `auth_off_thread.rs` | Argon2 off the game thread, and the lockout |
 | `clean_shutdown.rs` | `on_shutdown` runs and is waited for |
+| `command_dispatch.rs` | a line of input reaching Lua and the reply coming back |
 | `compute_bridge.rs`, `compute_wedge.rs` | job delivery, marshalling refusals, a wedged worker |
 | `document_store.rs`, `document_efuns.rs` | the store and its twelve efuns |
+| `json_bridge.rs` | what survives a round trip between a Lua table and JSON |
 | `hot_reload.rs` | `reload`, `on_load`/`on_unload`, DAEMON rebinding |
-| `state_cache.rs` | tiers, dirty marking, flush planning, quarantine |
+| `timer_identity.rs` | a timer surviving — or not surviving — a reload of what registered it |
 | `observability.rs`, `game_logger.rs` | the journal and the audit trail |
 | `output_backpressure.rs` | what happens when a client stops reading |
-| `dap_attach.rs`, `debug_*.rs` | the debug adapter |
-| `real_mudlib_harness.rs` | the harness itself |
+| `telnet_tls.rs`, `websocket_relay.rs` | framing, negotiation, origins, certificates, and the login flow over both |
+| `dap_attach.rs`, `debug_*.rs`, `yield_pause.rs` | the debug adapter, breakpoints, and stopping a dispatch mid-flight |
 
 ---
 

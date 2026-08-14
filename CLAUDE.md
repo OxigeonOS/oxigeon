@@ -10,31 +10,43 @@ Oxigeon is a MUD (Multi-User Dungeon) game driver. Rust handles the infrastructu
 
 **Daemons** are singleton services registered in the global `DAEMON` table. Convention: files are named `*_d.lua` (e.g. `room_d.lua`, `character_d.lua`).
 
-## What Ships and What Runs Are Different Directories
+## This Repository Ships No Lua Layer
 
-Four directories, two pairs. `mudlib.default/` and `game.example/` are tracked
-here and are what this repository ships. `mudlib/` and `game/` are the live
-trees the server loads — a creator's own, brought in from their own repo,
-gitignored and absent on a clean clone.
+It used to ship two — `mudlib.default/` and `game.example/`, tracked here as
+what a fresh checkout starts a game from, with `tests/mudlib/` and
+`tests/demo_world/` asserting their content. That arrangement is over. Nothing
+developed them, the one game built on this engine forked the mudlib long ago and
+never took a change back, and a shipped layer nobody ships is a second copy of
+every decision, drifting quietly from the first.
 
-- **Every change meant for upstream is made in `mudlib.default/`.** It is the
-  only copy the test suite boots and the only copy a reviewer reads. Something
-  left solely in `mudlib/` is unpublishable by construction — not by policy, but
-  because nothing here can see it.
-- **No test may name `mudlib/` or `game/`.** The harness resolves its roots
-  through `default_mudlib_root()` and `example_game_root()` in
-  `tests/common/mod.rs`; a suite that booted the live trees would assert an
-  unpublished fork on the one machine that has it and fail on every other.
-  `config/server.toml`'s `mudlib_path`/`game_path` still point at `./mudlib` and
-  `./game`, because that is what a creator plays — the server and the suite are
-  asking different questions.
-- **They are not symlinked and nothing mirrors them.** A test used to assert
-  `game/` and `game.example/` were byte-identical, which is what a mirror costs
-  when the tested tree and the shipped tree are different directories. Pointing
-  the suite at the shipped tree dissolved that; do not reintroduce it.
+What is left is the job those trees still did well:
+
+- **`tests/fixture/{mudlib,game}`** — a complete, working Lua layer the driver
+  suite boots as a **vehicle**. Not a product, not a starting point, and not
+  something to develop. Reached through `fixture_mudlib_root()` and
+  `fixture_game_root()` in `testkit`.
+- **`mudlib/` and `game/`** — the live trees the server loads. A creator's own,
+  brought in from their own repository, gitignored and absent on a clean clone.
+
+Three rules survive the change, and the fourth is what replaces the ones that
+went with it:
+
+- **No test may name `mudlib/` or `game/`.** A suite that booted the live trees
+  would assert an unpublished fork on the one machine that has it and fail on
+  every other. `config/server.toml`'s `mudlib_path`/`game_path` still point at
+  `./mudlib` and `./game`, because that is what a creator plays — the server and
+  the suite are asking different questions.
+- **Nothing mirrors anything.** A test used to assert `game/` and `game.example/`
+  were byte-identical, which is what a mirror costs. Do not reintroduce it.
 - `boot_real_mudlib` does not read `start_room` from `config/server.toml` — that
-  key describes the creator's world. The demo's entrance is `EXAMPLE_START_ROOM`,
-  beside `FIXTURE_START_ROOM`, because a start room is a property of a world.
+  key describes the creator's world. The fixture's entrance is
+  `EXAMPLE_START_ROOM`, beside `FIXTURE_START_ROOM`, because a start room is a
+  property of a world.
+- **A driver test failure is never a complaint about the fixture.** If a test in
+  `tests/driver/` can be made to pass by editing Lua under `tests/fixture/`, it
+  was asking the wrong question and wants rewriting or deleting rather than
+  accommodating. That is the line between a vehicle and a subject, and blurring
+  it is how a suite about Rust turns back into a suite about Lua.
 
 ## Error Handling — Mandatory Practices
 
@@ -184,14 +196,18 @@ This is enforced, not suggested, because the alternative already happened:
 builder role's grants matched anything, so the role was decorative and only
 account 1's `is_admin` bypass could build. Both halves looked right in isolation.
 
-Two tests, asking different questions:
+Two tests ask the two questions, and **neither is in this repository any more.**
+Both were assertions about a Lua layer — the *shape* of every command's
+permission string, and that some role actually grants it — so they went to the
+game that has commands and roles, where they now run against a real registry
+instead of the demo's. Nothing here can check this; the rule is upstream of the
+engine and enforced downstream of it.
 
-- `tests/mudlib/command_layout.rs` — the *shape*: `cmd.<own verb>`. The "own verb" half
-  is what stopped `dig` asking for `cmd.olc`, which it did, so `dig` could not be
-  granted separately.
-- `tests/demo_world/roles.rs` — that somebody can actually *be given* it: every
-  permission a command names is granted by some role. It lives with the game
-  layer because which roles exist is a game decision.
+The shape half is worth restating because it is easy to get subtly wrong: the
+verb in `cmd.<verb>` is the command's **own name**, not the key it is registered
+under. Those differ the moment a game gives a command a typed prefix — `@reload`
+is keyed as typed and is still `cmd.reload` — and a check written against the
+key reports every prefixed command as broken.
 
 A command gate and an efun gate are separate and both apply. `cmd.verify` lets
 you type the verb; `efun.verify_file` lets mudlib code call the efun.
@@ -414,8 +430,9 @@ from where. Files in that directory are topics; one level, so a file loose in
 - **The `game:` prefix is the whole rule.** `list_dir("docs")` unprefixed
   searches both roots game-first, so it would sweep a creator's `mudlib/docs/`
    — the system layer's own documentation — into the player's help. A functional
-  test cannot see the difference without a second mudlib on disk, so
-  `tests/mudlib/help.rs` asserts the source names `game:docs`.
+  test cannot see the difference without a second mudlib on disk, so this is
+  asserted by reading the source — in the game's suite, since the suite that
+  used to do it here is deleted.
 - **A command wins a name clash and points at the page.** `help attack` has to
   keep describing the verb you would type; the page is `See also:` away. A bare
   topic name in two categories **refuses with the list**, the `lib/matching.lua`
@@ -492,36 +509,30 @@ enjoy finding.
 
 `cargo test` does not build `oxigeon-compute` — it is a separate workspace member that links LuaJIT unconditionally, and cargo unifies features across one invocation. The harness builds it on demand into `target/compute-worker/`.
 
-### Three buckets, and a mudlib test must not depend on this game
+### One bucket now, and everything in it is about Rust
 
 | | |
 |---|---|
-| `tests/driver/` | the engine: stores, sandbox, debugger, file jail, permissions |
-| `tests/mudlib/` | the Lua system layer: OLC, schema, components, abilities, GMCP, cache |
-| `tests/demo_world/` | the shipped content. **Deleted along with `game.example/`.** |
+| `tests/driver/` | the engine: stores, sandbox, debugger, file jail, permissions, telnet/GMCP, websockets, compute |
 
-The driver/mudlib line is one question: **if you deleted `mudlib.default/` and
-wrote your own, would you keep this test or rewrite it?** Keep → driver. Rewrite
-→ mudlib. That decides the awkward ones without argument — `staff` is a driver
-test although the mudlib is its vehicle, because the RBAC efuns are Rust;
-`fs_shell` is a mudlib test although it exercises the jail, because `ls` and
-`cd` are mudlib commands.
+`tests/mudlib/` and `tests/demo_world/` are gone, with the two Lua trees they
+asserted. What they tested — OLC, schema, components, abilities, the cache, the
+shipped world's content — is the *game's* business, and the one game on this
+engine tests its own copies in its own repository, against its own fork, which
+is the only place those assertions were ever true.
 
-If it needs a world, use `RealVm::boot_with_fixture_world` or
-`boot_fixture_with_probe`, never Thornhollow. `boot_real_mudlib_with_probe`
-copies `game.example/` in, so anything using it is asserting shipped content
-and belongs in `demo_world`. The check:
+So the admission question is no longer which bucket: it is **whether the claim
+is about Rust at all.** `staff` belongs here although a mudlib is its vehicle,
+because the RBAC efuns are Rust. Something like the old `fs_shell` — `ls` and
+`cd` as mudlib commands — has no home here at all now, and that is correct.
 
-```bash
-# `git stash push <path>` only reverts changes — it does not remove the
-# directory, so it never tested anything. Move them out of the tree instead.
-mkdir ../away && mv game.example ../away/ && mv tests/demo_world ../away/
-cargo test --test driver --test mudlib --no-fail-fast
-mv ../away/game.example . && mv ../away/demo_world tests/ && rmdir ../away
-```
+If a test needs a world, use `RealVm::boot_with_fixture_world` or
+`boot_fixture_with_probe` (a one-file world), or `boot_real_mudlib_with_probe`
+(the whole fixture pair). All three are vehicles. A test that can be fixed by
+editing `tests/fixture/` is not a driver test.
 
-`--test` names the **binary**, not the file: `tests/schema.rs` is now
-`tests/mudlib/schema.rs`, a module, so it is `cargo test --test mudlib schema`.
+`--test` names the **binary**, not the file: everything is a module of
+`tests/driver/main.rs`, so it is `cargo test --test driver sandbox`.
 
 `tests/compute_wedge.rs` is deliberately outside all three. Every test in it
 spins a core in `while true do end` for its whole deadline, so as a neighbour it
