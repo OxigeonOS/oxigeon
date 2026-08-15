@@ -9,7 +9,7 @@
 
 import fs from 'node:fs'
 
-const DEFAULTS = { telnetPort: 4000, dapPort: 4711, autoContinueSecs: 300 }
+const DEFAULTS = { wsPort: 4001, wsTlsPort: 4444, dapPort: 4711, autoContinueSecs: 300 }
 
 export function loadDriverConfig(file) {
   let text
@@ -39,11 +39,19 @@ export function loadDriverConfig(file) {
     return Number.isFinite(n) ? n : fallback
   }
 
+  const flag = (key) => (found[key] ?? 'false').trim() === 'true'
+
   return {
-    telnetPort: num('servers.telnet.port', DEFAULTS.telnetPort),
+    // The game leg does not come through this process at all: the browser opens
+    // the driver's own listener. All the bridge does with these is tell the
+    // client where they are, so the URL is not a thing anybody has to type.
+    wsPort: num('servers.websocket.port', DEFAULTS.wsPort),
+    wsEnabled: flag('servers.websocket.enabled'),
+    wsTlsPort: num('servers.websocket_tls.port', DEFAULTS.wsTlsPort),
+    wsTlsEnabled: flag('servers.websocket_tls.enabled'),
     dapPort: num('servers.debug.port', DEFAULTS.dapPort),
     autoContinueSecs: num('servers.debug.auto_continue_secs', DEFAULTS.autoContinueSecs),
-    debugEnabled: (found['servers.debug.enabled'] ?? 'false').trim() === 'true',
+    debugEnabled: flag('servers.debug.enabled'),
     found: true,
   }
 }

@@ -15,21 +15,21 @@
     return () => app.stop()
   })
 
-  // Tab switching and the journal toggle work from anywhere. F1–F4 are bound
-  // because they are what the TUI documents, but the browser owns some of them
-  // outright (F1 is help in a few, F3 is find-again in Firefox), so Alt+1..4 is
-  // the alias that always arrives — the same bargain the TUI makes with Ctrl.
+  // Tab switching and the journal toggle work from anywhere. F1–F4 are what the
+  // TUI documents and they arrive in Chrome, so they are what the tab bar says.
+  // `Alt`+1..4 does the same thing, for the browsers that do keep a function
+  // key for themselves — the same bargain the step controls make with `Ctrl`.
   function onKeydown(event) {
     const { key, altKey, ctrlKey } = event
+    if (altKey && /^[1-4]$/.test(key)) {
+      event.preventDefault()
+      app.tab = TABS[Number(key) - 1]
+      return
+    }
     const fn = key.match(/^F([1-4])$/)
     if (fn) {
       event.preventDefault()
       app.tab = TABS[Number(fn[1]) - 1]
-      return
-    }
-    if (altKey && /^[1-4]$/.test(key)) {
-      event.preventDefault()
-      app.tab = TABS[Number(key) - 1]
       return
     }
     if (ctrlKey && (key === 'j' || key === 'J')) {
@@ -44,7 +44,11 @@
 <div class="shell">
   <nav>
     {#each TABS as tab, i (tab)}
-      <button class:active={app.tab === tab} onclick={() => (app.tab = tab)}>
+      <button
+        class:active={app.tab === tab}
+        onclick={() => (app.tab = tab)}
+        title="F{i + 1} — or Alt+{i + 1}, if the browser keeps the function key"
+      >
         <span class="fkey">F{i + 1}</span>
         {tab}
       </button>

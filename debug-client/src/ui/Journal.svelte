@@ -6,12 +6,19 @@
   let body = $state(null)
   let pinned = true
 
+  /// The strip holds 2000 entries and is eight rows tall. Rendering all of them
+  /// is four figures of DOM nodes rebuilt every time a line arrives — which for
+  /// a server under load is several times a second — for the sake of scrollback
+  /// nobody reaches by dragging a 9em-tall pane. The tail is what this is.
+  const RENDERED = 300
+
   const shown = $derived.by(() => {
     const needle = app.journalFilter.trim().toLowerCase()
-    if (needle === '') return app.journal
-    return app.journal.filter((e) =>
-      `${e.level} ${e.source} ${e.msg}`.toLowerCase().includes(needle)
-    )
+    const matched =
+      needle === ''
+        ? app.journal
+        : app.journal.filter((e) => `${e.level} ${e.source} ${e.msg}`.toLowerCase().includes(needle))
+    return matched.slice(-RENDERED)
   })
 
   // Follow the tail only while the reader is already at it.

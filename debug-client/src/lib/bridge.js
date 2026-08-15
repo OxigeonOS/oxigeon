@@ -1,8 +1,12 @@
 // The WebSocket to the bridge.
 //
-// One socket carries all four things the cockpit needs — game text, GMCP, DAP
-// and the filesystem — because they arrive interleaved and a reconnect that
-// restored three of them would be worse than one that restored none.
+// Carries the three things the driver's own listener does not: the debug
+// adapter, the `.lua` file tree and the journal. The game is a separate socket
+// straight to the driver — see `app.svelte.js`.
+//
+// Keeping the three together matters: a `stopped` event and the file it lands
+// in arrive on the same socket, so there is no ordering between two links to
+// get wrong.
 
 /// Where the bridge is. `?bridge=` wins; otherwise same-origin `/bridge`, which
 /// vite proxies in development and `--serve` answers directly.
@@ -80,12 +84,6 @@ export class Bridge {
     return true
   }
 
-  input(text) {
-    return this.send({ t: 'input', text })
-  }
-  naws(w, h) {
-    return this.send({ t: 'naws', w, h })
-  }
   dap(command, args) {
     return this.send({ t: 'dap', command, arguments: args })
   }

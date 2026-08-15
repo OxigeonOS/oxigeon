@@ -1,5 +1,6 @@
 <script>
-  import { css } from '../lib/ansi.js'
+  import { untrack } from 'svelte'
+  import { css } from '../lib/spans.js'
   import FreezeBanner from './FreezeBanner.svelte'
 
   let { app } = $props()
@@ -8,18 +9,29 @@
   let field = $state(null)
   let pinned = $state(true)
 
-  const dbg = $derived((app.dbgVersion, app.dbg))
 
   // Only follow the tail if the reader has not scrolled away from it.
+  //
+  // `pinned` is read through `untrack` on purpose. Assigning `scrollTop` fires
+  // a `scroll` event, `onScroll` writes `pinned`, and if this effect depended
+  // on it that write would re-run the effect, which scrolls again. That loop
+  // does not hang — Svelte throws `effect_update_depth_exceeded` — but a throw
+  // inside an effect takes the rest of the render down with it, which looks
+  // exactly like the pane having died.
   $effect(() => {
     app.scrollback.length
     app.prompt
-    if (pinned && body) body.scrollTop = body.scrollHeight
+    if (untrack(() => pinned) && body && body.scrollTop !== body.scrollHeight) {
+      body.scrollTop = body.scrollHeight
+    }
   })
 
   function onScroll() {
     if (!body) return
-    pinned = body.scrollHeight - body.scrollTop - body.clientHeight < 24
+    const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 24
+    // Only write when it actually changes, so a scroll that keeps us pinned
+    // does not invalidate anything downstream.
+    if (atBottom !== pinned) pinned = atBottom
   }
 
   function onKeydown(event) {
@@ -46,12 +58,14 @@
       probe.textContent = '0'.repeat(100)
       probe.style.cssText = 'position:absolute;visibility:hidden;white-space:pre'
       body.appendChild(probe)
-      const cell = probe.getBoundingClientRect().width / 100
+      const box = probe.getBoundingClientRect()
+      const cell = box.width / 100
+      const row = box.height
       probe.remove()
-      if (cell > 0) {
+      if (cell > 0 && row > 0) {
         app.size(
           Math.max(20, Math.floor(body.clientWidth / cell) - 1),
-          Math.max(5, Math.floor(body.clientHeight / (cell * 2)))
+          Math.max(5, Math.floor(body.clientHeight / row))
         )
       }
     }
@@ -65,7 +79,7 @@
 </script>
 
 <div class="play">
-  <section class="pane game" class:frozen={dbg.worldFrozen}>
+  <section class="pane game" class:frozen={app.dbg.worldFrozen}>
     <header>
       game
       {#if !pinned}
@@ -80,12 +94,12 @@
     <div class="body" bind:this={body} onscroll={onScroll}>
       {#each app.scrollback as line, i (i)}
         <div class="line">
-          {#each line as span}<span style={css(span.style)}>{span.text}</span>{/each}
+          {#each line as span}<span style={css(span)}>{span.text}</span>{/each}
         </div>
       {/each}
       {#if app.prompt}
         <div class="line prompt">
-          {#each app.prompt as span}<span style={css(span.style)}>{span.text}</span>{/each}
+          {#each app.prompt as span}<span style={css(span)}>{span.text}</span>{/each}
         </div>
       {/if}
     </div>
@@ -116,7 +130,7 @@
       {/if}
     </footer>
 
-    {#if dbg.stopped}
+    {#if app.dbg.stopped}
       <FreezeBanner {app} />
     {/if}
   </section>
@@ -133,7 +147,7 @@
           <div class="exits">
             <span class="faint">exits</span>
             {#each app.room.exits as exit}
-              <button onclick={() => app.bridge.input(exit)}>{exit}</button>
+              <button onclick={() => app.command(exit)}>{exit}</button>
             {/each}
           </div>
         {/if}

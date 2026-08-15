@@ -16,36 +16,60 @@ journal strip, same argument: hitting a breakpoint stops the entire Lua VM and
 │ line 34 │       auto-continue in 4:52       │ │└───────────────────────────┘
 │ line 35 └───────────────────────────────────┘ │┌ effects ──────────────────┐
 └───────────────────────────────────────────────┘│ Blessed ×2            42s │
- telnet up   dap frozen   JIT off while attached └───────────────────────────┘
+ game up   dap frozen   JIT off while attached  └───────────────────────────┘
 ```
 
-## Why there is a bridge
+## Two sockets, and why
 
-A browser cannot open a raw TCP socket, and **the driver has no WebSocket
-server** — `ServersConfig` is `{ telnet, debug }` and the `[servers.websocket]`
-block in `config/driver.toml` is commented out with no code behind it.
+**The game does not come through the bridge.** The driver has its own WebSocket
+listener — a JSON envelope onto the same sessions telnet serves — and the
+browser opens it directly.
 
-Three of the four things the cockpit needs are therefore out of reach:
-
-| It needs | Which is |
+| It needs | Reached by |
 |---|---|
-| the game | telnet on `:4000`, raw TCP |
-| the debugger | DAP on `:4711`, raw TCP, `Content-Length` framed |
-| every `.lua` file | the filesystem — **the adapter has no `source` request**, so a debug client reads files itself |
-| `logs/journal.log` | the filesystem, tailed |
+| the game | `ws://…:4001` — **the driver's own listener** |
+| the debugger | the bridge: DAP on `:4711` is raw TCP, `Content-Length` framed |
+| every `.lua` file | the bridge: **the adapter has no `source` request**, so a debug client reads files itself |
+| `logs/journal.log` | the bridge: it is a file |
 
-`bridge/` is a small Node process that speaks TCP and POSIX downwards and one
-WebSocket upwards. It holds no UI state: every frame it sends is something a
-socket or a file said. It changes nothing about the driver.
+So `bridge/` is only what is left over — a small Node process that speaks TCP
+and POSIX downwards and one WebSocket upwards, holding no UI state. Every frame
+it sends is something a socket or a file said. It changes nothing about the
+driver.
 
-Note the last two rows: a WebSocket server *in* the driver would not remove the
-need for this, because the file tree and the journal are not the driver's to
-serve. That is why the bridge is the design and not a stopgap.
+The three it does carry stay on one socket deliberately: a `stopped` event and
+the file it lands in arrive together, so there is no ordering between two links
+to get wrong.
+
+**The bridge holds one adapter connection for its own lifetime**, not one per
+browser session, and serves one cockpit at a time — opening a second evicts the
+first. Both rules exist because the adapter takes one client: a connection per
+session meant that reloading the page left the old one holding the adapter (a
+browser opens the new socket before closing the old, and an abandoned socket is
+not closed promptly), so every page after the first was refused, permanently,
+with nothing saying why. Now a reload changes nothing about the adapter — the
+same attached session is handed to whoever is looking at it.
+
+There is no telnet client here and no ANSI decoder, and there were both.
+`?ansi=spans` makes the driver send structured runs instead of escape codes, and
+the protocol doc is emphatic about why: the interesting cases in that state
+machine — a style accumulating across two sequences, an `ESC[m` that means
+reset, a sequence truncated at a buffer boundary — get found once there, with
+tests, rather than separately in every client. What is left in `src/lib/spans.js`
+is the half a browser genuinely owns: a palette index and a few booleans into
+CSS.
+
+The envelope client itself is imported from `client/src/lib/connection.js`
+rather than copied. It is the repo's reference implementation, and two clients
+in one repo with their own idea of the wire format is how they drift.
 
 ## Running it
 
 ```toml
-# config/driver.toml — the adapter is off by default
+# config/driver.toml — both listeners, the adapter is off by default
+[servers.websocket]
+enabled = true
+
 [servers.debug]
 enabled = true
 ```
@@ -55,12 +79,23 @@ cargo run                # the server, from the oxigeon checkout
 
 cd debug-client
 npm install
-npm run bridge           # the bridge  — one terminal
-npm run web              # vite        — another, then open the URL it prints
+npm run dev              # vite, which starts the bridge itself
 ```
+
+Vite owns the bridge as a child process, so there is nothing to start in a
+second terminal and nothing to forget. If one is already listening on 4712 it is
+left alone, which is what makes `npm run bridge` — with your own `--root` or
+`--dap` — still work: start it first, then `npm run dev`. `BRIDGE=off` disables
+the spawn outright.
 
 Or in one process, with no vite: `npm run build && npm run bridge -- --serve`,
 then <http://127.0.0.1:4712/>.
+
+> [!NOTE]
+> **4712 is this project's own port, not the debug adapter's.** The bridge
+> listens on 4712 and connects *out* to the adapter on 4711. A proxy
+> `ECONNREFUSED 127.0.0.1:4712` means the bridge is not running — it is never a
+> sign that a port is wrong.
 
 Ports come from `config/driver.toml`, so a server on non-standard ports needs no
 flags here either.
@@ -70,7 +105,7 @@ flags here either.
 | `--root <PATH>` | the checkout to read `mudlib/`, `game/` and `logs/` from (default `..`) |
 | `--config <PATH>` | driver config to read ports from (default `<root>/config/driver.toml`) |
 | `--host <HOST>` | default `127.0.0.1` |
-| `--telnet <PORT>` / `--dap <PORT>` | override either port |
+| `--ws <PORT>` / `--dap <PORT>` | override either port |
 | `--journal <PATH>` | journal to tail (default `<root>/logs/journal.log`) |
 | `--port <PORT>` | port for the bridge itself (default `4712`) |
 | `--serve` | also serve the built client from `dist/` |
@@ -92,15 +127,22 @@ with `?bridge=ws://host:port/` or `?port=4712`.
 
 ### F1 Play
 
-A real MUD client: telnet, ANSI colour, command history, scrollback. The side
-panels are GMCP, not screen-scraping — `Char.Vitals`, `Char.Status`,
-`Char.Effects` and `Room.Info`, pushed by `gmcp_d` and gated on the
-`Core.Supports.Set` the bridge sends. The room panel shows the **dotted room
-id**, because that is what `goto` takes and what the room's file is named after.
-Exits are buttons; clicking one types it.
+A real MUD client: colour, command history, scrollback, over the driver's
+envelope. `text` and `prompt` are separate frame types, so there is no "an
+unterminated line is the prompt" heuristic here to get wrong.
 
-Password prompts mask automatically: the driver sends `IAC WILL ECHO` around
-them, and a masked line never enters the recallable history.
+The side panels are GMCP, not screen-scraping — `Char.Vitals`, `Char.Status`,
+`Char.Effects` and `Room.Info`. GMCP defaults **on** for this transport, so
+there is no `Core.Supports.Set` to send. `data` arrives as a nested JSON value,
+not a string. The room panel shows the **dotted room id**, because that is what
+`goto` takes and what the room's file is named after. Exits are buttons;
+clicking one types it.
+
+Password prompts mask automatically, off the `echo` frame — `masked: true` means
+the *server* has taken over echoing, the inverse of the `start_echo` efun that
+produces it. A masked line never enters the recallable history.
+
+Resizing the pane sends a `hello`, which is this transport's NAWS.
 
 ### F2 Debug
 
@@ -127,8 +169,8 @@ reloads unless the page prevents it, which this one does. Every step is also a
 button in the toolbar, which is the one thing a browser gives the cockpit for
 free.
 
-Tab switching is `F1`–`F4` where the browser allows it and `Alt+1`–`Alt+4`
-always.
+Tab switching is `F1`–`F4`, with `Alt+1`–`Alt+4` as the alias for a browser
+that keeps a function key for itself.
 
 ### The file tree
 
@@ -250,11 +292,17 @@ it happened.
 npm test
 ```
 
-`node --test`, no framework. The suites over `ansi.js`, `lua.js`, the telnet
-answers and the journal parser are the Rust `#[cfg(test)]` modules ported case
-for case — what they assert is that the port answers what the original
-answered, and a test rewritten to suit the port would agree with whatever it
-happens to do.
+`node --test`, no framework. The suites over `lua.js` and the journal parser are
+the Rust `#[cfg(test)]` modules ported case for case — what they assert is that
+the port answers what the original answered, and a test rewritten to suit the
+port would agree with whatever it happens to do.
+
+`test/envelope.test.js` covers `client/src/lib/connection.js`, which had no
+suite of its own. A shared file with two consumers and no tests is the thing
+that drifts, and the rules it checks are the ones a client gets wrong
+*silently*: that the colour mode goes in the URL because `on_connect` writes the
+banner before a `hello` can arrive, that `masked: true` means hide, and that an
+unknown frame type does not tear down a session someone is playing.
 
 `test/debugview.test.js` is the one with no Rust counterpart, and it is the
 important one: it asserts the protocol rules that this client gets wrong

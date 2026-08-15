@@ -4,44 +4,43 @@
   // the entire daemon graph.
 
   let { app } = $props()
-  const dbg = $derived((app.dbgVersion, app.dbg))
 
   function toggle(i) {
-    const node = dbg.vars[i]
-    dbg.varSel = i
-    dbg.focus = 'vars'
-    if (!node || node.varRef <= 0 || !dbg.stopped) return dbg.changed()
-    if (node.expanded) dbg.collapse(i)
-    else dbg.request('variables', { variablesReference: node.varRef })
-    dbg.changed()
+    const node = app.dbg.vars[i]
+    app.dbg.varSel = i
+    app.dbg.focus = 'vars'
+    if (!node || node.varRef <= 0 || !app.dbg.stopped) return app.dbg.changed()
+    if (node.expanded) app.dbg.collapse(i)
+    else app.dbg.request('variables', { variablesReference: node.varRef })
+    app.dbg.changed()
   }
 
   function onKeydown(event) {
-    if (dbg.focus !== 'vars') return
+    if (app.dbg.focus !== 'vars') return
     if (event.target instanceof HTMLInputElement) return
     if (event.ctrlKey) return
-    if (event.key === 'ArrowUp') dbg.varSel = Math.max(0, dbg.varSel - 1)
-    else if (event.key === 'ArrowDown') dbg.varSel = Math.min(dbg.vars.length - 1, dbg.varSel + 1)
-    else if (event.key === 'Enter') return toggle(dbg.varSel)
+    if (event.key === 'ArrowUp') app.dbg.varSel = Math.max(0, app.dbg.varSel - 1)
+    else if (event.key === 'ArrowDown') app.dbg.varSel = Math.min(app.dbg.vars.length - 1, app.dbg.varSel + 1)
+    else if (event.key === 'Enter') return toggle(app.dbg.varSel)
     else return
     event.preventDefault()
-    dbg.changed()
+    app.dbg.changed()
   }
 </script>
 
 <svelte:window on:keydown={onKeydown} />
 
-<section class="pane" class:focused={dbg.focus === 'vars'}>
+<section class="pane" class:focused={app.dbg.focus === 'vars'}>
   <header>
     variables
     <span class="spacer"></span>
-    {#if dbg.focus !== 'vars'}<span class="faint"><kbd>Tab</kbd> for the wide view</span>{/if}
+    {#if app.dbg.focus !== 'vars'}<span class="faint"><kbd>Tab</kbd> for the wide view</span>{/if}
   </header>
   <div class="body">
-    {#each dbg.vars as node, i (i)}
+    {#each app.dbg.vars as node, i (i)}
       <div
         class="row"
-        class:selected={i === dbg.varSel}
+        class:selected={i === app.dbg.varSel}
         class:scope={node.depth === 0}
         style="padding-left: {8 + node.depth * 12}px"
         onclick={() => toggle(i)}
@@ -55,7 +54,7 @@
         {#if node.ty}<span class="faint ty">{node.ty}</span>{/if}
       </div>
     {:else}
-      <div class="row faint">{dbg.stopped ? 'no scopes' : 'needs a paused frame'}</div>
+      <div class="row faint">{app.dbg.stopped ? 'no scopes' : 'needs a paused frame'}</div>
     {/each}
   </div>
 </section>

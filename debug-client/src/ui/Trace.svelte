@@ -7,7 +7,7 @@
   // through the `trace_*` efuns, with no path out of the process. Structured
   // `trace_*_data` efuns would make this a real pane.
 
-  import { css } from '../lib/ansi.js'
+  import { css } from '../lib/spans.js'
 
   let { app } = $props()
 
@@ -72,7 +72,7 @@
     <div class="body" bind:this={body}>
       {#each tail as line, i (i)}
         <div class="line">
-          {#each line as span}<span style={css(span.style)}>{span.text}</span>{/each}
+          {#each line as span}<span style={css(span)}>{span.text}</span>{/each}
         </div>
       {/each}
     </div>

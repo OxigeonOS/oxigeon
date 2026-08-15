@@ -12,13 +12,12 @@
   // pane shows what the formula produces.
 
   let { app } = $props()
-  const dbg = $derived((app.dbgVersion, app.dbg))
 
   let field = $state(null)
 
   const groups = $derived.by(() => {
     const by = new Map()
-    for (const t of dbg.inspect.traits) {
+    for (const t of app.dbg.inspect.traits) {
       const key = t.group || 'ungrouped'
       if (!by.has(key)) by.set(key, [])
       by.get(key).push(t)
@@ -28,7 +27,7 @@
 
   function submit(event) {
     event.stopPropagation()
-    if (event.key === 'Enter') dbg.requestInspect()
+    if (event.key === 'Enter') app.dbg.requestInspect()
   }
 
   const differs = (t) => t.base !== '' && t.base !== t.value && t.base !== 'nil'
@@ -45,18 +44,19 @@
       <span class="caret">=</span>
       <input
         bind:this={field}
-        bind:value={dbg.inspect.target}
+        value={app.dbg.inspect.target}
+        oninput={(e) => (app.dbg.inspect.target = e.currentTarget.value)}
         onkeydown={submit}
         spellcheck="false"
         autocomplete="off"
         placeholder="player"
       />
-      <button disabled={!dbg.stopped} onclick={() => dbg.requestInspect()}>
-        {dbg.inspect.pending ? 'reading…' : 'read'}
+      <button disabled={!app.dbg.stopped} onclick={() => app.dbg.requestInspect()}>
+        {app.dbg.inspect.pending ? 'reading…' : 'read'}
       </button>
     </div>
-    {#if dbg.inspect.error}
-      <div class="error">{dbg.inspect.error}</div>
+    {#if app.dbg.inspect.error}
+      <div class="error">{app.dbg.inspect.error}</div>
     {/if}
   </section>
 
@@ -65,7 +65,7 @@
       <header>
         traits
         <span class="spacer"></span>
-        <span class="dim">{dbg.inspect.traits.length}</span>
+        <span class="dim">{app.dbg.inspect.traits.length}</span>
       </header>
       <div class="body">
         <div class="row head faint">
@@ -90,7 +90,7 @@
           {/each}
         {:else}
           <div class="row faint">
-            {dbg.stopped ? 'nothing read yet' : 'attach and break somewhere'}
+            {app.dbg.stopped ? 'nothing read yet' : 'attach and break somewhere'}
           </div>
         {/each}
       </div>
@@ -100,10 +100,10 @@
       <header>
         effects
         <span class="spacer"></span>
-        <span class="dim">{dbg.inspect.effects.length}</span>
+        <span class="dim">{app.dbg.inspect.effects.length}</span>
       </header>
       <div class="body">
-        {#each dbg.inspect.effects as e (e.id)}
+        {#each app.dbg.inspect.effects as e (e.id)}
           <div class="row">
             <span class="id">{e.label || e.id}</span>
             {#if Number(e.stacks) > 1}<span class="faint">×{e.stacks}</span>{/if}

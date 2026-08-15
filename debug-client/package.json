@@ -5,9 +5,8 @@
   "type": "module",
   "description": "The development cockpit in a browser: play and debug a running Oxigeon server in one window.",
   "scripts": {
-    "dev": "node bridge/server.js & vite",
+    "dev": "vite",
     "bridge": "node bridge/server.js",
-    "web": "vite",
     "build": "vite build",
     "preview": "vite preview",
     "test": "node --test \"test/*.test.js\""

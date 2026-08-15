@@ -7,7 +7,6 @@
   import Repl from './Repl.svelte'
 
   let { app } = $props()
-  const dbg = $derived((app.dbgVersion, app.dbg))
 
   const PANES = ['files', 'source', 'stack', 'vars', 'repl']
 
@@ -16,11 +15,11 @@
   /// exists and not much else, and reading values is most of what a debugger is
   /// for. Tab again and the source comes back — one keystroke each way, and no
   /// mode to get stuck in.
-  const varsWide = $derived(dbg.focus === 'vars')
+  const varsWide = $derived(app.dbg.focus === 'vars')
 
   function step(command) {
-    if (!dbg.stopped) return
-    dbg.request(command, { threadId: dbg.stopId })
+    if (!app.dbg.stopped) return
+    app.dbg.request(command, { threadId: app.dbg.stopId })
   }
 
   function onKeydown(event) {
@@ -33,7 +32,7 @@
 
     // Execution control works from any pane, and only while stopped — the
     // adapter rejects all of these outright when the VM is running.
-    if (dbg.stopped) {
+    if (app.dbg.stopped) {
       const command = stepCommand(event)
       if (command) {
         event.preventDefault()
@@ -41,25 +40,25 @@
       }
     }
 
-    if (ctrl && (key === 'p' || key === 'P') && !dbg.stopped) {
+    if (ctrl && (key === 'p' || key === 'P') && !app.dbg.stopped) {
       // Consumed by the next *line* event, so it lands on the next command a
       // player types rather than immediately.
       event.preventDefault()
-      return dbg.request('pause', { threadId: dbg.stopId })
+      return app.dbg.request('pause', { threadId: app.dbg.stopId })
     }
     if ((key === 'F9' && shift) || (ctrl && (key === 'l' || key === 'L'))) {
       event.preventDefault()
-      return dbg.beginLogpoint()
+      return app.dbg.beginLogpoint()
     }
     if (key === 'F9') {
       event.preventDefault()
-      return dbg.toggleBreakpoint()
+      return app.dbg.toggleBreakpoint()
     }
     if (key === 'Tab') {
       event.preventDefault()
-      const at = PANES.indexOf(dbg.focus)
-      dbg.focus = PANES[(at + (shift ? PANES.length - 1 : 1)) % PANES.length]
-      dbg.changed()
+      const at = PANES.indexOf(app.dbg.focus)
+      app.dbg.focus = PANES[(at + (shift ? PANES.length - 1 : 1)) % PANES.length]
+      app.dbg.changed()
       return
     }
   }
@@ -69,21 +68,21 @@
 
 <div class="debug" class:vars-wide={varsWide}>
   <div class="controls">
-    <button disabled={!dbg.stopped} onclick={() => step('continue')} title="F5 / Ctrl+G">
+    <button disabled={!app.dbg.stopped} onclick={() => step('continue')} title="F5 / Ctrl+G">
       ▶ continue
     </button>
-    <button disabled={!dbg.stopped} onclick={() => step('next')} title="F10 / Ctrl+→">
+    <button disabled={!app.dbg.stopped} onclick={() => step('next')} title="F10 / Ctrl+→">
       ⤼ over
     </button>
-    <button disabled={!dbg.stopped} onclick={() => step('stepIn')} title="F11 / Ctrl+↓">
+    <button disabled={!app.dbg.stopped} onclick={() => step('stepIn')} title="F11 / Ctrl+↓">
       ↓ into
     </button>
-    <button disabled={!dbg.stopped} onclick={() => step('stepOut')} title="Shift+F11 / Ctrl+↑">
+    <button disabled={!app.dbg.stopped} onclick={() => step('stepOut')} title="Shift+F11 / Ctrl+↑">
       ↑ out
     </button>
     <button
-      disabled={dbg.stopped || !dbg.attached}
-      onclick={() => dbg.request('pause', { threadId: dbg.stopId })}
+      disabled={app.dbg.stopped || !app.dbg.attached}
+      onclick={() => app.dbg.request('pause', { threadId: app.dbg.stopId })}
       title="Ctrl+P — lands on the next line event, i.e. the next command a player types"
     >
       ⏸ pause

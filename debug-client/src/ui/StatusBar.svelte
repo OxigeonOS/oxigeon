@@ -3,20 +3,17 @@
 
   // Read `dbgVersion` so this redraws when the debugger moves, and `now` so the
   // countdown ticks while the VM is frozen and nothing else is arriving.
-  const dbg = $derived((app.dbgVersion, app.dbg))
 
   const dapLabel = $derived.by(() => {
-    if (dbg.worldFrozen) return { text: 'frozen', kind: 'stop' }
+    if (app.dbg.worldFrozen) return { text: 'frozen', kind: 'stop' }
     // One dispatch is held and the game is still running. Saying "stopped" here
     // is what made a live server look dead.
-    if (dbg.stopped) return { text: 'suspended', kind: 'stop' }
-    if (dbg.attached) return { text: 'attached', kind: 'up' }
+    if (app.dbg.stopped) return { text: 'suspended', kind: 'stop' }
+    if (app.dbg.attached) return { text: 'attached', kind: 'up' }
     return { text: app.dap.state === 'down' ? `down: ${app.dap.why}` : app.dap.state, kind: app.dap.state }
   })
 
-  const telnetLabel = $derived(
-    app.telnet.state === 'down' ? `down: ${app.telnet.why}` : app.telnet.state
-  )
+  const gameLabel = $derived(app.game.state === 'down' ? `down: ${app.game.why}` : app.game.state)
 </script>
 
 <footer>
@@ -25,13 +22,13 @@
     <span class="down">{app.link.why || app.link.state}</span>
   {/if}
 
-  <span class="label">telnet</span>
-  <span class={app.telnet.state}>{telnetLabel}</span>
+  <span class="label">game</span>
+  <span class={app.game.state}>{gameLabel}</span>
 
   <span class="label">dap</span>
   <span class={dapLabel.kind}>{dapLabel.text}</span>
 
-  {#if dbg.attached}
+  {#if app.dbg.attached}
     <!-- Worth saying out loud: an attached client forces LuaJIT onto the
          interpreter, so "everything is slow" is expected, not a bug. -->
     <span class="note">JIT off while attached</span>
@@ -40,7 +37,7 @@
   <span class="spacer"></span>
 
   {#if app.info}
-    <span class="note">{app.info.telnet} · {app.info.dap}</span>
+    <span class="note">{app.info.game} · dap {app.info.dap}</span>
   {/if}
   <span class="note"><kbd>F1</kbd>–<kbd>F4</kbd> tabs · <kbd>^J</kbd> journal</span>
 </footer>

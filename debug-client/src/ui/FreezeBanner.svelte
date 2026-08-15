@@ -12,26 +12,25 @@
 
   let { app } = $props()
 
-  const dbg = $derived((app.dbgVersion, app.dbg))
-  const left = $derived((app.now, dbg.autoContinueIn()))
+  const left = $derived((app.now, app.dbg.autoContinueIn()))
 
   const where = $derived.by(() => {
-    const frame = dbg.frames[0]
-    if (!frame) return dbg.stopReason
+    const frame = app.dbg.frames[0]
+    if (!frame) return app.dbg.stopReason
     const file = frame.path?.split('/').slice(-1)[0] ?? frame.name
-    return `${dbg.stopReason} at ${file}:${frame.line}`
+    return `${app.dbg.stopReason} at ${file}:${frame.line}`
   })
 
   const mmss = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 </script>
 
-<div class="banner" class:frozen={dbg.worldFrozen}>
+<div class="banner" class:frozen={app.dbg.worldFrozen}>
   <div class="title">
-    {dbg.worldFrozen ? '⏸  VM PAUSED' : '⏸  DISPATCH SUSPENDED'}
+    {app.dbg.worldFrozen ? '⏸  VM PAUSED' : '⏸  DISPATCH SUSPENDED'}
   </div>
   <div class="where">{where}</div>
   <div class="cost">
-    {#if dbg.worldFrozen}
+    {#if app.dbg.worldFrozen}
       every player on this server is frozen
     {:else}
       one dispatch is held — everyone else is still playing
@@ -41,7 +40,7 @@
     <div class="count" class:soon={left < 30}>auto-continue in {mmss(left)}</div>
   {/if}
   <div class="keys">
-    <button onclick={() => dbg.request('continue', { threadId: dbg.stopId })}>
+    <button onclick={() => app.dbg.request('continue', { threadId: app.dbg.stopId })}>
       <kbd>^G</kbd> continue
     </button>
     <button onclick={() => (app.tab = 'Debug')}><kbd>F2</kbd> debug</button>
