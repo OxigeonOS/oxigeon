@@ -1,5 +1,6 @@
 <script>
   import { untrack } from 'svelte'
+  import { isBreak } from '../lib/scrollback.js'
   import { css } from '../lib/spans.js'
   import FreezeBanner from './FreezeBanner.svelte'
 
@@ -93,9 +94,15 @@
 
     <div class="body" bind:this={body} onscroll={onScroll}>
       {#each app.scrollback as line, i (i)}
-        <div class="line">
-          {#each line as span}<span style={css(span)}>{span.text}</span>{/each}
-        </div>
+        {#if isBreak(line)}
+          <!-- Where a command was sent. Carries no text, so it says nothing
+               about what was typed — including at a password prompt. -->
+          <div class="rule" role="separator"></div>
+        {:else}
+          <div class="line">
+            {#each line as span}<span style={css(span)}>{span.text}</span>{/each}
+          </div>
+        {/if}
       {/each}
       {#if app.prompt}
         <div class="line prompt">
@@ -219,6 +226,14 @@
 
   .prompt {
     color: var(--fg-dim);
+  }
+
+  /* A seam, not a gap: a blank line would be indistinguishable from one the
+     game sent, which is most of what this is meant to disentangle. */
+  .rule {
+    height: 0;
+    margin: 7px 10px 6px;
+    border-top: 1px solid var(--border);
   }
 
   .entry {

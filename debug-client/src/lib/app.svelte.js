@@ -20,6 +20,7 @@ import { Connection } from '../../../client/src/lib/connection.js'
 import { Bridge } from './bridge.js'
 import { DebugView } from './debugview.js'
 import { blockState } from './lua.js'
+import { appendBreak } from './scrollback.js'
 import { linesOf } from './spans.js'
 
 /// How many rendered lines of game text to keep. The mudlib pages long output
@@ -281,7 +282,7 @@ export class App {
     if (!this.masked && line !== '') this.history.push(line)
     this.historyPos = null
     this.input = ''
-    this.conn?.send(line)
+    this.command(line)
   }
 
   recall(delta) {
@@ -295,10 +296,14 @@ export class App {
     this.input = this.historyPos === null ? '' : this.history[this.historyPos]
   }
 
-  /// Send a line to the game without going through the input box — an exit
-  /// button, a trace command. One place, so nothing has to know that the game
-  /// is a different socket from the bridge.
+  /// Send a line to the game. One place, so nothing has to know that the game
+  /// is a different socket from the bridge — and so the seam below is marked
+  /// wherever a command comes from, the input box or an exit button alike.
+  ///
+  /// The break goes in *before* the send, so it lands above the output it is
+  /// separating rather than after it.
   command(text) {
+    if (text !== '') appendBreak(this.scrollback)
     this.conn?.send(text)
   }
 

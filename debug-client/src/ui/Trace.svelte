@@ -7,6 +7,7 @@
   // through the `trace_*` efuns, with no path out of the process. Structured
   // `trace_*_data` efuns would make this a real pane.
 
+  import { isBreak } from '../lib/scrollback.js'
   import { css } from '../lib/spans.js'
 
   let { app } = $props()
@@ -71,9 +72,13 @@
     </header>
     <div class="body" bind:this={body}>
       {#each tail as line, i (i)}
-        <div class="line">
-          {#each line as span}<span style={css(span)}>{span.text}</span>{/each}
-        </div>
+        {#if isBreak(line)}
+          <div class="rule" role="separator"></div>
+        {:else}
+          <div class="line">
+            {#each line as span}<span style={css(span)}>{span.text}</span>{/each}
+          </div>
+        {/if}
       {/each}
     </div>
   </section>
@@ -99,6 +104,12 @@
     padding: 0 8px;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
+  }
+
+  .rule {
+    height: 0;
+    margin: 7px 10px 6px;
+    border-top: 1px solid var(--border);
   }
 
   code {
