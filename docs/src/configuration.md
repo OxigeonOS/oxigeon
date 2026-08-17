@@ -40,6 +40,7 @@ pool_size = 5
 | `enabled` | bool | `true` | Enable/disable the Telnet server |
 | `bind` | string | `"0.0.0.0"` | IP address to bind to |
 | `port` | integer | `4000` | Port number |
+| `mxp` | bool | `true` | Offer [MXP](./protocols/mxp.md), telnet option 91 |
 
 ```toml
 [servers.telnet]
@@ -47,6 +48,18 @@ enabled = true
 bind = "0.0.0.0"
 port = 4000
 ```
+
+`mxp` is the only per-protocol switch in the file, and it is on the *listener*
+rather than in a `[protocols]` section of its own because MXP is a property of
+the telnet wire and a listener already is one wire — so `[servers.telnet]` and
+`[servers.telnet_tls]` can differ, which is what an operator testing a change
+wants. GMCP and MCCP2 belong here too, the day anyone needs them off.
+
+Turning it off is rarely necessary. A client that declines, or never answers,
+gets exactly the session it got before MXP existed; and a client that accepts
+still receives ordinary `send()` output byte for byte, because the driver locks
+the stream to LOCKED line mode rather than escaping game text. The switch is
+there as an operator's kill switch, not as a decision most servers have to make.
 
 ### `[servers.telnet_tls]`
 

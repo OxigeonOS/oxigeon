@@ -129,7 +129,24 @@ pub struct TelnetServerConfig {
     /// once at startup. See `network::tls::ReloadingCert`.
     #[serde(default = "default_cert_reload")]
     pub cert_reload_seconds: u64,
+    /// Offer MXP (telnet option 91) to clients on this listener.
+    ///
+    /// The first per-protocol switch in this file, and on the *listener* rather
+    /// than in a new `[protocols]` section because MXP is a property of the
+    /// telnet wire and a listener already is one wire — so `[servers.telnet]`
+    /// and `[servers.telnet_tls]` can differ, which is what an operator testing
+    /// a change wants. GMCP and MCCP2 belong here too, the day anyone needs
+    /// them off.
+    ///
+    /// Defaults **on**. A client that does not answer, or answers `DONT`, gets
+    /// a byte-identical session to the one it got before MXP existed: the
+    /// driver changes nothing about its output until acceptance, and even then
+    /// it only locks the stream and strips line-mode sequences.
+    #[serde(default = "default_true")]
+    pub mxp: bool,
 }
+
+pub(crate) fn default_true() -> bool { true }
 
 /// Five minutes. A certificate changes every few months, so this only has to
 /// be short enough that a renewal is picked up the same day — and two `stat`

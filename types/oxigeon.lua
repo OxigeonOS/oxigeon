@@ -47,6 +47,71 @@ function start_echo(session_id) end
 function stop_echo(session_id) end
 
 -- ═══════════════════════════════════════════════════════════════════════════════
+-- Rich output — MXP links, line tags, client variables
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+--- Send a line built from parts, rendered as MXP for a client that negotiated
+--- it and as plain text for everyone else.
+---
+--- Every string in `parts` is escaped by the driver, which is the only thing
+--- that writes a `<`. An item name a player chose cannot become markup, so
+--- there is no escaping for the caller to remember and no `mxp_escape` helper
+--- to forget.
+---
+--- ```lua
+--- send_rich(sid, {
+---     "The baker offers ",
+---     { send = "buy bread", hint = "A fresh loaf", text = item.short },
+---     " for three copper.",
+--- })
+--- ```
+---
+--- Unlike `send`, a rich line terminates itself — the line boundary is where an
+--- MXP mode reverts, so the driver has to know where it is. Do not append
+--- `\r\n`; pass `opts.newline = false` for a prompt.
+---
+---@param session_id string
+---@param parts (string|RichPart)[]
+---@param opts RichOpts|nil
+---@return boolean queued  false if the session is gone or its output channel is full
+function send_rich(session_id, parts, opts) end
+
+---@class RichPart
+---@field text string|nil             Literal content. Mutually exclusive with `parts`.
+---@field parts (string|RichPart)[]|nil  Nested content.
+---@field send string|string[]|nil    Command(s) to run when clicked; several is a menu.
+---@field hint string|string[]|nil    Mouse-over text; with a menu, [1] is the caption.
+---@field href string|nil             A URL. http://, https:// or mailto: only.
+---@field prompt boolean|nil          Put the command on the input line instead of running it.
+---@field expire string|nil           Name this link, for a later mxp_expire().
+---@field var string|nil              Also store the text in a client variable of this name.
+---@field br boolean|nil              A hard line break; ignores every other field.
+---@field expire_now boolean|nil      Emit <EXPIRE>; uses `expire` as the name.
+
+---@class RichOpts
+---@field mode string|nil     "secure" (default), "open" or "locked".
+---@field line string|integer|nil  "room_name"|"room_desc"|"room_exits"|"welcome", or 20-99.
+---@field newline boolean|nil  Default true. false for a prompt: no terminator.
+
+--- Set a client-side variable and display its value: `<VAR hp>40</VAR>`.
+---
+--- Session-scoped; it goes when the connection does. The name may hold only
+--- letters, digits and underscores.
+---@param session_id string
+---@param name string
+---@param value string|number
+---@return boolean queued
+function mxp_var(session_id, name, value) end
+
+--- Retire the links tagged with `name`, or every named link if omitted.
+---
+--- Links that never carried an `expire` name never expire.
+---@param session_id string
+---@param name string|nil
+---@return boolean queued
+function mxp_expire(session_id, name) end
+
+-- ═══════════════════════════════════════════════════════════════════════════════
 -- Sessions — Session state management
 -- ═══════════════════════════════════════════════════════════════════════════════
 
@@ -67,6 +132,14 @@ function get_session(session_id) end
 ---@field ip string|nil
 ---@field window_width integer|nil
 ---@field window_height integer|nil
+---@field terminal_type string|nil
+---@field gmcp_supported boolean
+---@field gmcp_packages string[]|nil
+---@field mxp_supported boolean       The client negotiated MXP. Branch on this.
+---@field mxp_version string|nil      Spec level from its <VERSION> reply, e.g. "0.4".
+---@field mxp_client string|nil       Client name and version, e.g. "mushclient 5.06".
+---@field mxp_supports string[]|nil   `+tag` / `-tag` from its <SUPPORTS> reply.
+---@field dropped_output integer
 
 --- Get an array of all connected session IDs.
 ---@return string[]

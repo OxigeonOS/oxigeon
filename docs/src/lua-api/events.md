@@ -71,6 +71,30 @@ function on_gmcp(session_id, package, data)
 end
 ```
 
+### `on_mxp_ready(session_id)`
+Called once per session, when the client has finished the
+[MXP](../protocols/mxp.md) handshake and will parse markup.
+
+The reason this exists rather than only a capability field: MXP is offered in
+the opening negotiation burst and the client's `<VERSION>` reply can arrive
+several round trips later — **after `on_connect`**. So
+`get_session().mxp_supported` answers "is it there" but not "is it there *now*",
+which is the question anything that wants to greet the player with a clickable
+line has to ask.
+
+```lua
+function on_mxp_ready(session_id)
+    local s = get_session(session_id)
+    log("info", "MXP ready for " .. (s.mxp_client or "an unnamed client"))
+    send_rich(session_id, {
+        "Type ", { send = "help mxp", text = "help mxp" }, " to see what your client can do.",
+    })
+end
+```
+
+You do not need this to *use* `send_rich` — a rich line sent to a client without
+MXP simply renders as plain text. It is for the case where the timing matters.
+
 ### `on_load(module_name)`
 Called **after** a module is hot-reloaded successfully.
 

@@ -1,5 +1,46 @@
 # Changelog
 
+## MXP — telnet option 91
+
+- **The driver speaks MXP.** It negotiates option 91, starts the client's
+  parser, and answers the handshake. Before this, `OptionNegotiator`'s
+  accept-everything default meant a client sending `IAC DO 91` got
+  `IAC WILL 91` back and nothing recorded it — the driver agreed to a protocol
+  it then never spoke, which is the same shape as the `publish_capabilities`
+  bug: a link that looks healthy and carries nothing.
+- **Ordinary `send()` output is unchanged, byte for byte.** On acceptance the
+  driver sends `ESC[7z`, locking the default line mode to LOCKED, so nothing the
+  mudlib writes is parsed as markup. The alternative — escaping `< > &` in every
+  line — was rejected: it transforms the hot path to solve a problem the lock
+  already solves, and `tests/driver/telnet_mxp.rs` now asserts the compatibility
+  claim so a later change to it fails loudly.
+- **A player cannot get a secure tag onto another player's screen.** Line-mode
+  sequences are stripped from mudlib output and from input. A mode tag is
+  honoured in *every* mode, locked included — that is how a client leaves locked
+  mode — so `say <ESC>[1z<send href="quit">free gold</send>` was the real
+  injection, and the `<send>` behind it never was. That strip is the
+  load-bearing part of the feature.
+- **The client's `<VERSION>` / `<SUPPORTS>` replies arrive on the input stream**
+  and are intercepted before `on_input`. Without that, every MXP client's login
+  ends with the mudlib complaining about something the driver asked the client
+  to send. They reach `Session.capabilities` as `mxp_client`, `mxp_version` and
+  `mxp_supports`, and `on_mxp_ready` fires once — MXP completes after
+  `on_connect`, so a capability field alone answers the wrong question.
+- **`send_rich(sid, parts)` takes a tree, not a string.** `to_mxp` is the only
+  function in the driver that emits a `<`, and every caller-supplied string
+  reaching it is escaped, so an item name a player chose cannot become markup.
+  There is deliberately no `mxp_escape` helper: it would exist only to be
+  forgotten at the one call site that mattered. Also `mxp_var` and `mxp_expire`.
+  Nothing is permission-gated, because none of it can emit a tag the driver did
+  not write.
+- **Parts carry actions, not styling.** No `fg`, no `bold` — the mudlib already
+  owns colour, and MXP is explicit that ANSI keeps working alongside it. A
+  second colour system would disagree with the first about what `red` means.
+- Negotiation policy moved out of `relay.rs` into a pure function, which is what
+  made it testable at all. GMCP, MCCP2 and NAWS pick up unit tests they never
+  had; `relay.rs` and `connection.rs` had none between them.
+- `[servers.telnet].mxp` toggles it, per listener. Defaults on.
+
 ## Phase 4: Two Lua Runtimes
 
 ### Which one did they mean

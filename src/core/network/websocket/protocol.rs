@@ -464,6 +464,32 @@ impl ServerFrame {
                 ServerFrame::Prompt { text, spans }
             }
 
+            // A rich line becomes an ordinary text or prompt frame, with the
+            // action dropped — the same degradation a plain telnet client gets,
+            // and the reason a rich line is safe to send to anybody.
+            //
+            // No new frame type, deliberately. A `ServerFrame::Rich` would mean
+            // every client needed a new branch before it could render game
+            // text at all, and `debug-client/` and any third-party client would
+            // silently drop it. Carrying the action as extra optional `Span`
+            // fields — so a browser could render a button — is the natural next
+            // step and is wire-compatible with this one, because every existing
+            // field would be unchanged.
+            //
+            // Never `to_mxp`: `AnsiMode::Raw` passes a non-SGR CSI through
+            // untouched, so an `ESC[1z` composed here would land in a browser's
+            // DOM. Choosing the rendering at the transport is what prevents it.
+            SessionOutput::Rich(line) => {
+                let rendered = crate::core::render::to_text(&line);
+                if line.newline {
+                    let (text, spans) = ansi.render(&normalize(&rendered));
+                    ServerFrame::Text { text, spans }
+                } else {
+                    let (text, spans) = ansi.render(&rendered);
+                    ServerFrame::Prompt { text, spans }
+                }
+            }
+
             // The value nests. The telnet path has to `data.to_string()`
             // because GMCP rides a subnegotiation that carries bytes; here the
             // envelope is already JSON and re-encoding it would hand every

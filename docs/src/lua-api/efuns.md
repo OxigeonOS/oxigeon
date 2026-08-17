@@ -47,6 +47,88 @@ send_gmcp(session_id, "Char.Vitals", { hp = 100, max_hp = 100 })
 send_gmcp(session_id, "Room.Info", { name = "The Void", exits = {} })
 ```
 
+### `send_rich(session_id, parts, opts?) → boolean`
+Send a line built from **parts** rather than from a string. On a client that
+negotiated [MXP](../protocols/mxp.md) it renders as markup — a clickable
+command, a room-name line tag; on every other client it renders as the same
+prose with the affordance dropped.
+
+```lua
+send_rich(session_id, {
+    "The baker offers ",
+    { send = "buy bread", hint = "A fresh loaf — 3 copper", text = item.short },
+    " for three copper.",
+})
+```
+
+Two things to know before writing the first call:
+
+- **The driver escapes every string you pass**, and it is the only thing in the
+  system that writes a `<`. So `item.short` can be whatever a player named it
+  and cannot become markup. There is deliberately no `mxp_escape` helper — it
+  would exist only to be forgotten at the one call site that mattered.
+- **A rich line terminates itself.** Unlike `send`, do not append `\r\n`: the
+  line boundary is where an MXP mode reverts, so the renderer needs it as a
+  property rather than as a character. Pass `opts.newline = false` for a prompt.
+
+Each element of `parts` is a string (literal text) or a table:
+
+| Key | Meaning |
+|---|---|
+| `text` | Literal content. Mutually exclusive with `parts`. |
+| `parts` | Nested array, for a group inside a group. |
+| `send` | Command to run when clicked. An array is a popup menu. |
+| `hint` | Mouse-over text. With a menu, `[1]` is the caption and the rest label the items. |
+| `href` | A URL. `http://`, `https://` or `mailto:` only. |
+| `prompt` | Put the command on the input line instead of running it. |
+| `expire` | Name this link, for a later `mxp_expire`. |
+| `var` | Also store the rendered text in a client variable of this name. |
+| `br` | A hard line break. Ignores every other key. |
+
+`opts` takes `mode` (`"secure"` by default, or `"open"`/`"locked"`), `line`
+(`"room_name"`, `"room_desc"`, `"room_exits"`, `"welcome"`, or a number 20-99)
+and `newline`.
+
+```lua
+-- A popup menu: three commands behind one word.
+send_rich(session_id, {
+    { send = { "buy bread", "buy cake" },
+      hint = { "Shop", "Bread — 3cp", "Cake — 8cp" },
+      text = "the counter" },
+})
+
+-- Client-side room tagging, for a client with an automapper.
+send_rich(session_id, { room.name }, { line = "room_name" })
+```
+
+Returns `false` if the session is gone or its output channel is full.
+**Raises** on an author error — a command containing `|` (which separates menu
+items and has no escape), a `javascript:` URL, a tree deeper than 32 — with the
+offending field named, the same convention `lua_to_json` and the `db_*` efuns
+follow.
+
+### `mxp_var(session_id, name, value) → boolean`
+Set a client-side variable **and** display the value: `<VAR hp>40</VAR>`. That
+is the difference between `<VAR>` and `<!ENTITY>`, which this driver does not
+implement. Session-scoped, so there is nothing to replay on reconnect. The name
+may hold only letters, digits and underscores, because it goes into the tag
+itself.
+
+```lua
+mxp_var(session_id, "hp", char.hp)
+```
+
+### `mxp_expire(session_id, name?) → boolean`
+Retire the links tagged with `name`, or every named link if omitted — a room's
+exits stop being clickable once the player has left the room. Links that never
+carried an `expire` name never expire.
+
+```lua
+send_rich(session_id, { { send = "north", expire = "exits", text = "N" } })
+-- …later, on leaving:
+mxp_expire(session_id, "exits")
+```
+
 ### `start_echo(session_id)`
 Start ECHO masking — the player's input is hidden (for password entry).
 Sends `IAC WILL ECHO` to the client.
@@ -92,6 +174,16 @@ Returns a table of session properties, or `nil` if not found.
 | `state` | string | `"connected"`, `"authenticating"`, `"authenticated"`, `"playing"` |
 | `account_id` | integer? | Set when state is `"authenticated"` or `"playing"` |
 | `character_id` | integer? | Set when state is `"playing"` |
+| `window_width` | integer? | Columns, from NAWS or a WebSocket `hello` |
+| `window_height` | integer? | Rows, same source |
+| `terminal_type` | string? | From TTYPE, e.g. `"xterm-256color"` |
+| `gmcp_supported` | boolean | The client negotiated [GMCP](../protocols/gmcp.md) |
+| `gmcp_packages` | string[]? | Present only if the client listed any |
+| `mxp_supported` | boolean | The client negotiated [MXP](../protocols/mxp.md) |
+| `mxp_version` | string? | MXP spec level from its `<VERSION>` reply, e.g. `"0.4"` |
+| `mxp_client` | string? | Client name and version, e.g. `"mushclient 5.06"` |
+| `mxp_supports` | string[]? | `+tag` / `-tag` from its `<SUPPORTS>` reply |
+| `dropped_output` | integer | Messages this session has lost to a full channel |
 
 ```lua
 local session = get_session(session_id)
@@ -99,6 +191,15 @@ if session and session.state == "playing" then
     local char = get_character(session.character_id)
 end
 ```
+
+The capability fields are what a transport *discovered*, copied onto the session
+— see `publish_capabilities`. Branch on the booleans: `mxp_client` and
+`gmcp_packages` are extras a client may never volunteer, and treating their
+absence as "the protocol is not there" disables the feature for the majority
+that simply did not answer.
+
+`mxp_client` is **not** `terminal_type`. TTYPE answers a different question and
+a client is entitled to give two different answers.
 
 ### `all_sessions() → table`
 Returns an array of all active session IDs (strings).

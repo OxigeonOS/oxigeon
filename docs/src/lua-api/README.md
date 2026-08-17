@@ -13,8 +13,8 @@ Efuns are Rust functions exposed to Lua — they form the bridge between your mu
 - **[Signals & Events (EVENT_D)](./signals.md)** — Godot-style signals: subscribe, emit, priority, deferred events, bulk cleanup
 - **[Character Data & Persistence](./character-data.md)** — `CHARACTER_D`, `save_character_data()`, `load_character_data()`
 - **[Document Store — Persisting Anything](./document-store.md)** — `db_put()`, `db_find()`, `db_update()`, `db_incr()`: persist any type with no Rust and no migration
-- **[Efuns — Driver Functions](./efuns.md)** — `send()`, `send_prompt()`, `broadcast()`, `authenticate_session()`, `set_object_state()`, `schedule_timer()`, `reload()`, etc.
-- **[Event Hooks](./events.md)** — `on_connect`, `on_input`, `on_disconnect`, `on_gmcp`, `on_timer`, `on_shutdown`, `on_load`, `on_unload`
+- **[Efuns — Driver Functions](./efuns.md)** — `send()`, `send_prompt()`, `send_rich()`, `broadcast()`, `authenticate_session()`, `set_object_state()`, `schedule_timer()`, `reload()`, etc.
+- **[Event Hooks](./events.md)** — `on_connect`, `on_input`, `on_disconnect`, `on_gmcp`, `on_mxp_ready`, `on_timer`, `on_shutdown`, `on_load`, `on_unload`
 - **[State Cache](./state-cache.md)** — memory / write-behind / write-through, and cooldowns
 - **[Items, Equipment & Containers](./items.md)** — templates and instances, `get`/`drop`/`put`, wearing things, and what that does to your numbers
 - **[Shops & the Economy](./shops.md)** — stock, prices, restocking, a ledger

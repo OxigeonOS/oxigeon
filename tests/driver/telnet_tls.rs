@@ -59,6 +59,10 @@ fn boot_tls() -> Harness {
         cmd_tx: vm.engine().cmd_tx.clone(),
         auth_worker: None,
         input_buffer_bytes: 4096,
+        // As production defaults it. This suite's job is to prove that
+        // `telnets://` is the same protocol inside TLS, so it should carry the
+        // same option burst a plaintext listener does.
+        mxp: true,
     };
     let cfg = TelnetServerConfig {
         enabled: true,
@@ -67,6 +71,7 @@ fn boot_tls() -> Harness {
         cert_path: Some(dir.path().join("s.crt").to_string_lossy().into_owned()),
         key_path: Some(dir.path().join("s.key").to_string_lossy().into_owned()),
         cert_reload_seconds: 1,
+        mxp: true,
     };
     let addr = rt
         .block_on(telnet::serve(&cfg, "telnet_tls", deps))

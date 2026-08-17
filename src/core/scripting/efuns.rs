@@ -191,6 +191,7 @@ pub fn register_all(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
     super::debugger::efuns::register_debug_efuns(lua, ctx)?;
     super::efuns_compute::register_compute_efuns(lua, ctx)?;
     super::efuns_document::register_document_efuns(lua, ctx)?;
+    super::efuns_render::register_render_efuns(lua, ctx)?;
     Ok(())
 }
 
@@ -386,6 +387,24 @@ fn register_session_efuns(lua: &Lua, ctx: &EfunContext) -> LuaResult<()> {
                         t.set("terminal_type", ttype.clone())?;
                     }
                     t.set("gmcp_supported", s.capabilities.gmcp_supported)?;
+                    // Always present, like `gmcp_supported`, so the mudlib's
+                    // guard reads the same for both protocols. The three below
+                    // are present only if the client answered the handshake,
+                    // which most do not — branch on this one.
+                    t.set("mxp_supported", s.capabilities.mxp_supported)?;
+                    if let Some(ref v) = s.capabilities.mxp_version {
+                        t.set("mxp_version", v.clone())?;
+                    }
+                    if let Some(ref c) = s.capabilities.mxp_client {
+                        t.set("mxp_client", c.clone())?;
+                    }
+                    if !s.capabilities.mxp_supports.is_empty() {
+                        let tags = lua.create_table()?;
+                        for (i, tag) in s.capabilities.mxp_supports.iter().enumerate() {
+                            tags.set(i + 1, tag.clone())?;
+                        }
+                        t.set("mxp_supports", tags)?;
+                    }
                     t.set("dropped_output", s.dropped_output() as i64)?;
                     if !s.capabilities.gmcp_packages.is_empty() {
                         let pkgs = lua.create_table()?;

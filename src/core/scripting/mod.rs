@@ -3,6 +3,7 @@ pub mod efuns;
 pub mod efuns_compute;
 pub mod efuns_document;
 pub mod efuns_io;
+pub mod efuns_render;
 pub mod sandbox;
 pub mod debugger;
 

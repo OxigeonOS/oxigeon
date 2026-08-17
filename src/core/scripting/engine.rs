@@ -21,6 +21,19 @@ pub enum LuaCommand {
     OnDisconnect { session_id: String },
     /// GMCP message received
     OnGmcp { session_id: String, package: String, data: serde_json::Value },
+    /// The client finished the MXP handshake and markup will now be parsed.
+    ///
+    /// A separate event rather than a capability field alone, because MXP
+    /// completes *after* `on_connect` — the option is offered in the opening
+    /// negotiation burst and the client's `<VERSION>` reply can arrive several
+    /// round trips later. `get_session().mxp_supported` answers "is it there";
+    /// this answers "is it there *now*", which is the question anything that
+    /// wants to greet the player with a clickable line has to ask.
+    ///
+    /// Sent once per session, on the first reply. Same shape as
+    /// `on_auth_result`: the answer to a thing the driver started arrives
+    /// later, by name.
+    OnMxpReady { session_id: String },
     /// Admin: reload a Lua module
     Reload { module_name: String },
     /// A scheduled timer has fired
@@ -377,6 +390,11 @@ impl ScriptEngine {
                             LuaCommand::OnDisconnect { session_id } => {
                                 set_current_session(Some(session_id.clone()));
                                 dispatch_event(&lua, "on_disconnect", &[session_id], &game_logger, &session_handler_for_log);
+                                set_current_session(None);
+                            }
+                            LuaCommand::OnMxpReady { session_id } => {
+                                set_current_session(Some(session_id.clone()));
+                                dispatch_event(&lua, "on_mxp_ready", &[session_id], &game_logger, &session_handler_for_log);
                                 set_current_session(None);
                             }
                             LuaCommand::OnGmcp { session_id, package, data } => {

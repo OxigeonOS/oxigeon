@@ -3,6 +3,7 @@ pub mod parser;
 pub mod option;
 pub mod codec;
 pub mod connection;
+pub mod mxp;
 pub mod relay;
 
 pub use constants::*;
@@ -10,6 +11,7 @@ pub use parser::{TelnetParser, TelnetEvent};
 pub use option::{OptionNegotiator, NegotiationCommand, QState};
 pub use codec::TelnetCodec;
 pub use connection::{TelnetConnection, ConnectionId};
+pub use mxp::{LineMode, MxpState};
 /// Compatibility re-export. The struct moved to `core::session`, where it
 /// belongs — it is a `Session` field and two transports fill it in — but
 /// `telnet::ClientCapabilities` had callers and there is no reason to break
@@ -39,6 +41,10 @@ pub struct TelnetDeps {
     /// `None` in the test harness, which has no address tally to forget.
     pub auth_worker: Option<crate::core::auth::AuthWorker>,
     pub input_buffer_bytes: usize,
+    /// Whether to offer MXP. From `[servers.telnet].mxp`, and so the first
+    /// field here that comes from the listener's own config rather than from
+    /// `server_config` — MXP is a property of the wire, not of the game.
+    pub mxp: bool,
 }
 
 /// Bind a telnet listener and serve clients until the process ends.
@@ -101,7 +107,7 @@ pub async fn serve(
                         // worth a `BiLock` on a connection that is already
                         // dominated by syscalls.
                         let (reader, writer) = tokio::io::split(stream);
-                        let conn = TelnetConnection::new(writer, peer);
+                        let conn = TelnetConnection::new(writer, peer, deps.mxp);
                         relay::run(conn, reader, peer, deps).await;
                     });
                 }

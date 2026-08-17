@@ -94,6 +94,18 @@ pub enum SessionOutput {
     /// to `Prompt(String)` would touch four sites and be strictly clearer;
     /// until then, this comment is the contract.
     Raw(Vec<u8>),
+    /// An authored line that has not chosen a rendering yet.
+    ///
+    /// It arrives here **unrendered** on purpose. Rendering to MXP in the efun
+    /// would put `ESC[1z` inside a `Text`, and `AnsiMode::Raw` on the WebSocket
+    /// passes a non-SGR CSI straight through to the client — see
+    /// `websocket::protocol::scan`. Only the transport knows which of the
+    /// renderings the far end can read.
+    ///
+    /// Boxed because this crosses a 64-slot channel and is several times the
+    /// size of every other variant, which would otherwise set the channel's
+    /// per-message cost for messages that are a `bool`.
+    Rich(Box<crate::core::render::RichLine>),
     Gmcp { package: String, data: JsonValue },
     StartEcho,
     StopEcho,

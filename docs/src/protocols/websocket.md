@@ -250,6 +250,30 @@ and login is in band, so nobody's account is at risk — but it is how an
 unrelated site turns its visitors into connections to your MUD, and
 `max_connections` is a shared resource.
 
+## A rich line arrives as ordinary text
+
+`send_rich` produces a line with an action attached — "clicking this word sends
+`buy bread`". Over telnet with [MXP](./mxp.md) negotiated that becomes a
+`<SEND>` tag. Here it becomes an ordinary `text` or `prompt` frame with the
+action **dropped**, and the prose intact.
+
+There is no `rich` frame type, deliberately. One would mean every client needed
+a new branch before it could render game text at all, and any client not updated
+in the same breath — `debug-client/`, anything third-party — would silently drop
+whatever the mudlib sent through it. Degrading to text costs one affordance,
+which is exactly what a plain telnet client already gets.
+
+Carrying the action as extra optional fields on a `Span` — `send`, `hint`,
+`href` — so a browser could render a `<button>` is the obvious next step, and it
+is wire-compatible with what ships today because no existing field would change.
+It is not implemented yet.
+
+MXP markup is **never** composed on this path. `ansi: "raw"` passes a non-SGR
+CSI sequence through untouched, so an `ESC[1z` built anywhere but the telnet
+transport would land in the browser's DOM as three visible characters. Choosing
+the rendering at the transport, rather than in the efun, is what prevents that —
+the same reason `AnsiMode` is read here and not where `send()` is called.
+
 ## What is deliberately absent
 
 - **Compression** — see below.

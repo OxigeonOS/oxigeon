@@ -101,9 +101,30 @@ The `--test` argument is the *binary*, not the file. Everything is a module of
 `tests/driver/main.rs`, so `cargo test --test sandbox` does not resolve — use
 `cargo test --test driver sandbox`, which filters by module path.
 
-All tests should pass before committing — 299 in the driver suite at the time of
-writing, green on the default Lua 5.5 build and on
-`--no-default-features --features luajit`.
+All tests should pass before committing — 309 in the driver suite at the time of
+writing, green on the default Lua 5.5 build.
+
+> [!WARNING]
+> **`cargo test --no-default-features --features luajit` does not currently
+> build.** This page used to claim the suite was green on it. It is not, and has
+> not been for as long as the dev-dependency has read
+> `oxigeon = { path = ".", features = ["testkit"] }` — that pulls the crate's
+> *default* features, so `lua55` arrives alongside `luajit` and `mlua-sys`
+> refuses both:
+>
+> ```
+> error: You can enable only one of the features: lua55, lua54, …, luajit, …
+> ```
+>
+> The library itself is fine on LuaJIT — `cargo build --lib
+> --no-default-features --features luajit` succeeds — so this is a Cargo feature
+> plumbing problem, not a code one. The fix is `default-features = false` on the
+> dev-dependency plus a way to select the runtime for it, and it is worth doing:
+> a build claimed to be supported that nobody can run the suite against is a
+> build nobody is testing.
+>
+> Recorded here rather than quietly dropped, for the same reason the
+> `postgresql` note in [Configuration](./configuration.md) is.
 
 `cargo test` does not build `oxigeon-compute`. It is a separate workspace member
 that links LuaJIT unconditionally, and cargo unifies features across a single
@@ -146,7 +167,7 @@ Two rules carry over from the harness that is gone, and matter more here:
 
 ## What's Currently Tested
 
-**299 tests** in `tests/driver`, plus `tests/compute_wedge.rs` on its own. Every
+**309 tests** in `tests/driver`, plus `tests/compute_wedge.rs` on its own. Every
 one of them is a claim about Rust; where a Lua layer appears it is
 `tests/fixture/` being driven, never the thing under test.
 
@@ -178,6 +199,7 @@ one of them is a claim about Rust; where a Lua layer appears it is
 | `observability.rs`, `game_logger.rs` | the journal and the audit trail |
 | `output_backpressure.rs` | what happens when a client stops reading |
 | `telnet_tls.rs`, `websocket_relay.rs` | framing, negotiation, origins, certificates, and the login flow over both |
+| `telnet_mxp.rs` | option 91: the handshake, the injection it exists to prevent, and that game text is byte-identical with it on |
 | `dap_attach.rs`, `debug_*.rs`, `yield_pause.rs` | the debug adapter, breakpoints, and stopping a dispatch mid-flight |
 
 ---

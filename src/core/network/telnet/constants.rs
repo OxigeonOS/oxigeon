@@ -29,9 +29,20 @@ pub const OPT_LINEMODE: u8 = 34;  // Linemode (RFC 1184)
 // MUD-specific option codes
 pub const OPT_MCCP2: u8 = 86;    // MUD Client Compression Protocol v2
 pub const OPT_MCCP3: u8 = 87;    // MCCP v3 (client->server compression)
+pub const OPT_MSP: u8 = 90;      // MUD Sound Protocol (declared, not implemented)
+pub const OPT_MXP: u8 = 91;      // MUD eXtension Protocol
 pub const OPT_GMCP: u8 = 201;    // Generic MUD Communication Protocol
 
 // NVT line ending sequences
 pub const CR: u8 = 13;
 pub const LF: u8 = 10;
 pub const NUL: u8 = 0;
+
+/// Escape, 0x1B.
+///
+/// The lead byte of both an ANSI SGR sequence and an MXP line-security tag.
+/// The codec has never needed it — it translates line endings and escapes IAC,
+/// and an escape sequence is neither — but `mxp` has to tell the two apart, so
+/// it belongs here beside the rest of the wire alphabet rather than as a
+/// private constant in one module.
+pub const ESC: u8 = 27;

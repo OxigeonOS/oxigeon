@@ -704,6 +704,26 @@ impl RealVm {
         }
     }
 
+    /// Mark this session as having negotiated MXP, as the driver does.
+    ///
+    /// Same reason as [`RealVm::negotiate_gmcp`] and the same limitation: the
+    /// harness speaks to the engine directly and has no socket to negotiate
+    /// over. Anything in the mudlib that guards rich output on
+    /// `get_session().mxp_supported` sees `false` without this and does
+    /// nothing, for a reason that has nothing to do with what is being tested.
+    ///
+    /// This does **not** make the connection render MXP — there is no
+    /// connection. What reaches `output` is a `SessionOutput::Rich`, which is
+    /// the unrendered line, and asserting on that rather than on bytes is the
+    /// right level for a test about what the mudlib asked for.
+    pub fn negotiate_mxp(&mut self) {
+        let sid: crate::core::SessionId = self.session_id.parse().expect("a session id");
+        let mut handler = self.session_handler.write().unwrap();
+        if let Some(session) = handler.get_mut(&sid) {
+            session.capabilities.mxp_supported = true;
+        }
+    }
+
     /// Deliver an inbound GMCP package, as a client would.
     ///
     /// Goes through the engine's `on_gmcp` dispatch rather than calling

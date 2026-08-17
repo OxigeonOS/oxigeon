@@ -17,6 +17,12 @@ pool_size = 5
 enabled = true
 bind = "0.0.0.0"
 port = 4000
+# Offer MXP (telnet option 91) — clickable commands, client-side line tagging.
+# Defaults on. A client that declines, or never answers, gets exactly the
+# session it got before MXP existed; the driver locks the stream to LOCKED mode
+# on acceptance rather than escaping game text, so ordinary output is verbatim
+# either way. Set false to stop offering it at all.
+# mxp = true
 
 # `telnets://` — the same protocol inside TLS, which is what a MUD client means
 # by "secure connection". A *second* listener rather than a flag on the one

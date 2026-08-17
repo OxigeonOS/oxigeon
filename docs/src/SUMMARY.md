@@ -58,6 +58,7 @@
   - [WebSocket](./protocols/websocket.md)
   - [TLS (telnets / wss)](./protocols/tls.md)
   - [GMCP](./protocols/gmcp.md)
+  - [MXP](./protocols/mxp.md)
   - [MCCP2 Compression](./protocols/mccp.md)
   - [ECHO (Password Masking)](./protocols/echo.md)
 

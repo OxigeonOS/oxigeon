@@ -210,6 +210,7 @@ impl Driver {
                 cmd_tx: self.script_engine.cmd_tx.clone(),
                 auth_worker: Some(self.auth_worker.clone()),
                 input_buffer_bytes: self.server_config.limits.input_buffer_bytes,
+                mxp: cfg.mxp,
             };
             match crate::core::network::telnet::serve(cfg, section, deps).await {
                 Ok(addr) => {

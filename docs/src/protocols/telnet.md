@@ -26,6 +26,7 @@ Telnet encodes control sequences as **IAC** (byte 255) followed by command bytes
 | `OPT_TTYPE` | 24 | Terminal Type |
 | `OPT_NAWS` | 31 | Window Size |
 | `OPT_MCCP2` | 86 | MCCP v2 Compression |
+| `OPT_MXP` | 91 | MUD eXtension Protocol |
 | `OPT_GMCP` | 201 | GMCP |
 
 ## Line Endings
@@ -53,3 +54,8 @@ When a client connects, Oxigeon offers:
 - `IAC WILL MCCP2` — we support compression
 - `IAC DO TTYPE` — please tell us your terminal type
 - `IAC DO NAWS` — please tell us your window size
+- `IAC WILL MXP` — we support MXP (unless `[servers.telnet].mxp = false`)
+
+MXP is offered last on purpose: a client that reads one round of negotiation and
+then starts talking has already reported its terminal and window size before
+markup enters the picture. See [MXP](./mxp.md).

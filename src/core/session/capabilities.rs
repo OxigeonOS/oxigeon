@@ -29,6 +29,30 @@ pub struct ClientCapabilities {
     pub mccp2_active: bool,
     pub gmcp_supported: bool,
     pub gmcp_packages: Vec<String>,
+
+    /// The client accepted telnet option 91 and the driver has locked the
+    /// stream to LOCKED mode.
+    ///
+    /// **This, and not a client name, is the flag to branch on.** A client that
+    /// never answers `<VERSION>` — most do not — still parses markup perfectly
+    /// well, so gating rich output on knowing who is out there would silently
+    /// disable the feature for the majority.
+    pub mxp_supported: bool,
+    /// `MXP=` from the client's `<VERSION>` reply: the level of the spec it
+    /// implements, e.g. `"0.4"`. `None` if it never answered.
+    pub mxp_version: Option<String>,
+    /// `CLIENT` and `VERSION` from the same reply, joined — `"mushclient 5.06"`.
+    ///
+    /// One string because the only question anyone asks of it is "who is it",
+    /// and deliberately *not* `terminal_type`: TTYPE answers a different
+    /// question and a client is entitled to give two different answers.
+    pub mxp_client: Option<String>,
+    /// The `+tag` / `-tag` tokens from `<SUPPORTS>`, signs kept.
+    ///
+    /// Not interpreted here. Which tags matter is a question about what a game
+    /// wants to emit, and a driver-side allowlist would be a second place to
+    /// edit every time the answer changed.
+    pub mxp_supports: Vec<String>,
 }
 
 impl ClientCapabilities {

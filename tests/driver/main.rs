@@ -57,6 +57,7 @@ mod permissions;
 mod sandbox;
 mod sandbox_reality_check;
 mod staff;
+mod telnet_mxp;
 mod telnet_tls;
 mod timer_identity;
 mod websocket_relay;
